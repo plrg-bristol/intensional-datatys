@@ -169,9 +169,10 @@ infer e'@(ECase e n et rt as) = do
           otherwise -> throwError $ DoubleDefaultError [e']
 
 -- Local module
--- inferLet e'@(ELet xs e2) = do
---   gamma <- inferModule xs
---   local ((uncurry insertMany) (unzip $ gamma)) $ infer e2
+inferLet e'@(ELet xs e2) = do
+  gamma <- inferModule xs
+  gamma' <- mapM (\(x, (as, xs, cg, t)) -> do { cg' <- ConGraph.fromList cg; return (x, Forall as xs cg' t) }) gamma
+  local ((uncurry insertMany) (unzip gamma')) $ infer e2
 
 inferAlt :: Alt -> InferM (String, [Type], Type, ConGraph)
 inferAlt a@(ACon ki bxi ei) = do

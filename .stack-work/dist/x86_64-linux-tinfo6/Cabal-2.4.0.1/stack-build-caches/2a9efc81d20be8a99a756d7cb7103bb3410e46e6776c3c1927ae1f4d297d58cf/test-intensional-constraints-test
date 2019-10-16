@@ -1,7 +1,7 @@
 ? /home/eddie/Documents/GHC plugin/.stack-work/dist/x86_64-linux-tinfo6/Cabal-2.4.0.1/build/libHSintensional-constraints-0.1.0.0-DvgK8gEcSvAvRiFWuMhjl.a
-: hash: de5130331af546d26a34cb211c93294d8a04a7fd25a7e352cca2836ca3847d05
-  size: 1046132
-  modtime: 1571234459
+: hash: 5ddd434764eaf1d6c7b95f7aa07cc7e258f2531b4a2057712930fe9f101f4ec7
+  size: 1051618
+  modtime: 1571235105
 /home/eddie/Documents/GHC plugin/test/Test.hs:
   hash: 51f7b31a28bb418ad1dbf5dc2ee132e6ef53e10e1438bc6bb0823211772b3894
   size: 188
@@ -15,14 +15,14 @@
   size: 1328
   modtime: 1571215594
 /home/eddie/Documents/GHC plugin/intensional-constraints.cabal:
-  hash: a8a9a80a7abcba6a0db47a6ffca62dad90b5fe69588cd30c683485ed40e2f320
-  size: 1901
-  modtime: 1571215659
+  hash: 0fe08c2822deff7b7a4e734db148cc81a34813a99948c5930950a6c72b5e1eda
+  size: 1915
+  modtime: 1571235010
 /home/eddie/Documents/GHC plugin/ChangeLog.md:
   hash: 9772e09830a0f2c60923e2cf9e536719742deaf2df94f25bf0e056ac3233f85e
   size: 52
   modtime: 1569834175
 ? /home/eddie/Documents/GHC plugin/.stack-work/dist/x86_64-linux-tinfo6/Cabal-2.4.0.1/build/libHSintensional-constraints-0.1.0.0-DvgK8gEcSvAvRiFWuMhjl-ghc8.6.5.so
-: hash: fa861a990838efe89893676b736a3d8e371065483589104114b06596a8a3d211
-  size: 866592
-  modtime: 1571234459
+: hash: 5050bccaecbcbb8b04041d5a4ef3f6e5823deeb3708c0b7d6f083cf0ffea24bd
+  size: 868000
+  modtime: 1571235106

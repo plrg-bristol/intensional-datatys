@@ -59,18 +59,18 @@ tvars (Sum k) = concat [tvars t | Constructor s ts <- k, t <- ts]
 --     rvs = nub $ rvars t
 --     xs = fmap (\(x,_,_) -> x) rvs
 
-inferModule :: Module -> InferM [(ConGraph, ConGraph)]
+inferModule :: Module -> InferM [(String, ConGraph)]
 inferModule m = inferModule' m
   where
-    inferModule' :: Module -> InferM [(ConGraph, ConGraph)]
+    inferModule' :: Module -> InferM [(String, ConGraph)]
     inferModule' [] = return []
     inferModule' ((x,ss,e):bs) = do
       g <- gamma
       (t, cg) <- local (uncurry insertMany (unzip g)) $ infer e
       -- cg' <- saturate cg
       cgc <- inferModule bs
-      let (Forall _ _ c _) = (Map.fromList g) ! x
-      return $ (c, cg) : cgc
+      let (Forall _ _ (GVar y _ _) _) = (Map.fromList g) ! x
+      return $ (y, cg) : cgc
 
     gamma = mapM (\(x, ss, e) -> do {ts <- freshScheme ss; return (x, ts)}) m
 

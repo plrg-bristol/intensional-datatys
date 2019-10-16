@@ -15,17 +15,21 @@
   size: 1328
   modtime: 1571215594
 /home/eddie/Documents/GHC plugin/src/Inference.hs:
-  hash: 6671566dd88ff75b1d88b838434c932e9f92a7bad9f6fd49b6a25d3e4e872fe3
-  size: 7308
-  modtime: 1571234478
+  hash: 39dc63fcef3f4bae772a6692e62dd2676db4bc62c744901a678f9d7d129d7170
+  size: 7324
+  modtime: 1571235066
 /home/eddie/Documents/GHC plugin/intensional-constraints.cabal:
-  hash: a8a9a80a7abcba6a0db47a6ffca62dad90b5fe69588cd30c683485ed40e2f320
-  size: 1901
-  modtime: 1571215659
+  hash: 0fe08c2822deff7b7a4e734db148cc81a34813a99948c5930950a6c72b5e1eda
+  size: 1915
+  modtime: 1571235010
 /home/eddie/Documents/GHC plugin/src/ConGraph.hs:
   hash: 967d7187b1b0e578ed84dcc8f475664e09a099096f1876ecfccd160ab1b81c3c
   size: 9476
   modtime: 1571234374
+/home/eddie/Documents/GHC plugin/src/Resolve.hs:
+  hash: ab729fdb23d706542792671bd973f0d1d4c4ce659faefd34459302f2a99228ad
+  size: 191
+  modtime: 1571235149
 /home/eddie/Documents/GHC plugin/src/Context.hs:
   hash: 548ba3b0a9e65decf1a516802d4d108a1d56527c5320f566f919a72fce78a797
   size: 4344

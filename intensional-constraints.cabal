@@ -1,0 +1,79 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.31.2.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: 5d543042f362c2f5fd0118691ad12c1d30fde585784de6a18f5c4e1c3e3b42c5
+
+name:           intensional-constraints
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/eddiejones2108/intensional-constraints#readme>
+homepage:       https://github.com/eddiejones2108/intensional-constraints#readme
+bug-reports:    https://github.com/eddiejones2108/intensional-constraints/issues
+author:         Eddie Jones
+maintainer:     ej16147@bristol.ac.uk
+copyright:      2019 Eddie Jones
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+
+source-repository head
+  type: git
+  location: https://github.com/eddiejones2108/intensional-constraints
+
+library
+  exposed-modules:
+      ConGraph
+      Context
+      Expr
+      Inference
+      Lib
+      Types
+  other-modules:
+      Paths_intensional_constraints
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.7
+    , containers
+    , ghc
+    , mtl
+    , parsec
+  default-language: Haskell2010
+
+executable intensional-constraints-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_intensional_constraints
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7
+    , containers
+    , ghc
+    , intensional-constraints
+    , mtl
+    , parsec
+  default-language: Haskell2010
+
+test-suite intensional-constraints-test
+  type: exitcode-stdio-1.0
+  main-is: Test.hs
+  other-modules:
+      Paths_intensional_constraints
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N -fplugin Lib
+  build-depends:
+      base >=4.7
+    , containers
+    , ghc
+    , intensional-constraints
+    , mtl
+    , parsec
+  default-language: Haskell2010

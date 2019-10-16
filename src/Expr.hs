@@ -51,10 +51,6 @@ instance Show Alt where
   show (ACon k args e) = k ++ " " ++ intercalate " " args ++ " -> " ++ show e
   show (Default e) = "otherwise -> " ++ show e
 
--- To add:
--- Literals
--- Type, Polymorphic variables, Rank N types
-
 name :: Core.NamedThing n => n -> String
 name = Core.nameStableString . Core.getName
 
@@ -64,11 +60,11 @@ getTypeScheme = fromCoreTypeScheme . Utils.exprType
 fromCoreType :: T.Type -> Sort
 fromCoreType (T.TyVarTy a) = SVar (name a)
 fromCoreType (T.FunTy t1 t2) = SArrow (fromCoreType t1) (fromCoreType t2)
-fromCoreType (T.AppTy t1 t2)= error "Unimplemented type application"
 fromCoreType (T.TyConApp tc t2)= let n = name tc in
   if isPrefixOf "$ghc-prim$GHC.Types$" n
     then SBase n
     else SData (name tc)
+fromCoreType _ = error "Unimplemented"
 
 getBinds :: [(Core.Var, Core.CoreExpr)] -> [(String, SortScheme, Expr)]
 getBinds [] = []
@@ -86,22 +82,32 @@ fromCoreTypeScheme t1 = SForall [] $ fromCoreType t1
 fromAlts :: Core.Alt Core.CoreBndr -> Alt
 fromAlts (Core.DataAlt d, bs, e) = ACon (name d) (fmap name bs) (fromCoreExpr e)
 fromAlts (Core.DEFAULT, [], e) = Default (fromCoreExpr e)
-fromAlts _ = error "Unimplemented"
-
-fromLiteral :: Core.Literal -> String
-fromLiteral (Core.MachChar c) = show c
-fromLiteral _ = error "Unimplemented"
+fromAlts (Core.LitAlt l, _ , _) = error "Unimplemented"
 
 fromCoreExpr :: Core.CoreExpr -> Expr
-fromCoreExpr (Core.Lit l) = ECst $ fromLiteral l
+-- fromCoreExpr (Core.Lit l) = ECst $ fromLiteral l
+fromCoreExpr t
+  | isVar t = fromVarAtType t
 fromCoreExpr (Core.App e1 e2) = EApp (fromCoreExpr e1) (fromCoreExpr e2)
-fromCoreExpr (Core.Var i) = EVar (name i) []
 fromCoreExpr (Core.Let (Core.NonRec i e1) e2) = ELet [(name i, getTypeScheme e1, (fromCoreExpr e1))] (fromCoreExpr e2)
 fromCoreExpr (Core.Let (Core.Rec bs) e2) = ELet (getBinds bs) (fromCoreExpr e2)
 fromCoreExpr (Core.Case e b rt as) = ECase (fromCoreExpr e) (name b) (fromCoreType $ Core.varType b) (fromCoreType rt) (fmap fromAlts as)
 fromCoreExpr (Core.Tick _ e) = fromCoreExpr e
 fromCoreExpr (Core.Lam b e1) = EAbs (name b) (fromCoreType $ Core.varType b) (fromCoreExpr e1)
+fromCoreExpr (Core.Cast _ _) = error "Unimplemented"
+fromCoreExpr (Core.Coercion _) = error "Unimplemented"
 fromCoreExpr _ = error "Unimplemented"
+
+isVar :: Core.CoreExpr -> Bool
+isVar (Core.Var _) = True
+isVar (Core.App e1 (Core.Type _)) = isVar e1
+isVar _ = False
+
+fromVarAtType :: Core.CoreExpr -> Expr
+fromVarAtType (Core.Var i) = EVar (name i) []
+fromVarAtType (Core.App e1 (Core.Type t)) = let
+  (EVar n ts) = fromVarAtType e1
+  in EVar n (fromCoreType t:ts)
 
 type Parser = Parsec String ()
 

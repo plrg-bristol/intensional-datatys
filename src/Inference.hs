@@ -53,24 +53,27 @@ tvars (RVar _ _ _) = []
 tvars (t1 :=> t2) = tvars t1 ++ tvars t2
 tvars (Sum k) = concat [tvars t | Constructor s ts <- k, t <- ts]
 
--- toTypeScheme :: Type -> [ConGraph] -> TypeScheme
--- toTypeScheme t cg = Forall (tvars t) rvs (interface xs cg) t
---   where
---     -- These don't need to be fresh as each inference will use new numbers
---     rvs = nub $ rvars t
---     xs = fmap (\(x,_,_) -> x) rvs
-
-inferModule :: Module -> InferM [(String, ConGraph)]
-inferModule m = inferModule' m
+toTypeScheme :: Type -> [(Type, Type)] -> ([String], [(String, Bool, String)], [(Type, Type)], Type)
+toTypeScheme t cg = (tvars t, rvs, interface xs cg, t)
   where
-    inferModule' :: Module -> InferM [(String, ConGraph)]
+    -- These don't need to be fresh as each inference will use new numbers
+    rvs = nub $ rvars t
+    xs = fmap (\(x,_,_) -> x) rvs
+
+inferModule :: Module -> InferM [(String, ([String], [(String, Bool, String)], [(Type, Type)], Type))]
+inferModule m = do
+  m' <- inferModule' m
+  m'' <- resolve m'
+  return [(x, toTypeScheme t cg) | (x, t, cg) <- m'']
+  where
+    inferModule' :: Module -> InferM [(String, Type, ConGraph)]
     inferModule' [] = return []
     inferModule' ((x,ss,e):bs) = do
       g <- gamma
       (t, cg) <- local (uncurry insertMany (unzip g)) $ infer e
       cgc <- inferModule' bs
       let (Forall _ _ (GVar y _ _) _) = (Map.fromList g) ! x
-      return $ (y, cg) : cgc
+      return $ (y, t, cg) : cgc
 
     gamma = mapM (\(x, ss, e) -> do {ts <- freshScheme ss; return (x, ts)}) m
 

@@ -8,6 +8,16 @@ import Control.Monad.Except
 import Control.Monad.RWS hiding (Sum)
 import Debug.Trace
 
+concreteConstraints :: ConGraph -> [(Type, Type)]
+concreteConstraints (GVar _ _ _) = []
+concreteConstraints (Union cg1 cg2) = concreteConstraints cg1 ++ concreteConstraints cg2
+concreteConstraints cg1 = ConGraph.toList cg1
+
+abstractConstraints :: ConGraph -> [(String, (Map String Type, Map (String, Bool, String) Type))]
+abstractConstraints (GVar x tv rv) = [(x, (tv, rv))]
+abstractConstraints (Union cg1 cg2) = abstractConstraints cg1 ++ abstractConstraints cg2
+abstractConstraints _ = []
+
 isGVar :: ConGraph -> Bool
 isGVar (GVar _ _ _) = True
 isGVar (Union cg1 cg2) = (isGVar cg1) && (isGVar cg2)
@@ -48,18 +58,21 @@ empty = ConGraph {succs = Map.empty, preds = Map.empty, subs = Map.empty}
 fromList :: [(Type, Type)] -> InferM ConGraph
 fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) ConGraph.empty
 
+toList :: ConGraph -> [(Type, Type)]
+toList cg = [(k, v)|(k,vs) <- Map.toList (succs cg), v <- vs] ++ [(v, k)|(k,vs) <- Map.toList (preds cg), v <- vs]
+
 -- Warning slow!
 -- Inline
--- saturate :: ConGraph -> InferM [(Type, Type)]
--- saturate cg = do
---   cg' <- ConGraph.fromList $ trans' $ ConGraph.toList cg
---   return $ ConGraph.toList cg'
---   where
---     trans' closure
---       | closure == closureUntilNow = closure
---       | otherwise                  = trans' closureUntilNow
---       where closureUntilNow =
---               nub $ closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
+saturate :: [(Type, Type)] -> InferM [(Type, Type)]
+saturate cg = do
+  cg' <- ConGraph.fromList $ trans' cg
+  return $ ConGraph.toList cg'
+  where
+    trans' closure
+      | closure == closureUntilNow = closure
+      | otherwise                  = trans' closureUntilNow
+      where closureUntilNow =
+              nub $ closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
 
 -- Combine two subs with a preference for the first
 -- Should this clean trivial maps and loops?

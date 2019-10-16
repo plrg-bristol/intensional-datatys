@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 module Types where
 
 import Data.Maybe
@@ -56,5 +58,5 @@ instance Sub Type where
     sub tv rv (t1 :=> t2) = sub tv rv t1 :=> sub tv rv t2
     sub tv rv (Sum cons) = Sum [Constructor k $ sub tv rv args | Constructor k args <- cons]
 
-instance Sub a => Sub [a] where
-    sub tv tr as = map (sub tv tr) as
+instance (Functor f, Sub a) => Sub (f a) where
+    sub tv tr as = fmap (sub tv tr) as

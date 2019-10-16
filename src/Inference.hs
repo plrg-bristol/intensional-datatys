@@ -4,6 +4,7 @@ module Inference where
 
 import Types
 import Expr
+import Resolve
 import Context
 import ConGraph
 import Data.List hiding (filter, union, insert)
@@ -67,8 +68,7 @@ inferModule m = inferModule' m
     inferModule' ((x,ss,e):bs) = do
       g <- gamma
       (t, cg) <- local (uncurry insertMany (unzip g)) $ infer e
-      -- cg' <- saturate cg
-      cgc <- inferModule bs
+      cgc <- inferModule' bs
       let (Forall _ _ (GVar y _ _) _) = (Map.fromList g) ! x
       return $ (y, cg) : cgc
 

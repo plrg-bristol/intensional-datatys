@@ -29,11 +29,12 @@ data Expr =
 -- Literal cases
 data Alt =
     ACon String [String] Expr
+  | ALit String Expr
   | Default Expr
 
-aCon :: Alt -> Bool
-aCon (Default _) = False
-aCon _ = True
+notDef :: Alt -> Bool
+notDef (ALit _ _) = True
+notDef _ = False
 
 instance Show Expr where
   show (ECst s) = s
@@ -49,6 +50,7 @@ instance Show Expr where
 
 instance Show Alt where
   show (ACon k args e) = k ++ " " ++ intercalate " " args ++ " -> " ++ show e
+  show (ALit s e) = show s ++ "->" ++ show e
   show (Default e) = "otherwise -> " ++ show e
 
 name :: Core.NamedThing n => n -> String
@@ -82,10 +84,13 @@ fromCoreTypeScheme t1 = SForall [] $ fromCoreType t1
 fromAlts :: Core.Alt Core.CoreBndr -> Alt
 fromAlts (Core.DataAlt d, bs, e) = ACon (name d) (fmap name bs) (fromCoreExpr e)
 fromAlts (Core.DEFAULT, [], e) = Default (fromCoreExpr e)
-fromAlts (Core.LitAlt l, _ , _) = error "Unimplemented"
+fromAlts (Core.LitAlt l, [] , e) = ALit (fromLiteral l) (fromCoreExpr e)
+
+fromLiteral :: Core.Literal -> String
+fromLiteral = undefined
 
 fromCoreExpr :: Core.CoreExpr -> Expr
--- fromCoreExpr (Core.Lit l) = ECst $ fromLiteral l
+fromCoreExpr (Core.Lit l) = ECst (fromLiteral l)
 fromCoreExpr t
   | isVar t = fromVarAtType t
 fromCoreExpr (Core.App e1 e2) = EApp (fromCoreExpr e1) (fromCoreExpr e2)
@@ -94,6 +99,7 @@ fromCoreExpr (Core.Let (Core.Rec bs) e2) = ELet (getBinds bs) (fromCoreExpr e2)
 fromCoreExpr (Core.Case e b rt as) = ECase (fromCoreExpr e) (name b) (fromCoreType $ Core.varType b) (fromCoreType rt) (fmap fromAlts as)
 fromCoreExpr (Core.Tick _ e) = fromCoreExpr e
 fromCoreExpr (Core.Lam b e1) = EAbs (name b) (fromCoreType $ Core.varType b) (fromCoreExpr e1)
+
 fromCoreExpr (Core.Cast _ _) = error "Unimplemented"
 fromCoreExpr (Core.Coercion _) = error "Unimplemented"
 fromCoreExpr _ = error "Unimplemented"

@@ -30,11 +30,10 @@ inferGuts :: ModGuts -> IO ModGuts
 inferGuts guts = do
     -- let env' = getEnv $ mg_binds guts
     let binds = filter fil $ mg_binds guts
-    let ms = concatMap makeBinds binds
-    case runExcept $ runRWST (listen $ inferModule ms) env 0 of
-      Left err -> putStrLn "Inference error: " >> print err
-      Right ((m, _), _, _) -> putStrLn "Success" >> print m
-    return guts
+    let ms = fmap makeBinds binds
+    case runExcept $ runRWST (listen $ mapM inferModule ms) env 0 of
+      Left err -> putStrLn "Inference error: " >> print err >> return guts
+      Right ((m, _), _, _) -> putStrLn "Success" >> print m >> return guts
   where
     makeBinds (NonRec v expr) = [(E.name v, E.getTypeScheme expr, E.fromCoreExpr expr)]
     makeBinds (Rec bs) = E.getBinds bs

@@ -141,9 +141,8 @@ infer e'@(ECase e n et rt as) = do
     if length as == 0
       then throwError $ EmptyCaseError [e']
       else let
-        (alts, def) = partition aCon as
+        (alts, def) = partition notDef as
         in case def of
-
           [Default d] -> do
             (td, cd) <- infer d `inExpr` e'
             hyp <- mapM inferAlt alts `inExpr` e'
@@ -175,6 +174,7 @@ inferLet e'@(ELet xs e2) = do
   local ((uncurry insertMany) (unzip gamma')) $ infer e2
 
 inferAlt :: Alt -> InferM (String, [Type], Type, ConGraph)
+--  Literal case
 inferAlt a@(ACon ki bxi ei) = do
   (_, args) <- safeCon ki `inAlt` a
   if length args == length bxi

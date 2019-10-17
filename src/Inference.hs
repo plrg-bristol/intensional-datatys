@@ -140,42 +140,51 @@ infer e'@(ECase e n et rt as) = do
   local (insertVar n $ Forall [] [] ConGraph.empty et') $ do
     if length as == 0
       then throwError $ EmptyCaseError [e']
-      else let
-        (alts, def) = partition notDef as
-        in case def of
+      else do
+        let (alts, lits, def) = foldr altType ([],[],[]) as
+        hyp <- mapM inferConAlt alts `inExpr` e'
+        hypLit <- mapM inferLitAlt lits `inExpr` e'
+        let (kis, bTis, tis', kcis') = unzip4 hyp
+        let (lis, tis', lcis') = unzip3 hypLit
+        let cis = kcis' ++ lcis'
+        t  <- fresh rt
+        cg <- case def of
           [Default d] -> do
             (td, cd) <- infer d `inExpr` e'
-            hyp <- mapM inferAlt alts `inExpr` e'
-            let (kis, bTis, tis', cis') = unzip4 hyp
-            t        <- fresh rt
-            cg       <- foldM union ConGraph.empty (cd:cis')
+            cg       <- foldM union ConGraph.empty (cd:cis)
             cg'      <- ConGraph.fromList ((td, t):[(ti', t) | ti' <- tis'])
-            cg''     <- cg `union` cg'
-            cg'''   <- cg'' `union` c0
-            return (t, cg''')
+            cg `union` cg'
+
 
           [] -> do
-            hyp <- mapM inferAlt alts `inExpr` e'
-            let (kis, bTis, tis', cis') = unzip4 hyp
-            t        <- fresh rt
-            cg       <- foldM union ConGraph.empty $ cis'
+            cg       <- foldM union ConGraph.empty $ cis
             cg'      <- ConGraph.fromList [(ti', t) | ti' <- tis']
             cg''     <- cg `union` cg'
-            cg'''    <- insert t0 (Sum [Constructor ki bTi | (ki, bTi) <- zip kis bTis]) cg''
-            cg''''   <- cg''' `union` c0
-            return (t, cg'''')
+            insert t0 (Sum [Constructor ki bTi | (ki, bTi) <- zip kis bTis]) cg'' -- Or is some literal value, maybe literal values are just constructors?
 
           otherwise -> throwError $ DoubleDefaultError [e']
 
+        cg'  <- cg `union` c0
+        return (t, cg')
+
 -- Local module
-inferLet e'@(ELet xs e2) = do
+infer e'@(ELet xs e2) = do
   gamma <- inferModule xs
   gamma' <- mapM (\(x, (as, xs, cg, t)) -> do { cg' <- ConGraph.fromList cg; return (x, Forall as xs cg' t) }) gamma
   local ((uncurry insertMany) (unzip gamma')) $ infer e2
 
-inferAlt :: Alt -> InferM (String, [Type], Type, ConGraph)
---  Literal case
-inferAlt a@(ACon ki bxi ei) = do
+altType :: Alt -> ([Alt], [Alt], [Alt]) -> ([Alt], [Alt], [Alt])
+altType a@(ACon _ _ _) (ks, ls, df) = (a:ks, ls, df)
+altType a@(ALit _ _) (ks, ls, df) = (ks, a:ls, df)
+altType a@(Default _) (ks, ls, df) = (ks, ls, a:df)
+
+inferLitAlt :: Alt -> InferM (String, [Type], ConGraph)
+inferLitAlt a@(ALit li ei) = do
+  (ti', ci) <- infer ei `inAlt` a
+  return (li, ti', ci)
+
+inferConAlt :: Alt -> InferM (String, [Type], Type, ConGraph)
+inferConAlt a@(ACon ki bxi ei) = do
   (_, args) <- safeCon ki `inAlt` a
   if length args == length bxi
     then do

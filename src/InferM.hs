@@ -112,7 +112,6 @@ polarise p (SBase b) = PBase b
 polarise p (SData d) = PData p d
 polarise p (t1 :=> t2) = PArrow (polarise (not p) t1) (polarise p t2)
 
-
 sub :: M.Map RVar Type -> Type -> Type
 sub m (Var x) = case m M.!? x of
   Just t -> t

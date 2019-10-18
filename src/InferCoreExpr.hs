@@ -7,6 +7,7 @@ import qualified Data.Map as M
 import Control.Monad.RWS
 import Control.Monad.Except
 import qualified GhcPlugins as Core
+import qualified CoreUtils as Utils
 
 isConstructor :: Core.Id -> Bool
 isConstructor = undefined
@@ -40,3 +41,7 @@ infer (Core.Var x) =
             otherwise -> error "Cannot resolve constriants."
         else
           error "Polymorphic variables must be fully instantiated."
+
+infer l@(Core.Lit _) = do
+  t' <- fresh $ sortFromCoreType $ Utils.exprType l
+  return (t', empty)

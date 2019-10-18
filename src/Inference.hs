@@ -6,29 +6,12 @@ import Types
 import Expr
 import Resolve
 import Context
-import ConGraph
+import GenericConGraph
 import Data.List hiding (filter, union, insert)
 import Data.Map.Strict as Map hiding (filter, insert, foldr, map, union, partition)
 import Control.Monad.RWS hiding (Sum, Alt)
 import Control.Monad.Except
 import Debug.Trace
-
-newInt :: InferM Int
-newInt = do
-    i <- get
-    put (i + 1)
-    return i
-
-fresh :: Sort -> InferM Type
-fresh t = do
-    i <- newInt
-    return $ head $ upArrow (show i) [polarise True t]
-
-freshScheme :: SortScheme -> InferM TypeScheme
-freshScheme (SForall as s) = do
-    i <- newInt
-    j <- newInt
-    return $ Forall as [] (GVar (show j) Map.empty Map.empty) $ head $ upArrow (show i) [polarise True s]
 
 -- Inline with saturate
 interface :: [String] -> [(Type, Type)] -> [(Type, Type)]
@@ -178,7 +161,7 @@ altType a@(ACon _ _ _) (ks, ls, df) = (a:ks, ls, df)
 altType a@(ALit _ _) (ks, ls, df) = (ks, a:ls, df)
 altType a@(Default _) (ks, ls, df) = (ks, ls, a:df)
 
-inferLitAlt :: Alt -> InferM (String, [Type], ConGraph)
+inferLitAlt :: Alt -> InferM (String, Type, ConGraph)
 inferLitAlt a@(ALit li ei) = do
   (ti', ci) <- infer ei `inAlt` a
   return (li, ti', ci)

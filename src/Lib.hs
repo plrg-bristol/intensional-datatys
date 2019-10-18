@@ -16,10 +16,17 @@ import Control.Monad.RWS hiding (Sum, Alt)
 import Control.Monad.Except
 import Debug.Trace
 
+-- make fromCore build this
 env :: Context
 env = Context {cst = Map.empty, con = Map.fromList kvp, var = Map.empty}
     where
-        kvp = [("$main$Test$Var", ("$main$Test$Tm", [SBase "$ghc-prim$GHC.Types$Int"])), ("$main$Test$Cst", ("$main$Test$Tm", [SBase "$ghc-prim$GHC.Types$Int"])), ("$main$Test$App", ("$main$Test$Tm", [SData "$main$Test$Tm", SData "$main$Test$Tm"]))]
+        kvp = [("$main$Test$Var", ("$main$Test$Tm", [SBase "$ghc-prim$GHC.Types$Int"])),
+               ("$main$Test$Cst", ("$main$Test$Tm", [SBase "$ghc-prim$GHC.Types$Int"])),
+               ("$main$Test$App", ("$main$Test$Tm", [SData "$main$Test$Tm", SData "$main$Test$Tm"])),
+               ("$main$Test$True", ("$main$Test$Bool", [])),
+               ("$main$Test$False", ("$main$Test$Bool", [])),
+               ("$main$Test$Z", ("$main$Test$Nat", [])),
+               ("$main$Test$S", ("$main$Test$Nat", [SData "$main$Test$Nat"]))]
 
 plugin :: Plugin
 plugin = defaultPlugin { installCoreToDos = install }
@@ -31,6 +38,7 @@ inferGuts guts = do
     -- let env' = getEnv $ mg_binds guts
     let binds = filter fil $ mg_binds guts
     let ms = fmap makeBinds binds
+    -- dependency analysis
     case runExcept $ runRWST (listen $ mapM inferModule ms) env 0 of
       Left err -> putStrLn "Inference error: " >> print err >> return guts
       Right ((m, _), _, _) -> putStrLn "Success" >> print m >> return guts

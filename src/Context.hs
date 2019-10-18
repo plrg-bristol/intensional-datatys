@@ -1,9 +1,18 @@
 {-# LANGUAGE FlexibleInstances, TypeSynonymInstances, DeriveTraversable, DeriveFoldable, DeriveFunctor #-}
 
-module Context where
+module Context
+  (
+    Context,
+    ConGraph,
+    Type,
+    UType,
+    RVar,
+    InferM
+  ) where
 
-import Types
+-- import Types
 import Expr
+import GenericConGraph
 import Data.List hiding (insert, union)
 import Data.Map.Strict as Map hiding (map, foldr)
 import Control.Monad.Except
@@ -11,26 +20,55 @@ import Control.Monad.RWS hiding (Sum, Alt)
 import Data.Functor.Const
 import Debug.Trace
 
-data ConGraph =
-  ConGraph {
-    succs :: Map Type [Type], -- Map (String, Bool, String) (Set Type)
-    preds :: Map Type [Type],
-    subs  :: Map (String, Bool, String) Type
-  }
-  | GVar String (Map String Type) (Map (String, Bool, String) Type)
-  | Union ConGraph ConGraph
-  deriving (Eq, Show)
-
 data Context = Context {
     cst :: Map String Sort,
     con :: Map String (String, [Sort]), -- k -> (d, args)
     var :: Map String TypeScheme
-} deriving Show
+}
+
+type ConGraph = ConGraphGen RVar UType
+type Type = SExpr RVar UType
+
+data UType = TVar String | TBase String | TData String| Type :=> Type deriving Eq
+data RVar = RVar String Bool String deriving (Show, Eq)
+
+-- Polarised type
+data PType = PVar String | PBase String | PData Bool String | PArrow PType PType deriving (Show, Ord, Eq)
+
+data Sort = SVar String | SBase String | SData String | SArrow Sort Sort
+
+instance Show Sort where
+  show (SVar v) = v
+  show (SBase b) = b
+  show (SData d) = d
+  show (SArrow t1 t2) = "(" ++ show t1 ++ "->" ++ show t2 ++ ")"
+
+data SortScheme = SForall [String] Sort
+
+-- instance Show SortScheme where
+--   show (SForall as s) = "forall " ++ intercalate " " as ++ "." ++ show s
+
+instance Show UType where
+  show (TVar v) = v
+  show (TBase b) = b
+  show (TData d) = d
+  show (t1 :=> t2) = "(" ++ show t1 ++ "->" ++ show t2 ++ ")"
+
+instance Ord RVar where
+  (RVar x p d) >= (RVar x' p' d') = x >= x'
 
 data TypeScheme = Forall [String] [(String, Bool, String)] ConGraph Type
 
-instance Show TypeScheme where
-  show (Forall as xs cs t) = "forall " ++ intercalate " " as ++ ". forall " ++ intercalate " " (map show xs) ++ "." ++ show cs ++ "=>" ++ show t
+upArrow :: String -> [PType] -> [Type]
+upArrow x = map upArrow'
+  where
+    upArrow' (PData p d)     = RVar x p d
+    upArrow' (PArrow t1 t2)  = upArrow' t1 :=> upArrow' t2
+    upArrow' (PVar a)        = TVar a
+    upArrow' (PBase b)       = TBase b
+
+-- instance Show TypeScheme where
+--   show (Forall as xs cs t) = "forall " ++ intercalate " " as ++ ". forall " ++ intercalate " " (map show xs) ++ "." ++ show cs ++ "=>" ++ show t
 
 type Error = ErrorGen [Expr]
 
@@ -67,6 +105,23 @@ inThe :: [Expr] -> String
 inThe = foldr (\e s -> (case e of {AltExpr a -> "\nIn the case alternative: "; otherwise -> "\nIn the expression: "}) ++ show e ++ s) "\n" . reverse
 
 type InferM = RWST Context () Int (Except Error)
+
+newInt :: InferM Int
+newInt = do
+    i <- get
+    put (i + 1)
+    return i
+
+fresh :: Sort -> InferM Type
+fresh t = do
+    i <- newInt
+    return $ head $ upArrow (show i) [polarise True t]
+
+-- freshScheme :: SortScheme -> InferM TypeScheme
+-- freshScheme (SForall as s) = do
+--     i <- newInt
+--     j <- newInt
+--     return $ Forall as [] (GVar (show j) Map.empty Map.empty) $ head $ upArrow (show i) [polarise True s]
 
 -- Bind expression to error
 inExpr :: InferM a -> Expr -> InferM a

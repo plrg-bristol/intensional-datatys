@@ -8,6 +8,16 @@ import Control.Monad.Except
 import Control.Monad.RWS hiding (Sum)
 import Debug.Trace
 
+data ConGraph =
+  ConGraph {
+    succs :: Map Type [Type], -- Map (String, Bool, String) (Set Type)
+    preds :: Map Type [Type],
+    subs  :: Map (String, Bool, String) Type
+  }
+  | GVar String (Map String Type) (Map (String, Bool, String) Type)
+  | Union ConGraph ConGraph
+  deriving (Eq, Show)
+
 concreteConstraints :: ConGraph -> [(Type, Type)]
 concreteConstraints (GVar _ _ _) = []
 concreteConstraints (Union cg1 cg2) = concreteConstraints cg1 ++ concreteConstraints cg2
@@ -22,9 +32,6 @@ isGVar :: ConGraph -> Bool
 isGVar (GVar _ _ _) = True
 isGVar (Union cg1 cg2) = (isGVar cg1) && (isGVar cg2)
 isGVar _ = False
-
-mergeTV :: Map String Type -> Map String Type -> Map String Type
-mergeTV m1 m2 = unionWith const m1 m2
 
 instance Sub ConGraph where
   sub tv rv (GVar x tv' rv') = GVar x (mergeTV tv tv') (merge rv rv')
@@ -80,6 +87,9 @@ merge :: Map (String, Bool, String) Type -> Map (String, Bool, String) Type -> M
 merge m1 m2 = let
   m2' = fmap (sub Map.empty m1) m2
   in unionWith const m1 m2'
+
+mergeTV :: Map String Type -> Map String Type -> Map String Type
+mergeTV m1 m2 = unionWith const m1 m2
 
 -- Warning slow!
 union :: ConGraph -> ConGraph -> InferM ConGraph

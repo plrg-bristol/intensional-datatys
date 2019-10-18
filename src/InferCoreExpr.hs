@@ -45,3 +45,13 @@ infer (Core.Var x) =
 infer l@(Core.Lit _) = do
   t' <- fresh $ sortFromCoreType $ Utils.exprType l
   return (t', empty)
+
+infer (Core.App e1 e2) = do
+  (t1, c1) <- infer e1
+  (t2, c2) <- infer e2
+  case t1 of
+    t3 :=> t4 -> do
+      cg  <- union c1 c2
+      cg' <- insert t2 t3 cg
+      return (t4, cg')
+    otherwise -> error ""

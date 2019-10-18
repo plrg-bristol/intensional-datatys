@@ -31,8 +31,9 @@ instance (Eq x, Constructor c x) => Eq (SExpr c x) where
   _ == _           = False
 
 -- Constructors are named and explicitly co- or contra- variant in arguments
--- length variance = length args
--- if name c == name d then length (args c) == length (args d)
+-- Rules:
+--    length variance = length args
+--    if name c == name d then length (args c) == length (args d)
 class Constructor c x where
   name      :: c x -> String
   variance  :: c x -> [Bool]
@@ -49,7 +50,7 @@ data ConGraphGen c x = ConGraphGen {
 empty :: ConGraphGen c x
 empty = ConGraphGen { succs = M.empty, preds = M.empty, subs = M.empty }
 
--- Insert new constraint (subs ++ nub)
+-- Insert new constraint
 insert :: (Ord x, Constructor c x) => SExpr c x -> SExpr c x -> ConGraphGen c x -> Maybe (ConGraphGen c x)
 insert vx@(Var x) vy@(Var y) cg
   | x == y                    = Just cg
@@ -100,7 +101,7 @@ insertPred sx y cg@ConGraphGen{preds = p, subs = sb} =
               foldM (substitute sx) cg' xs
         otherwise -> return cg
 
--- Partial Online Transitive Closure
+-- Partial online transitive closure
 closeSucc :: (Ord x, Constructor c x) => x ->  SExpr c x -> ConGraphGen c x-> Maybe (ConGraphGen c x)
 closeSucc x fy cg =
   case preds cg M.!? x of
@@ -113,7 +114,7 @@ closePred fx y cg =
     Just ss   -> foldM (\cg s -> insert s fx cg) cg ss
     otherwise -> return cg
 
--- Partial Online Cycle Elimination
+-- Partial online cycle elimination
 predChain :: (Ord x, Constructor c x) => ConGraphGen c x -> x -> SExpr c x -> [x] -> Maybe [x]
 predChain cg f (Var t) m = do
   guard $ f == t
@@ -150,7 +151,7 @@ succLoop cg (f':ss) m f t = do
   guard $ f == f'
   return m
 
--- Collapse Cycle
+-- Collapse cycle
 -- Tidy
 substitute :: (Ord x, Constructor c x) => SExpr c x -> ConGraphGen c x -> x -> Maybe (ConGraphGen c x)
 substitute se ConGraphGen{succs = s, preds = p, subs = sb } x = do
@@ -168,7 +169,17 @@ substitute se ConGraphGen{succs = s, preds = p, subs = sb } x = do
     sub (Var y) | x == y = se
     sub se' = se'
 
--- Least Solution
+-- Union of constraint graphs
+union :: (Ord x, Constructor c x) => ConGraphGen c x -> ConGraphGen c x -> ConGraphGen c x
+union cg1@ConGraphGen{succs = s1, preds = p1} cg2@ConGraphGen{succs = s2, preds = p2} = do
+  let subs' = merge (subs cg1) (subs cg2)
+  let empty' = empty{subs = subs'}
+  cg <- comb (sub subs' cg1) [(k, v) | (k, vs) <- s2, v <- vs]
+  comb cg [(v, k) | (k,vs) <- p2, v <- vs]
+  where
+    comb = foldM (\cg (t1, t2) -> insert t1 t2 cg)
+
+-- Least solution
 -- leastSolution :: (Eq c, Ord x, Constructor c) => ConGraphGen c x -> x -> [SExpr c x]
 -- leastSolution cg@ConGraphGen{preds = p} x = case p M.!? x of
 --   Just fs -> concatMap leastSolution' fs

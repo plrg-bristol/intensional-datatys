@@ -1,11 +1,11 @@
-{-# LANGUAGE MultiParamTypeClasses, TypeSynonymInstances, FlexibleInstances #-}
+{-# LANGUAGE PatternSynonyms, MultiParamTypeClasses, TypeSynonymInstances, FlexibleInstances #-}
 
 module InferM
     (
-      Sort (SVar, SBase, SData, (:=>)),
+      Sort (SVar, SBase, SData, SArrow),
       UType (TArrow),
       mkCon,
-      mkConType,
+      mkConArgs,
       RVar (RVar),
       empty,
       insert,
@@ -20,7 +20,9 @@ module InferM
       upArrow,
       fresh,
       polarise,
-      sortFromCoreType
+      fromCoreType,
+      subTypeVars,
+      Error (ConstraintError, ApplicationError, PolyTypeError)
     ) where
 
 import GenericConGraph
@@ -30,48 +32,38 @@ import Control.Monad.Except
 import qualified TyCoRep as T
 import qualified GhcPlugins as Core
 
-data Error = Error
+data Error = ConstraintError | ApplicationError | PolyTypeError
+
 type InferM = RWST Context () Int (Except Error)
 
-type ConGraph = ConGraphGen UType RVar
+type ConGraph = ConGraphGen RVar UType
 data Context = Context {
     con :: M.Map Core.Var (String, [Sort]), -- k -> (d, args)
     var :: M.Map Core.Var TypeScheme
 }
 
-type Type = SExpr UType RVar
-data TypeScheme = Forall [String] [RVar] ConGraph Type
+type Type = SExpr RVar UType
+data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type
 
 data RVar = RVar String Bool String deriving Eq
 
 instance Ord RVar where
   RVar x _ _ <= RVar x' _ _ = x <= x'
 
-infixr :=>
-data Sort = SVar Core.Var | SBase String | SData String | Sort :=> Sort
-data UType x = TVar Core.Var | TBase String | TData String | TArrow Type Type | TCon Core.Var [Type]
+data Sort = SVar Core.Var | SBase String | SData String | SArrow Sort Sort
+data UType = TVar Core.Var | TBase String | TData String | TArrow | TCon Core.Var deriving Eq
 data PType = PVar Core.Var | PBase String | PData Bool String | PArrow PType PType
 
-instance Constructor UType RVar where
-  name (TVar v) = "$v"
-  name (TBase b) = "$b"
-  name (TData d) = d
-  name (TCon s _) = Core.nameStableString $ Core.getName s
-  name (TArrow _ _) = "->"
-
-  variance (TArrow _ _) = [False, True]
-  variance (TCon _ as) = replicate (length as) True
+instance Constructor UType where
+  variance TArrow = [False, True]
+  variance (TCon v) = repeat True
   variance _ = []
 
-  args (TArrow t1 t2) = [t1, t2]
-  args (TCon _ a) = a
-  args _ = []
+mkCon :: Core.Var -> [Type] -> SExpr RVar UType
+mkCon v ts = Con (TCon v) ts
 
-mkCon :: Core.Var -> [Type] -> SExpr UType RVar
-mkCon v ts = Con $ TCon v ts
-
-mkConType :: [Type] -> Type -> Type
-mkConType ts y = foldr (\t1 t2 -> Con $ TArrow t1 t2) y ts
+mkConArgs :: [Type] -> Type -> Type
+mkConArgs ts y = foldr (\t1 t2 -> Con TArrow [t1, t2]) y ts
 
 safeVar :: Core.Var -> InferM (TypeScheme)
 safeVar v = do
@@ -87,10 +79,10 @@ safeCon k = do
     Just args -> return args
     Nothing   -> error "Cosntructor not in environment."
 
-sortFromCoreType :: Core.Type -> Sort
-sortFromCoreType (T.TyVarTy v) = SVar v
-sortFromCoreType (T.FunTy t1 t2) = sortFromCoreType t1 :=> sortFromCoreType t2
-sortFromCoreType _ = error "Unimplemented"
+fromCoreType :: Core.Type -> Sort
+fromCoreType (T.TyVarTy v) = SVar v
+fromCoreType (T.FunTy t1 t2) = SArrow (fromCoreType t1) (fromCoreType t2)
+fromCoreType _ = error "Unimplemented"
 
 fresh :: Sort -> InferM Type
 fresh t = do
@@ -102,15 +94,15 @@ upArrow :: String -> [PType] -> [Type]
 upArrow x = fmap upArrow'
   where
     upArrow' (PData p d)     = Var $ RVar x p d
-    upArrow' (PArrow t1 t2)  = Con (TArrow (upArrow' t1) (upArrow' t1))
-    upArrow' (PVar a)        = Con (TVar a)
-    upArrow' (PBase b)       = Con (TBase b)
+    upArrow' (PArrow t1 t2)  = Con TArrow [upArrow' t1, upArrow' t1]
+    upArrow' (PVar a)        = Con (TVar a) []
+    upArrow' (PBase b)       = Con (TBase b) []
 
 polarise :: Bool -> Sort -> PType
 polarise p (SVar a) = PVar a
 polarise p (SBase b) = PBase b
 polarise p (SData d) = PData p d
-polarise p (t1 :=> t2) = PArrow (polarise (not p) t1) (polarise p t2)
+polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
 
 sub :: M.Map RVar Type -> Type -> Type
 sub m (Var x) = case m M.!? x of
@@ -118,9 +110,13 @@ sub m (Var x) = case m M.!? x of
   otherwise -> Var x
 sub m Zero = Zero
 sub m One = One
-sub m (Con c) = Con $ sub' m c
-sub m (Sum cs) = Sum $ fmap (sub' m) cs
+sub m (Con c cargs) = Con c $ fmap (sub m) cargs
+sub m (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap (sub m) cargs)) cs
 
-sub' :: M.Map RVar Type -> UType RVar -> UType RVar
-sub' m (TArrow t1 t2) = TArrow (sub m t1) (sub m t2)
-sub' m t = t
+subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
+subTypeVars [] _ u = u
+subTypeVars _ [] u = u
+subTypeVars (a:as) (t:ts) (TVar a')
+  | a == a' = subTypeVars as ts t
+  | otherwise = TVar a'
+subTypeVars (a:as) (t:ts) t' = subTypeVars as ts t'

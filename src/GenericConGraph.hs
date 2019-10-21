@@ -1,78 +1,73 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE DeriveFunctor #-}
 
-module GenericConGraph
-    (
-    SExpr (Var, Con, Sum, One, Zero),
-    Constructor (name, variance, args),
-    ConGraphGen,
-    empty,
-    insert,
-    substitute
-    -- saturate,
-    -- leastSolution
+module GenericConGraph (
+      SExpr (Var, Con, Sum, One, Zero)
+    , Constructor (variance)
+    , ConGraphGen
+    , empty
+    , insert
+    , union
+    , substitute
+    -- , saturate
+    -- , leastSolution
      ) where
 
 import Control.Monad
 import qualified Data.Map as M
 
 -- Set expression with disjoint sum
-data SExpr c x = Var x | Con (c x) | Sum [c x] | Zero | One
+data SExpr x c = Var x | Con c [SExpr x c] | Sum [(c, [SExpr x c])] | Zero | One deriving Functor
 
-instance (Eq x, Constructor c x) => Eq (SExpr c x) where
-  Var x == Var y   = x == y
-  Con c == Con d   = name c == name d && args c == args d
-  Sum cs == Sum ds = all (\(c, d) -> name c == name d) (zip cs ds)
-  Zero == Zero     = True
-  One == One       = True
-  Sum [c] == Con d = name c == name d && args c == args d
-  Con c == Sum [d] = name c == name d && args c == args d
-  Zero == Sum []   = True
-  Sum [] == Zero   = True
-  _ == _           = False
+instance (Eq c, Eq x) => Eq (SExpr x c) where
+  Var x == Var y                  = x == y
+  Con c cargs == Con d dargs      = c == d && cargs == dargs
+  Con c cargs == Sum [(d,dargs)]  = c == d && cargs == dargs
+  Sum [(c, cargs)] == Con d dargs = c == d && cargs == dargs
+  Sum cs == Sum ds                = all (uncurry (==)) $ zip cs ds
+  Sum [] == Zero                  = True
+  Zero == Sum []                  = True
+  Zero == Zero                    = True
+  One == One                      = True
+  _ == _                          = False
 
 -- Constructors are named and explicitly co- or contra- variant in arguments
--- Rules:
---    length variance = length args
---    if name c == name d then length (args c) == length (args d)
-class Constructor c x where
-  name      :: c x -> String
-  variance  :: c x -> [Bool]
-  args      :: c x -> [SExpr c x]
+class Constructor c where
+  variance  :: c -> [Bool]
 
 -- Constraint graph
-data ConGraphGen c x = ConGraphGen {
-  succs :: M.Map x [SExpr c x],
-  preds :: M.Map x [SExpr c x],
-  subs  :: M.Map x (SExpr c x)
-}
+data ConGraphGen x c = ConGraph {
+  succs :: M.Map x [SExpr x c],
+  preds :: M.Map x [SExpr x c],
+  subs  :: M.Map x (SExpr x c)    -- Unique representations for cyclic equivalence classes
+} deriving Functor
 
 -- Empty constraint graph
-empty :: ConGraphGen c x
-empty = ConGraphGen { succs = M.empty, preds = M.empty, subs = M.empty }
+empty :: ConGraphGen x c
+empty = ConGraph { succs = M.empty, preds = M.empty, subs = M.empty }
 
 -- Insert new constraint
-insert :: (Ord x, Constructor c x) => SExpr c x -> SExpr c x -> ConGraphGen c x -> Maybe (ConGraphGen c x)
+insert :: (Eq c, Ord x, Constructor c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> Maybe (ConGraphGen x c)
 insert vx@(Var x) vy@(Var y) cg
   | x == y                    = Just cg
   | x > y                     = insertSucc x vy cg
   | otherwise                 = insertPred vx y cg
 insert _ One cg               = Just cg
 insert Zero _ cg              = Just cg
-insert (Con c) (Con d) cg
-  | name c == name d          = foldM (\cg (v, ci, di) -> if v then insert ci di cg else insert di ci cg) cg (zip3 (variance c) (args c) (args d))
+insert (Con c cargs) (Con d dargs) cg
+  | c == d                    = foldM (\cg (v, ci, di) -> if v then insert ci di cg else insert di ci cg) cg $ zip3 (variance c) cargs dargs
   | otherwise                 = Nothing
-insert (Con _) Zero _         = Nothing
+insert (Con _ _) Zero _       = Nothing
 insert One Zero _             = Nothing
-insert One (Con _ ) _         = Nothing
-insert (Var x) c@(Con _ ) cg  = insertSucc x c cg
-insert c@(Con _) (Var y) cg   = insertPred c y cg
-insert (Sum cs) t cg          = foldM (\cg c -> insert (Con c) t cg) cg cs
-insert cx@(Con c) (Sum (d:ds)) cg
-  | name c == name d          = foldM (\cg (v, ci, di) -> if v then insert ci di cg else insert di ci cg) cg (zip3 (variance c) (args c) (args d))
+insert One (Con _ _) _        = Nothing
+insert (Var x) c@(Con _ _) cg = insertSucc x c cg
+insert c@(Con _ _) (Var y) cg = insertPred c y cg
+insert (Sum cs) t cg          = foldM (\cg (c, cargs) -> insert (Con c cargs) t cg) cg cs
+insert cx@(Con c cargs) (Sum ((d, dargs):ds)) cg
+  | c == d                    = foldM (\cg (v, ci, di) -> if v then insert ci di cg else insert di ci cg) cg $ zip3 (variance c) cargs dargs
   | otherwise                 = insert cx (Sum ds) cg
 
-insertSucc :: (Ord x, Constructor c x) => x -> SExpr c x -> ConGraphGen c x -> Maybe (ConGraphGen c x)
-insertSucc x sy cg@ConGraphGen{succs = s, subs = sb} =
+insertSucc :: (Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> Maybe (ConGraphGen x c)
+insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
   case sb M.!? x of
     Just z    -> insert z sy cg
     otherwise ->
@@ -86,8 +81,8 @@ insertSucc x sy cg@ConGraphGen{succs = s, subs = sb} =
               foldM (substitute sy) cg' xs
         otherwise -> return cg
 
-insertPred:: (Ord x, Constructor c x) => SExpr c x -> x -> ConGraphGen c x -> Maybe (ConGraphGen c x)
-insertPred sx y cg@ConGraphGen{preds = p, subs = sb} =
+insertPred:: (Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> Maybe (ConGraphGen x c)
+insertPred sx y cg@ConGraph{preds = p, subs = sb} =
   case sb M.!? y of
     Just z    -> insert sx z cg
     otherwise ->
@@ -102,85 +97,91 @@ insertPred sx y cg@ConGraphGen{preds = p, subs = sb} =
         otherwise -> return cg
 
 -- Partial online transitive closure
-closeSucc :: (Ord x, Constructor c x) => x ->  SExpr c x -> ConGraphGen c x-> Maybe (ConGraphGen c x)
+closeSucc :: (Eq c, Ord x, Constructor c) => x ->  SExpr x c -> ConGraphGen x c-> Maybe (ConGraphGen x c)
 closeSucc x fy cg =
   case preds cg M.!? x of
     Just ps   -> foldM (\cg p -> insert p fy cg) cg ps
     otherwise -> return cg
 
-closePred :: (Ord x, Constructor c x) => SExpr c x -> x -> ConGraphGen c x-> Maybe (ConGraphGen c x)
+closePred :: (Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c-> Maybe (ConGraphGen x c)
 closePred fx y cg =
   case succs cg M.!? y of
     Just ss   -> foldM (\cg s -> insert s fx cg) cg ss
     otherwise -> return cg
 
 -- Partial online cycle elimination
-predChain :: (Ord x, Constructor c x) => ConGraphGen c x -> x -> SExpr c x -> [x] -> Maybe [x]
+predChain :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> x -> SExpr x c -> [x] -> Maybe [x]
 predChain cg f (Var t) m = do
   guard $ f == t
-  return $ t:m
+  return $ m
 predChain cg f t m = do
   ps <- preds cg M.!? f
-  predLoop cg ps (f:m) f t  -- Inline as fold?
+  foldr predLoop Nothing ps
+  where
+    m' = f:m
+    predLoop (Var p) pl =
+      if p `elem` m' || p > f
+        then pl
+        else predChain cg p t m'
+    predLoop t' _ = do
+      guard $ t == t'
+      return m'
 
-predLoop :: (Ord x, Constructor c x) => ConGraphGen c x -> [SExpr c x] -> [x] -> x -> SExpr c x -> Maybe [x]
-predLoop _ [] _ _ _ = Nothing
-predLoop cg ((Var p):ps) m f t =
-  if p `elem` m || p > f
-    then predLoop cg ps m f t
-    else predChain cg p t m
-predLoop cg (t':ps) m f t = do
-  guard $ t == t'
-  return m
-
-succChain :: (Ord x, Constructor c x) => ConGraphGen c x -> SExpr c x -> x -> [x] -> Maybe [x]
+succChain :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> SExpr x c -> x -> [x] -> Maybe [x]
 succChain cg (Var f) t m = do
   guard $ f == t
-  return $ f:m
+  return $ m
 succChain cg f t m = do
   ss <- succs cg M.!? t
-  succLoop cg ss (t:m) f t  -- Inline as fold?
-
-succLoop :: (Ord x, Constructor c x) => ConGraphGen c x -> [SExpr c x] -> [x] -> SExpr c x -> x -> Maybe [x]
-succLoop _ [] _ _ _ = Nothing
-succLoop cg ((Var s):ss) m f t =
-  if s `elem` m || t <= s
-    then succLoop cg ss m f t
-    else succChain cg f s m
-succLoop cg (f':ss) m f t = do
-  guard $ f == f'
-  return m
-
--- Collapse cycle
--- Tidy
-substitute :: (Ord x, Constructor c x) => SExpr c x -> ConGraphGen c x -> x -> Maybe (ConGraphGen c x)
-substitute se ConGraphGen{succs = s, preds = p, subs = sb } x = do
-  ps <- p' M.!? x
-  cg'' <- foldM (\cg pi -> insert pi se cg) cg' ps
-
-  ss <- s' M.!? x
-  ConGraphGen { succs = s'', preds = p'', subs = sb'' } <- foldM (\cg si -> insert si se cg) cg'' ss
-
-  return ConGraphGen { succs = M.delete x s'', preds = M.delete x p'', subs = sb'' }
+  foldr succLoop Nothing ss
   where
-    cg' = ConGraphGen { succs = s', preds = p', subs = M.insert x se sb }
-    p' = fmap (fmap sub) p
-    s' = fmap (fmap sub) s
-    sub (Var y) | x == y = se
-    sub se' = se'
+    m' = t:m
+    succLoop (Var s) sl =
+      if s `elem` m' || t <= s
+        then sl
+        else succChain cg f s m'
+    succLoop f' _ = do
+      guard $ f == f'
+      return m'
 
 -- Union of constraint graphs
-union :: (Ord x, Constructor c x) => ConGraphGen c x -> ConGraphGen c x -> ConGraphGen c x
-union cg1@ConGraphGen{succs = s1, preds = p1} cg2@ConGraphGen{succs = s2, preds = p2} = do
-  let subs' = merge (subs cg1) (subs cg2)
-  let empty' = empty{subs = subs'}
-  cg <- comb (sub subs' cg1) [(k, v) | (k, vs) <- s2, v <- vs]
-  comb cg [(v, k) | (k,vs) <- p2, v <- vs]
+union :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> ConGraphGen x c -> Maybe (ConGraphGen x c)
+union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
+  -- Combine equivalence classes using left representation
+  let sb'' = fmap subVar sb'
+  let cg1' = cg1{subs = M.union sb sb''}
+
+  -- Update cg1 with new equivalences
+  cg1'' <- M.foldrWithKey (\x se -> (>>= \cg -> substitute se cg x)) (Just cg1') sb''
+
+  -- Insert edges from cg2 into cg1
+  cg1''' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert (Var k) v cg') cg vs)) (Just cg1'') s
+  M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (Just cg1''') p
   where
-    comb = foldM (\cg (t1, t2) -> insert t1 t2 cg)
+    subVar (Var x) = M.findWithDefault (Var x) x sb
+    subVar se = se
+
+-- Safely substitute variable (x) with expression (se)
+substitute :: (Eq c, Ord x, Constructor c) => SExpr x c -> ConGraphGen x c -> x -> Maybe (ConGraphGen x c)
+substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
+  -- Necessary to recalculate preds and succs as se might not be a Var.
+  -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications.
+  cg' <- case p' M.!? x of
+    Just ps -> foldM (\cg pi -> insert pi se cg) cg ps
+    Nothing -> return cg
+  cg'' <- case s' M.!? x of
+    Just ss -> foldM (\cg si -> insert se si cg) cg' ss
+    Nothing -> return cg'
+  return cg''{ succs = M.delete x $ succs cg'', preds = M.delete x $ preds cg''}
+  where
+    sub (Var y) | x == y = se
+    sub se' = se'
+    p'  = fmap (fmap sub) p  -- nub
+    s'  = fmap (fmap sub) s
+    cg = ConGraph { succs = s', preds = p', subs = M.insert x se sb }
 
 -- Least solution
--- leastSolution :: (Eq c, Ord x, Constructor c) => ConGraphGen c x -> x -> [SExpr c x]
+-- leastSolution :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> x -> [SExpr x c]
 -- leastSolution cg@ConGraphGen{preds = p} x = case p M.!? x of
 --   Just fs -> concatMap leastSolution' fs
 --   otherwise -> []
@@ -189,4 +190,4 @@ union cg1@ConGraphGen{succs = s1, preds = p1} cg2@ConGraphGen{succs = s2, preds 
 --     leastSolution' c@(Con _ _) = [c]
 
 -- Saturate
--- saturate :: (Eq c, Ord x, Constructor c) => ConGraphGen c x -> [(SExpr c x, SExpr c x)]
+-- saturate :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> [(SExpr x c, SExpr x c)]

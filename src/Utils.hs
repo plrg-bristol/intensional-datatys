@@ -3,7 +3,7 @@
 module Utils
     (
       Sort (SVar, SBase, SData, SArrow),
-      UType (TArrow),
+      UType (TArrow, TData),
       RVar (RVar),
       empty,
       insert,
@@ -36,6 +36,7 @@ import qualified Data.Map as M
 import Control.Monad.RWS hiding (Sum)
 import Control.Monad.Except
 import qualified TyCoRep as T
+import qualified DataCon as D
 import qualified GhcPlugins as Core
 
 data Error = ConstraintError | ApplicationError | PolyTypeError | ConstructorError | DataTypeError
@@ -57,13 +58,21 @@ instance Ord RVar where
   RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
 data Sort = SVar Core.Var | SBase String | SData Core.Var | SArrow Sort Sort
-data UType = TVar Core.Var | TBase String | TData Core.Var | TArrow | TCon Core.Var deriving Eq
+data UType = TVar Core.Var | TBase String | TData D.DataCon | TArrow | TCon Core.Var deriving Eq
 data PType = PVar Core.Var | PBase String | PData Bool Core.Var | PArrow PType PType
 
 instance Constructor UType where
   variance TArrow = [False, True]
   variance (TCon v) = repeat True
   variance _ = []
+
+instance ConstraintError RVar UType Error where
+  usingEquivalence = undefined
+  fromCycle = undefined
+  fromClosure = undefined
+  hetrogeneousConstructors = undefined
+  subtypeOfZero = undefined
+  supertypeOfOne = undefined
 
 insertVar :: Core.Var -> TypeScheme -> Context ->  Context
 insertVar x f ctx

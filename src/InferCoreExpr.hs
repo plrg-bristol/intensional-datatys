@@ -9,7 +9,10 @@ import Data.List hiding (filter, union, insert)
 import Control.Monad.Except
 import qualified Data.Map as M
 import qualified GhcPlugins as Core
+import qualified DataCon as D
 import qualified CoreUtils as Utils
+
+data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
 
 -- Infer fully instantiated polymorphic variable
 inferVar :: Core.Var -> [Sort] -> InferM (Type, ConGraph)
@@ -21,13 +24,9 @@ inferVar x ts = do
       ys  <- mapM fresh $ map (\(RVar (x, p, d)) -> SData d) xs
       ts' <- mapM fresh ts
       v   <- fresh $ toSort $ Core.varType x
-      case do
-          cg' <- insert (sub xs ys u) v cg
-          cg'' <- foldM (\cg (x, se) -> substitute se cg x) cg' (zip xs ys)
-          graphMap (subTypeVars as ts') cg''
-        of
-        Just cg'' -> return (v, cg'')
-        otherwise -> throwError ConstraintError
+      cg' <- insert (sub xs ys u) v cg
+      cg'' <- foldM (\cg (x, se) -> substitute se cg x) cg' (zip xs ys)
+      return $ (v, graphMap (subTypeVars as ts') cg'')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer (Core.Var x) =
@@ -37,9 +36,8 @@ infer (Core.Var x) =
       (d, args) <- safeCon x
       ts <- mapM fresh args
       t  <- fresh $ SData d
-      case insert (K x ts) t empty of
-        Just cg   -> return (foldr (:=>) t ts, cg)
-        otherwise -> throwError ConstraintError
+      cg <- insert (K x ts) t empty
+      return (foldr (:=>) t ts, cg)
     else
       -- Infer monomorphic variable
       inferVar x []
@@ -59,14 +57,10 @@ infer e@(Core.App e1 e2) =
       (t1, c1) <- infer e1
       (t2, c2) <- infer e2
       case t1 of
-        t3 :=> t4 ->
-          case do
-              cg <- union c1 c2
-              cg' <- insert t2 t3 cg
-              return (t4, cg')
-            of
-              Just r -> return r
-              otherwise -> throwError ConstraintError
+        t3 :=> t4 -> do
+          cg <- union c1 c2
+          cg' <- insert t2 t3 cg
+          return (t4, cg')
 
 infer (Core.Lam x e) = do
   -- Infer abstraction
@@ -84,9 +78,9 @@ infer (Core.Let b e) = do
   -- Infer rhs of binders
   (ts', lcg) <- foldM (\(ts, cg) rhs -> do
     (t, cg') <- withBinds (infer rhs)
-    case union cg cg' of
-      Just cg'' -> return (t:ts, cg'')
-      otherwise -> throwError ConstraintError) ([], empty) rhss
+    cg'' <- union cg cg'
+    return (t:ts, cg'')
+    ) ([], empty) rhss
 
   -- Restrict constraints to vars with stems appearing in ts'
   let lcg' = graphFilter (interface ts') lcg
@@ -94,26 +88,57 @@ infer (Core.Let b e) = do
   -- Infer in body
   (t, icg) <- withBinds (infer e)
 
-  case do
-    cg' <- union icg lcg'
-    -- ts will only be of the form (Forall as [] empty) and ts' will be implicitly quantified over as
-    foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg' (zip ts' ts)
-    of
-      Just cg   -> return (t, cg)
-      otherwise -> throwError ConstraintError
+  cg <- union icg lcg'
+  -- ts will only be of the form (Forall as [] empty) and ts' will be implicitly quantified over as
+  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
+  return (t, cg')
 
 infer (Core.Case e b t as) = do
+  -- Infer case expession
   et <- fresh $ toSort $ Utils.exprType e
   t' <- fresh $ toSort t
-  (t0, c0) <- infer e
-  cg' <- local (insertVar b $ Forall [] [] empty et) $ foldM (\cg a ->
+  (t0, c0)   <- infer e
+  (caseType, cg) <- local (insertVar b $ Forall [] [] empty et) $ foldM (\(caseType, cg) a ->
     case a of
-      -- These will need some accumualtors as well
-      (Core.DataAlt d, bs, rhs) -> error ""
-      (Core.LitAlt l, bs, rhs) -> error ""
-      (Core.DEFAULT, bs, rhs) -> error ""
-    ) c0 as
-  return (t', cg')
+      -- Infer constructor alternative
+      (Core.DataAlt d, bs, rhs) -> do
+        ts <- mapM (toFreshTypeScheme . Core.varType) bs
+        let ts' = undefined -- getArgs of d
+        cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
+        (dt, cg'') <- local (insertMany bs ts) (infer rhs)
+        cg''' <- insert dt t' cg''
+        cg'''' <- cg' `union` cg'''
+        case caseType of
+          Empty     -> return (DataCon [(d, ts')], cg'''')
+          Default   -> return (Default, cg'''')
+          DataCon s -> return (DataCon ((d, ts'):s), cg'''')
+
+      -- Infer literal alternative
+      (Core.LitAlt l, [], rhs) -> do
+        (dt, cg') <- infer rhs
+        cg'' <- insert dt t' cg'
+        cg''' <- cg `union` cg''
+        case caseType of
+          Default    -> return (Default, cg''')
+          Literal s  -> return (Literal (l:s), cg''')
+          Empty      -> return (Literal [l], cg''')
+
+      -- Infer default alternative
+      (Core.DEFAULT, [], rhs) -> do
+        (dt, cg') <- infer rhs
+        cg'' <- insert dt t' cg'
+        cg''' <- cg `union` cg''
+        return (Default, cg''')
+    ) (Empty, c0) as
+
+  -- Ensure destructor is total
+  case caseType of
+    Default -> return (t', cg)
+    DataCon dts -> do
+      cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg
+      return (t', cg)
+    Literal lss -> error "Literal cases must contain defaults."
+
 
 infer (Core.Tick _ e) = infer e
 

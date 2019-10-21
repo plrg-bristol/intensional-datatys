@@ -2,7 +2,10 @@ module InferCoreExpr
     (
     ) where
 
+import InferM
 import Utils
+import Errors
+import Types
 import GenericConGraph
 import Control.Monad.Except
 import Control.Monad.RWS hiding (Sum)
@@ -70,7 +73,7 @@ infer (Core.Let b e) = do
   -- Infer local module (i.e. let expression)
   let xs = Core.bindersOf b
   let rhss = Core.rhssOfBind b
-  ts <- mapM (toFreshTypeScheme . Core.varType) xs
+  ts <- mapM (freshScheme . toSortScheme . Core.varType) xs
   let withBinds = local (insertMany xs ts)
 
   -- Infer rhs of binders
@@ -100,7 +103,7 @@ infer (Core.Case e b t as) = do
     case a of
       -- Infer constructor alternative
       (Core.DataAlt d, bs, rhs) -> do
-        ts <- mapM (toFreshTypeScheme . Core.varType) bs
+        ts <- mapM (freshScheme . toSortScheme . Core.varType) bs
         let ts' = undefined -- getArgs of d
         cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
         (dt, cg'') <- local (insertMany bs ts) (infer rhs)

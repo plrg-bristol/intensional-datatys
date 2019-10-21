@@ -28,7 +28,10 @@ source-repository head
 library
   exposed-modules:
       GenericConGraph
+      Types
+      Errors
       Utils
+      InferM
       InferCoreExpr
   other-modules:
       Paths_intensional_constraints

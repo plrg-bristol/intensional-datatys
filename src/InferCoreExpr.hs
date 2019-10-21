@@ -2,27 +2,14 @@ module InferCoreExpr
     (
     ) where
 
-import InferM
+import Utils
 import GenericConGraph
 import Control.Monad.RWS hiding (Sum)
+import Data.List hiding (filter, union, insert)
 import Control.Monad.Except
 import qualified Data.Map as M
 import qualified GhcPlugins as Core
 import qualified CoreUtils as Utils
-
-isConstructor :: Core.Id -> Bool
-isConstructor = undefined
-
-fromPolyVar :: Core.CoreExpr -> Maybe (Core.Id, [Sort])
-fromPolyVar (Core.Var i) = Just (i, [])
-fromPolyVar (Core.App e1 (Core.Type t)) = do
-  (id, ts) <- fromPolyVar e1
-  return (id, toSort t:ts)
-fromPolyVar _ = Nothing
-
--- Restrict the constraints of a typescheme to refinement variable that have the same stem as a refinement variable that apepars in the scheme's body
-inferface :: TypeScheme -> TypeScheme
-inferface = undefined
 
 -- Infer fully instantiated polymorphic variable
 inferVar :: Core.Var -> [Sort] -> InferM (Type, ConGraph)
@@ -31,13 +18,12 @@ inferVar x ts = do
   if length as /= length ts
     then throwError $ PolyTypeError
     else do
-      ys  <- mapM fresh $ map (\(RVar x p d) -> SData d) xs
+      ys  <- mapM fresh $ map (\(RVar (x, p, d)) -> SData d) xs
       ts' <- mapM fresh ts
-      let m = M.fromList (zip xs ys)      -- booo we don't like fromList
       v   <- fresh $ toSort $ Core.varType x
       case do
-          cg' <- insert (sub m u) v cg
-          cg'' <- foldM (\cg (x, se) -> substitute se cg x) cg' (M.toList m)
+          cg' <- insert (sub xs ys u) v cg
+          cg'' <- foldM (\cg (x, se) -> substitute se cg x) cg' (zip xs ys)
           graphMap (subTypeVars as ts') cg''
         of
         Just cg'' -> return (v, cg'')
@@ -51,8 +37,8 @@ infer (Core.Var x) =
       (d, args) <- safeCon x
       ts <- mapM fresh args
       t  <- fresh $ SData d
-      case insert (mkCon x ts) t empty of
-        Just cg   -> return (mkConArgs ts t, cg)
+      case insert (K x ts) t empty of
+        Just cg   -> return (foldr (:=>) t ts, cg)
         otherwise -> throwError ConstraintError
     else
       -- Infer monomorphic variable
@@ -72,20 +58,21 @@ infer e@(Core.App e1 e2) =
       -- Infer application
       (t1, c1) <- infer e1
       (t2, c2) <- infer e2
-      let (t3, t4) = desugarArrow t1
-      case do
-          cg <- union c1 c2
-          cg' <- insert t2 t3 cg
-          return (t4, cg')
-        of
-          Just r -> return r
-          otherwise -> throwError ConstraintError
+      case t1 of
+        t3 :=> t4 ->
+          case do
+              cg <- union c1 c2
+              cg' <- insert t2 t3 cg
+              return (t4, cg')
+            of
+              Just r -> return r
+              otherwise -> throwError ConstraintError
 
 infer (Core.Lam x e) = do
   -- Infer abstraction
   t1 <- fresh $ toSort $ Core.varType x
   (t2, cg) <- local (insertVar x $ Forall [] [] empty t1) (infer e)
-  return (mkArrow t1 t2, cg)
+  return (t1 :=> t2, cg)
 
 infer (Core.Let b e) = do
   -- Infer local module (i.e. let expression)
@@ -101,15 +88,35 @@ infer (Core.Let b e) = do
       Just cg'' -> return (t:ts, cg'')
       otherwise -> throwError ConstraintError) ([], empty) rhss
 
-  -- Restrict lcg to vars with stems appearing in ts'
+  -- Restrict constraints to vars with stems appearing in ts'
+  let lcg' = graphFilter (interface ts') lcg
 
   -- Infer in body
   (t, icg) <- withBinds (infer e)
 
   case do
-    cg' <- union icg lcg
+    cg' <- union icg lcg'
     -- ts will only be of the form (Forall as [] empty) and ts' will be implicitly quantified over as
     foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg' (zip ts' ts)
     of
       Just cg   -> return (t, cg)
       otherwise -> throwError ConstraintError
+
+infer (Core.Case e b t as) = do
+  et <- fresh $ toSort $ Utils.exprType e
+  t' <- fresh $ toSort t
+  (t0, c0) <- infer e
+  cg' <- local (insertVar b $ Forall [] [] empty et) $ foldM (\cg a ->
+    case a of
+      -- These will need some accumualtors as well
+      (Core.DataAlt d, bs, rhs) -> error ""
+      (Core.LitAlt l, bs, rhs) -> error ""
+      (Core.DEFAULT, bs, rhs) -> error ""
+    ) c0 as
+  return (t', cg')
+
+infer (Core.Tick _ e) = infer e
+
+infer (Core.Type t) = error "Cannot infer RankN programs."
+
+infer _ = error "Unimplemented"

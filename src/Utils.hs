@@ -1,29 +1,30 @@
 {-# LANGUAGE PatternSynonyms, MultiParamTypeClasses, TypeSynonymInstances, FlexibleInstances #-}
 
-module InferM
+module Utils
     (
       Sort (SVar, SBase, SData, SArrow),
       UType (TArrow),
-      mkCon,
-      mkConArgs,
       RVar (RVar),
       empty,
       insert,
+      stems,
       substitute,
       sub,
+      SExpr (K, (:=>)),
       Type,
       ConGraph,
       InferM,
+      isConstructor,
+      fromPolyVar,
       insertMany,
       TypeScheme (Forall),
       safeVar,
       safeCon,
+      interface,
       upArrow,
       fresh,
       polarise,
       toSort,
-      mkArrow,
-      desugarArrow,
       insertVar,
       subTypeVars,
       toFreshTypeScheme,
@@ -37,7 +38,7 @@ import Control.Monad.Except
 import qualified TyCoRep as T
 import qualified GhcPlugins as Core
 
-data Error = ConstraintError | ApplicationError | PolyTypeError | ConstructorError
+data Error = ConstraintError | ApplicationError | PolyTypeError | ConstructorError | DataTypeError
 
 type InferM = RWST Context () Int (Except Error)
 
@@ -50,10 +51,10 @@ data Context = Context {
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type
 
-data RVar = RVar String Bool Core.Var deriving Eq
+newtype RVar = RVar (String, Bool, Core.Var) deriving Eq
 
 instance Ord RVar where
-  RVar x _ _ <= RVar x' _ _ = x <= x'
+  RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
 data Sort = SVar Core.Var | SBase String | SData Core.Var | SArrow Sort Sort
 data UType = TVar Core.Var | TBase String | TData Core.Var | TArrow | TCon Core.Var deriving Eq
@@ -73,19 +74,11 @@ insertMany :: [Core.Var] -> [TypeScheme] -> Context -> Context
 insertMany [] [] ctx = ctx
 insertMany (x:xs) (t:ts) ctx = insertVar x t (insertMany xs ts ctx)
 
-mkCon :: Core.Var -> [Type] -> SExpr RVar UType
-mkCon v ts = Con (TCon v) ts
+pattern (:=>) :: Type -> Type -> Type
+pattern t1 :=> t2 = Con TArrow [t1, t2]
 
-mkArrow :: Type -> Type -> Type
-mkArrow t1 t2 = Con TArrow [t1, t2]
-
-mkConArgs :: [Type] -> Type -> Type
-mkConArgs ts y = foldr (\t1 t2 -> Con TArrow [t1, t2]) y ts
-
-desugarArrow :: Type -> (Type, Type)
-desugarArrow (Sum [(TArrow, [t3, t4])]) = (t3, t4)
-desugarArrow (Con TArrow [t3, t4]) = (t3, t4)
-desugarArrow _ = error "Type isn't an arrow"
+pattern K :: Core.Var -> [Type] -> Type
+pattern K v ts = Con (TCon v) ts
 
 safeVar :: Core.Var -> InferM (TypeScheme)
 safeVar v = do
@@ -113,7 +106,7 @@ toFreshTypeScheme (T.TyVarTy v) = do
 toFreshTypeScheme (T.FunTy t1 t2) = do
   ft1 <- fresh (toSort t1)
   ft2 <- fresh (toSort t2)
-  return $ Forall [] [] empty (mkArrow ft1 ft2)
+  return $ Forall [] [] empty (ft1 :=> ft2)
 toFreshTypeScheme (T.ForAllTy b t) = do
   (Forall as xs cg ft) <- toFreshTypeScheme t
   let a = Core.binderVar b
@@ -129,7 +122,7 @@ fresh t = do
 upArrow :: String -> [PType] -> [Type]
 upArrow x = fmap upArrow'
   where
-    upArrow' (PData p d)     = Var $ RVar x p d
+    upArrow' (PData p d)     = Var $ RVar (x, p, d)
     upArrow' (PArrow t1 t2)  = Con TArrow [upArrow' t1, upArrow' t1]
     upArrow' (PVar a)        = Con (TVar a) []
     upArrow' (PBase b)       = Con (TBase b) []
@@ -140,14 +133,16 @@ polarise p (SBase b) = PBase b
 polarise p (SData d) = PData p d
 polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
 
-sub :: M.Map RVar Type -> Type -> Type
-sub m (Var x) = case m M.!? x of
-  Just t -> t
-  otherwise -> Var x
-sub m Zero = Zero
-sub m One = One
-sub m (Con c cargs) = Con c $ fmap (sub m) cargs
-sub m (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap (sub m) cargs)) cs
+sub :: [RVar] -> [Type] -> Type -> Type
+sub _ _ Zero = Zero
+sub _ _ One = One
+sub [] _ t = t
+sub _ [] t = t
+sub (x:xs) (y:ys) (Var x')
+  | x == x' = y
+  | otherwise = sub xs ys (Var x')
+sub xs ys (Con c cargs) = Con c $ fmap (sub xs ys) cargs
+sub xs ys (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap (sub xs ys) cargs)) cs
 
 subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
 subTypeVars [] _ u = u
@@ -160,20 +155,61 @@ subTypeVars (a:as) (t:ts) (Sum [(TVar a', [])])
   | otherwise = subTypeVars as ts $ Con (TVar a') []
 subTypeVars (a:as) (t:ts) t' = subTypeVars as ts t'
 
-insert' :: Type -> Type -> ConGraph -> InferM ConGraph
-insert' t@(Con (TCon c) cargs) (Var (RVar x p d)) cg = do
-  (d, args) <- safeCon c
-  let t' = upArrow x $ fmap (polarise p) args
-  if d /= c
-    then throwError ConstructorError
-    else
-      case do
-        cg' <- insert t (Con (TCon c) t') cg
-        insert (Con (TCon c) t') (Var (RVar x p d)) cg'
-      of
-        Just cg'  -> return cg'
-        otherwise -> throwError ConstraintError
--- insert' r@(Var (RVar x p d)) t@(Sum cs) cg = do
+isConstructor :: Core.Id -> Bool
+isConstructor = undefined
+
+fromPolyVar :: Core.CoreExpr -> Maybe (Core.Id, [Sort])
+fromPolyVar (Core.Var i) = Just (i, [])
+fromPolyVar (Core.App e1 (Core.Type t)) = do
+  (id, ts) <- fromPolyVar e1
+  return (id, toSort t:ts)
+fromPolyVar _ = Nothing
+
+-- Restrict the constraints of a typescheme to refinement variable that have the same stem as a refinement variable that apepars in the scheme's body
+inferface :: TypeScheme -> TypeScheme
+inferface = undefined
+
+stems :: Type -> [String]
+stems (Var (RVar (x, _, _))) = [x]
+stems (Con c cargs) = concatMap stems cargs
+stems (Sum cs) = concatMap (\(_, cargs) -> concatMap stems cargs) cs
+stems _ = []
+
+delta :: Bool -> Core.Var -> Core.Var -> InferM [PType]
+delta p d k = do
+  ctx <- ask
+  case con ctx M.!? k of
+    Just (d', ts) -> if d == d'
+      then return $ fmap (polarise p) ts
+      else throwError DataTypeError
+    otherwise -> throwError ConstructorError
+
+interface :: [Type] -> RVar -> Bool
+interface ts (RVar (x, _, _)) = any ((x `elem`) . stems) ts
+
+-- insert' :: Type -> Type -> ConGraph -> InferM ConGraph
+-- insert' t@(Con c cargs) (Var (RVar x p d)) cg = do
+--   (d, args) <- safeCon c
+--   let t' = upArrow x $ fmap (polarise p) args
+--   if d /= c
+--     then throwError ConstructorError
+--     else
+--       case do
+--         cg' <- insert t (Con (TCon c) t') cg
+--         insert (Con (TCon c) t') (Var (RVar x p d)) cg'
+--       of
+--         Just cg'  -> return cg'
+--         otherwise -> throwError ConstraintError
+-- insert' r@(Var (RVar x p d)) t@(Sum cs) cg =
+--   s <- mapM (refineCon x d) cs
+--   if cs /= s
+--     then return [(Sum s, Sum cs),(Var $ RVar x p d, Sum s)]
+--     else return [(t1, t2)]
+--   where
+--     refineCon :: String -> Core.Var -> (UType, [Type]) -> InferM (UType, [Type])
+--     refineCon x d (TCon k, ts) = do
+--       args <- delta p d k
+--       return (TCon k, upArrow x args)
 --   (d, args) <- safeCon c
 --   let t' = upArrow x $ fmap (polarise p) args
 --   if d /= c
@@ -186,3 +222,22 @@ insert' t@(Con (TCon c) cargs) (Var (RVar x p d)) cg = do
 --         Just cg'  -> return cg'
 --         otherwise -> throwError ConstraintError
 -- insert' t1 t2 cg = insert t1 t2 cg
+
+-- instance Simplify RVar UType InferM where
+--   simplify t1@(Sum [(TCon k, ts)]) t2@(Var (RVar x p d)) = do
+--     args <- delta p d k
+--     let ts' = upArrow x args
+--     if ts' /= ts
+--       then return [(Con (TCon k) ts', Var (RVar x p d)), (Con (TCon k) ts, Con (TCon k) ts')]
+--       else return [(t1, t2)]
+--
+--   simplify t1@(Var (RVar x p d)) t2@(Sum cs) = do
+--     s <- mapM (refineCon x d) cs
+--     if cs /= s
+--       then return [(Sum s, Sum cs),(Var $ RVar x p d, Sum s)]
+--       else return [(t1, t2)]
+--     where
+--       refineCon :: String -> Core.Var -> (UType, [Type]) -> InferM (UType, [Type])
+--       refineCon x d (TCon k, ts) = do
+--         args <- delta p d k
+--         return (TCon k, upArrow x args)

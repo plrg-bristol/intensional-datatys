@@ -4,12 +4,10 @@ module InferCoreExpr
 
 import Utils
 import GenericConGraph
-import Control.Monad.RWS hiding (Sum)
-import Data.List hiding (filter, union, insert)
 import Control.Monad.Except
+import Control.Monad.RWS hiding (Sum)
 import qualified Data.Map as M
 import qualified GhcPlugins as Core
-import qualified DataCon as D
 import qualified CoreUtils as Utils
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
@@ -83,12 +81,12 @@ infer (Core.Let b e) = do
     ) ([], empty) rhss
 
   -- Restrict constraints to vars with stems appearing in ts'
-  let lcg' = graphFilter (interface ts') lcg
+  let lcg' = interface (\(RVar (x, _, _)) -> any ((x `elem`) . stems) ts') lcg
 
   -- Infer in body
   (t, icg) <- withBinds (infer e)
 
-  cg <- union icg lcg'
+  cg <- foldM (\cg (t1, t2) -> insert t1 t2 cg) icg lcg'
   -- ts will only be of the form (Forall as [] empty) and ts' will be implicitly quantified over as
   cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
   return (t, cg')
@@ -138,7 +136,6 @@ infer (Core.Case e b t as) = do
       cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg
       return (t', cg)
     Literal lss -> error "Literal cases must contain defaults."
-
 
 infer (Core.Tick _ e) = infer e
 

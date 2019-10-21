@@ -5,10 +5,10 @@ module Utils
       Sort (SVar, SBase, SData, SArrow),
       UType (TArrow, TData),
       RVar (RVar),
-      empty,
-      insert,
+      -- empty,
+      -- insert,
       stems,
-      substitute,
+      -- substitute,
       sub,
       SExpr (K, (:=>)),
       Type,
@@ -20,10 +20,9 @@ module Utils
       TypeScheme (Forall),
       safeVar,
       safeCon,
-      interface,
-      upArrow,
+      -- upArrow,
       fresh,
-      polarise,
+      -- polarise,
       toSort,
       insertVar,
       subTypeVars,
@@ -88,6 +87,9 @@ pattern t1 :=> t2 = Con TArrow [t1, t2]
 
 pattern K :: Core.Var -> [Type] -> Type
 pattern K v ts = Con (TCon v) ts
+
+pattern V :: String -> Bool -> Core.Var -> Type
+pattern V x p d = Var (RVar (x, p, d))
 
 safeVar :: Core.Var -> InferM (TypeScheme)
 safeVar v = do
@@ -174,10 +176,6 @@ fromPolyVar (Core.App e1 (Core.Type t)) = do
   return (id, toSort t:ts)
 fromPolyVar _ = Nothing
 
--- Restrict the constraints of a typescheme to refinement variable that have the same stem as a refinement variable that apepars in the scheme's body
-inferface :: TypeScheme -> TypeScheme
-inferface = undefined
-
 stems :: Type -> [String]
 stems (Var (RVar (x, _, _))) = [x]
 stems (Con c cargs) = concatMap stems cargs
@@ -193,60 +191,20 @@ delta p d k = do
       else throwError DataTypeError
     otherwise -> throwError ConstructorError
 
-interface :: [Type] -> RVar -> Bool
-interface ts (RVar (x, _, _)) = any ((x `elem`) . stems) ts
-
--- insert' :: Type -> Type -> ConGraph -> InferM ConGraph
--- insert' t@(Con c cargs) (Var (RVar x p d)) cg = do
---   (d, args) <- safeCon c
---   let t' = upArrow x $ fmap (polarise p) args
---   if d /= c
---     then throwError ConstructorError
---     else
---       case do
---         cg' <- insert t (Con (TCon c) t') cg
---         insert (Con (TCon c) t') (Var (RVar x p d)) cg'
---       of
---         Just cg'  -> return cg'
---         otherwise -> throwError ConstraintError
--- insert' r@(Var (RVar x p d)) t@(Sum cs) cg =
---   s <- mapM (refineCon x d) cs
---   if cs /= s
---     then return [(Sum s, Sum cs),(Var $ RVar x p d, Sum s)]
---     else return [(t1, t2)]
---   where
---     refineCon :: String -> Core.Var -> (UType, [Type]) -> InferM (UType, [Type])
---     refineCon x d (TCon k, ts) = do
---       args <- delta p d k
---       return (TCon k, upArrow x args)
---   (d, args) <- safeCon c
---   let t' = upArrow x $ fmap (polarise p) args
---   if d /= c
---     then throwError ConstructorError
---     else
---       case do
---         cg' <- insert t (Con (TCon c) t') cg
---         insert (Con (TCon c) t') (Var (RVar x p d)) cg'
---       of
---         Just cg'  -> return cg'
---         otherwise -> throwError ConstraintError
--- insert' t1 t2 cg = insert t1 t2 cg
-
--- instance Simplify RVar UType InferM where
---   simplify t1@(Sum [(TCon k, ts)]) t2@(Var (RVar x p d)) = do
---     args <- delta p d k
---     let ts' = upArrow x args
---     if ts' /= ts
---       then return [(Con (TCon k) ts', Var (RVar x p d)), (Con (TCon k) ts, Con (TCon k) ts')]
---       else return [(t1, t2)]
---
---   simplify t1@(Var (RVar x p d)) t2@(Sum cs) = do
---     s <- mapM (refineCon x d) cs
---     if cs /= s
---       then return [(Sum s, Sum cs),(Var $ RVar x p d, Sum s)]
---       else return [(t1, t2)]
---     where
---       refineCon :: String -> Core.Var -> (UType, [Type]) -> InferM (UType, [Type])
---       refineCon x d (TCon k, ts) = do
---         args <- delta p d k
---         return (TCon k, upArrow x args)
+instance Rewrite RVar UType InferM where
+  toNorm t1@(K k ts) t2@(V x p d) = do
+      args <- delta p d k
+      let ts' = upArrow x args
+      if ts' /= ts
+        then return [(K k ts', V x p d), (K k ts, K k ts')]
+        else return [(t1, t2)]
+  toNorm t1@(V x p d) t2@(Sum cs) = do
+      s <- mapM (refineCon x d) cs
+      if cs /= s
+        then return [(Sum s, Sum cs),(V x p d, Sum s)]
+        else return [(t1, t2)]
+      where
+        refineCon :: String -> Core.Var -> (UType, [Type]) -> InferM (UType, [Type])
+        refineCon x d (TCon k, ts) = do
+          args <- delta p d k
+          return (TCon k, upArrow x args)

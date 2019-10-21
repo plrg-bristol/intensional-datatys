@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveFunctor #-}
-
 module GenericConGraph (
       SExpr (Var, Con, Sum, One, Zero)
     , Constructor (variance)
@@ -8,6 +6,7 @@ module GenericConGraph (
     , insert
     , union
     , substitute
+    , graphMap
     -- , saturate
     -- , leastSolution
      ) where
@@ -16,7 +15,7 @@ import Control.Monad
 import qualified Data.Map as M
 
 -- Set expression with disjoint sum
-data SExpr x c = Var x | Con c [SExpr x c] | Sum [(c, [SExpr x c])] | Zero | One deriving Functor
+data SExpr x c = Var x | Con c [SExpr x c] | Sum [(c, [SExpr x c])] | Zero | One
 
 instance (Eq c, Eq x) => Eq (SExpr x c) where
   Var x == Var y                  = x == y
@@ -39,7 +38,7 @@ data ConGraphGen x c = ConGraph {
   succs :: M.Map x [SExpr x c],
   preds :: M.Map x [SExpr x c],
   subs  :: M.Map x (SExpr x c)    -- Unique representations for cyclic equivalence classes
-} deriving Functor
+}
 
 -- Empty constraint graph
 empty :: ConGraphGen x c
@@ -179,6 +178,15 @@ substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
     p'  = fmap (fmap sub) p  -- nub
     s'  = fmap (fmap sub) s
     cg = ConGraph { succs = s', preds = p', subs = M.insert x se sb }
+
+-- Apply function to set expressions without effecting variables
+graphMap :: (Eq c, Ord x, Constructor c) => (SExpr x c -> SExpr x c) -> ConGraphGen x c -> Maybe (ConGraphGen x c)
+graphMap f cg@ConGraph{succs = s, preds = p, subs = sb} = return $
+  ConGraph {
+    succs = fmap (fmap f) s,
+    preds = fmap (fmap f) p,
+    subs = fmap f sb
+  }
 
 -- Least solution
 -- leastSolution :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> x -> [SExpr x c]

@@ -17,9 +17,9 @@ data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type]
 
 -- Add restricted constraints to an unquantifed type scheme
 quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
-quantifyWith ConGraph{succs = s, preds = p} (Forall as [] _ u) = do
-  cg <- fromList [(n1, n2) | n1 <- ns, n2 <- ns, path n1 n2]
-  return $ Forall as rv cg u
+quantifyWith cg@ConGraph{succs = s, preds = p} (Forall as [] _ u) = do
+  cg' <- fromList [(n1, n2) | n1 <- ns, n2 <- ns, path cg n1 n2]
+  return $ Forall as rv cg' u
   where
     g (V _ _ _) = True
     g _ = False
@@ -117,7 +117,7 @@ infer (Core.Let b e) = do
   -- Infer local module (i.e. let expression)
   let xs = Core.bindersOf b
   let rhss = Core.rhssOfBind b
-  
+
   -- Add each binds within the group to context with a fresh type (t) and no constraints
   ts <- mapM (freshScheme . toSortScheme . Core.varType) xs
   let withBinds = local (insertMany xs ts)

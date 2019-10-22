@@ -72,7 +72,17 @@ class Rewrite x c m where
   toNorm :: SExpr x c -> SExpr x c -> m [(SExpr x c, SExpr x c)]
 
 -- Does a path exist between set expressions
-path = undefined
+path :: (Ord x, Eq c) => ConGraphGen x c -> SExpr x c -> SExpr x c -> Bool
+path cg@ConGraph{succs = s, preds = p} x z = forward x || backward z
+  where
+    forward (Var x') = case s M.!? x' of
+      Just ss -> (z `elem` ss) || any (\y -> path cg y z) ss
+      Nothing -> False
+    forward _ = False
+    backward (Var z')= case p M.!? z' of
+      Just ps -> (x `elem` ps) || any (\y -> path cg x y) ps
+      Nothing -> False
+    backward _ = False
 
 -- Constructor a new constraint graph from a list
 fromList :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> m (ConGraphGen x c)
@@ -229,18 +239,3 @@ graphMap f cg@ConGraph{succs = s, preds = p, subs = sb} =
     preds = fmap (fmap f) p,
     subs = fmap f sb
   }
-
--- -- Saturate the component of the graph which is determined by the function f
--- -- Warning slow!
--- interface :: (Eq c, Ord x, Constructor c) => (x -> Bool) -> ConGraphGen x c -> [(SExpr x c, SExpr x c)]
--- interface f cg@ConGraph{succs = s, preds = p} = filter (\(s1, s2) -> f' s1 && f' s2) $ transitiveClosure edges
---   where
---     edges = [(Var k, v)| (k, vs) <- M.toList s, v <- vs] ++ [(v, Var k)| (k, vs) <- M.toList p, v <- vs]
---     f' (Var x) = f x
---     f' (Sum cs) = all (\(c, cargs) -> all f' cargs) cs
---
---     transitiveClosure closure
---       | closure == closureUntilNow = closure
---       | otherwise                  = transitiveClosure closureUntilNow
---       where closureUntilNow =
---               closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']

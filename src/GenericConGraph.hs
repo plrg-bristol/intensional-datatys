@@ -71,15 +71,17 @@ throwContext ma f = ma `catchError` (throwError . f)
 class Rewrite x c m where
   toNorm :: SExpr x c -> SExpr x c -> m [(SExpr x c, SExpr x c)]
 
--- Does a path exist between set expressions
+-- Determine whether a path exist between set expressions
 path :: (Ord x, Eq c) => ConGraphGen x c -> SExpr x c -> SExpr x c -> Bool
-path cg@ConGraph{succs = s, preds = p} x z = forward x || backward z
+path cg@ConGraph{succs = s, preds = p} x z = forward x || backward z || any (\y -> path cg y z) fromX || any (\y -> path cg x y) toZ
   where
+    fromX = fmap Var $ M.keys $ M.map (filter (== x)) p
+    toZ   = fmap Var $ M.keys $ M.map (filter (== z)) s
     forward (Var x') = case s M.!? x' of
       Just ss -> (z `elem` ss) || any (\y -> path cg y z) ss
       Nothing -> False
     forward _ = False
-    backward (Var z')= case p M.!? z' of
+    backward (Var z') = case p M.!? z' of
       Just ps -> (x `elem` ps) || any (\y -> path cg x y) ps
       Nothing -> False
     backward _ = False

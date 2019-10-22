@@ -15,6 +15,27 @@ import qualified CoreUtils as Utils
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
 
+-- Infer program
+inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
+inferProg p = do
+  let xs = Core.bindersOfBinds p
+  ts <- mapM (freshScheme . toSortScheme . Core.varType) xs
+  let m = M.fromList $ zip xs ts
+  let withBinds = local (insertMany xs ts)
+
+  z <- mapM (\(xs, ts, rhss) -> do
+    (ts', lcg) <- foldM (\(ts, cg) rhs -> do
+        (t, cg') <- withBinds (infer rhs)
+        cg'' <- union cg cg'
+        return (t:ts, cg'')
+        ) ([], empty) rhss
+    let lcg' = interface (\(RVar (x, _, _)) -> any ((x `elem`) . stems) ts') lcg
+    cg <- foldM (\cg (t1, t2) -> insert t1 t2 cg) empty lcg'
+    cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
+    return (xs, ts, cg')
+    ) $ fmap (\b -> let xs = Core.bindersOf b in (xs, fmap (m M.!) xs, Core.rhssOfBind b)) p
+  return $ fmap (\(xs, ts, cg) -> _) z
+
 -- Infer fully instantiated polymorphic variable
 inferVar :: Core.Var -> [Sort] -> InferM (Type, ConGraph)
 inferVar x ts = do
@@ -139,9 +160,5 @@ infer (Core.Case e b t as) = do
       cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg
       return (t', cg)
     Literal lss -> error "Literal cases must contain defaults."
-
-infer (Core.Tick _ e) = infer e
-
-infer (Core.Type t) = error "Cannot infer RankN programs."
 
 infer _ = error "Unimplemented"

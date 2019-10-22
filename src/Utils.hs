@@ -1,6 +1,5 @@
 module Utils
     (
-      Var,
       toSortScheme,
       toSort,
       isConstructor,
@@ -12,9 +11,6 @@ import Types
 import Data.List
 import qualified TyCoRep as T
 import qualified GhcPlugins as Core
-
--- Exposed for Inferm
-type Var = Core.Var
 
 toSort :: Core.Type -> Sort
 toSort (T.TyVarTy v) = SVar v
@@ -33,10 +29,10 @@ toSortScheme (T.ForAllTy b t) =
   in SForall (a:as) st
 toSortScheme _ = error "Core type is not a valid sort scheme."
 
-isConstructor :: Var -> Bool
-isConstructor x = isPrefixOf "" (Core.nameStableString $ Core.getName x)
+isConstructor :: Core.Var -> Bool
+isConstructor x = isPrefixOf undefined (Core.nameStableString $ Core.getName x)
 
-isWild :: Var -> Bool
+isWild :: Core.Var -> Bool
 isWild x = (Core.nameStableString $ Core.getName x) == "$_sys$wild"
 
 fromPolyVar :: Core.CoreExpr -> Maybe (Core.Id, [Sort])

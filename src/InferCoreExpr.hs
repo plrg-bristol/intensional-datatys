@@ -2,10 +2,10 @@ module InferCoreExpr
     (
     ) where
 
-import InferM
 import Utils
-import Errors
 import Types
+import Errors
+import InferM
 import GenericConGraph
 import Control.Monad.Except
 import Control.Monad.RWS hiding (Sum)
@@ -18,21 +18,14 @@ data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type]
 -- Add restricted constraints to an unquantifed type scheme
 quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
 quantifyWith cg@ConGraph{succs = s, preds = p} (Forall as [] _ u) = do
-  -- Transitive closure (using edges for unrestricted graph) of restricted node 
+  -- Nodes of the restricted congraph
+  let ns = filter (all (`elem` stems u) . stems) $ nodes cg
+
+  -- Transitive closure (using edges for unrestricted graph) of restricted node
   cg' <- fromList [(n1, n2) | n1 <- ns, n2 <- ns, path cg n1 n2]
-  return $ Forall as rv cg' u
-  where
-    -- Adjacency list with relevant stems
-    f = filter (all (`elem` stems u) . stems)
-    ns' = M.union (fmap f s) (fmap f p)
 
-    -- All nodes from the restricted congraph
-    ns = (fmap Var $ M.keys ns') ++ concat (M.elems ns')
-
-    -- Refinement variables from the interface
-    rv = map (\(Var x) -> x) $ filter g ns
-    g (V _ _ _) = True
-    g _ = False
+  -- Only quantified by refinement variables that appear in the inferface
+  return $ Forall as [x | Var x <- ns ] cg' u
 
 quantifyWith _ _ = error "Cannot restrict quantified type."
 

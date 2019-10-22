@@ -8,6 +8,7 @@ module GenericConGraph (
     , Rewrite (toNorm)
     , empty
     , fromList
+    , nodes
     , path
     , insert
     , union
@@ -71,6 +72,14 @@ throwContext ma f = ma `catchError` (throwError . f)
 class Rewrite x c m where
   toNorm :: SExpr x c -> SExpr x c -> m [(SExpr x c, SExpr x c)]
 
+-- Constructor a new constraint graph from a list
+fromList :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> m (ConGraphGen x c)
+fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
+
+-- A list of all nodes that appear in the constriant graph
+nodes :: ConGraphGen x c -> [SExpr x c]
+nodes ConGraph{succs = s, preds = p} = fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p)
+
 -- Determine whether a path exist between set expressions
 path :: (Ord x, Eq c) => ConGraphGen x c -> SExpr x c -> SExpr x c -> Bool
 path cg@ConGraph{succs = s, preds = p} x z = forward x || backward z || any (\y -> path cg y z) fromX || any (\y -> path cg x y) toZ
@@ -85,10 +94,6 @@ path cg@ConGraph{succs = s, preds = p} x z = forward x || backward z || any (\y 
       Just ps -> (x `elem` ps) || any (\y -> path cg x y) ps
       Nothing -> False
     backward _ = False
-
--- Constructor a new constraint graph from a list
-fromList :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> m (ConGraphGen x c)
-fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 
 -- Insert new constraint with rewriting rule
 insert :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)

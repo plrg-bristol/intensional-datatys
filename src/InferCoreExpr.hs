@@ -1,5 +1,6 @@
 module InferCoreExpr
     (
+      inferProg
     ) where
 
 import Utils
@@ -12,6 +13,7 @@ import Control.Monad.RWS hiding (Sum)
 import qualified Data.Map as M
 import qualified GhcPlugins as Core
 import qualified CoreUtils as Utils
+import Debug.Trace
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
 

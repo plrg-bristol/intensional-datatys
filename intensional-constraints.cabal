@@ -33,6 +33,7 @@ library
       Utils
       InferM
       InferCoreExpr
+      Lib
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:

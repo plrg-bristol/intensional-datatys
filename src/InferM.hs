@@ -3,6 +3,7 @@
 module InferM
     (
       InferM,
+      Context (Context, con, var),
       safeVar,
       safeCon,
       fresh,
@@ -19,11 +20,12 @@ import Control.Monad.Except
 import Control.Monad.RWS hiding (Sum)
 import qualified Data.Map as M
 import qualified GhcPlugins as Core
+import Debug.Trace
 
 type InferM = RWST Context () Int (Except Error)
 
 data Context = Context {
-    con :: M.Map Core.Var (Core.Var, [Sort]), -- k -> (d, args)
+    con :: M.Map Core.Var (Core.TyCon, [Sort]), -- k -> (d, args)
     var :: M.Map Core.Var TypeScheme
 }
 
@@ -41,9 +43,9 @@ safeVar v = do
   ctx <- ask
   case var ctx M.!? v of
     Just ts -> return ts
-    Nothing -> error "Variable not in environment."
+    Nothing -> trace (show v) $ error "Variable not in environment."
 
-safeCon :: Core.Var -> InferM (Core.Var, [Sort])
+safeCon :: Core.Var -> InferM (Core.TyCon, [Sort])
 safeCon k = do
   ctx <- ask
   case con ctx M.!? k of
@@ -67,8 +69,7 @@ freshScheme (SForall as (SArrow s1 s2)) = do
   Forall _ _ _ t2 <- freshScheme (SForall as s2)
   return $ Forall as [] empty (t1 :=> t2)
 
-
-delta :: Bool -> Core.Var -> Core.Var -> InferM [PType]
+delta :: Bool -> Core.TyCon -> Core.Var -> InferM [PType]
 delta p d k = do
   ctx <- ask
   case con ctx M.!? k of

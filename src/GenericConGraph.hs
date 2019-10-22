@@ -21,7 +21,7 @@ import Control.Monad.Except
 import qualified Data.Map as M
 
 -- Set expression with disjoint sum
-data SExpr x c = Var x | Sum [(c, [SExpr x c])] | One
+data SExpr x c = Var x | Sum [(c, [SExpr x c])] | One deriving Show
 
 -- Singleton sum
 pattern Con :: c -> [SExpr x c] -> SExpr x c
@@ -46,7 +46,7 @@ data ConGraphGen x c = ConGraph {
   succs :: M.Map x [SExpr x c],
   preds :: M.Map x [SExpr x c],
   subs  :: M.Map x (SExpr x c)    -- Unique representations for cyclic equivalence classes
-}
+} deriving Show
 
 -- Empty constraint graph
 empty :: ConGraphGen x c

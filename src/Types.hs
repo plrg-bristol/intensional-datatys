@@ -19,22 +19,30 @@ module Types
     ) where
 
 import GenericConGraph
-import qualified DataCon as D
 import qualified GhcPlugins as Core
 
-newtype RVar = RVar (String, Bool, Core.Var) deriving Eq
+newtype RVar = RVar (String, Bool, Core.TyCon) deriving (Show, Eq)
 
 instance Ord RVar where
   RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
-data Sort = SVar Core.Var | SBase String | SData Core.Var | SArrow Sort Sort
-data UType = TVar Core.Var | TBase String | TData D.DataCon | TArrow | TCon Core.Var deriving Eq
-data PType = PVar Core.Var | PBase String | PData Bool Core.Var | PArrow PType PType
+data Sort = SVar Core.Var | SBase String | SData Core.TyCon | SArrow Sort Sort
+data UType = TVar Core.Var | TBase String | TData Core.DataCon | TArrow | TCon Core.Var deriving (Show, Eq)
+data PType = PVar Core.Var | PBase String | PData Bool Core.TyCon | PArrow PType PType
 type Type = SExpr RVar UType
-data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type
+data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type deriving Show
 data SortScheme = SForall [Core.Var] Sort
 
 type ConGraph = ConGraphGen RVar UType
+
+instance Show Core.Var where
+  show = Core.nameStableString . Core.getName
+
+instance Show Core.TyCon where
+  show = Core.nameStableString . Core.getName
+
+instance Show Core.DataCon where
+  show = Core.nameStableString . Core.getName
 
 instance Constructor UType where
   variance TArrow = [False, True]
@@ -47,7 +55,7 @@ pattern t1 :=> t2 = Con TArrow [t1, t2]
 pattern K :: Core.Var -> [Type] -> Type
 pattern K v ts = Con (TCon v) ts
 
-pattern V :: String -> Bool -> Core.Var -> Type
+pattern V :: String -> Bool -> Core.TyCon -> Type
 pattern V x p d = Var (RVar (x, p, d))
 
 stems :: Type -> [String]

@@ -15,26 +15,49 @@ import qualified CoreUtils as Utils
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
 
+-- Add restricted constraints to an unquantifed type scheme
+quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
+quantifyWith ConGraph{succs = s, preds = p} (Forall as [] _ u) = do
+  cg <- fromList [(n1, n2) | n1 <- ns, n2 <- ns, path n1 n2]
+  return $ Forall as rv cg u
+  where
+    g (V _ _ _) = True
+    g _ = False
+    xs = stems u
+    f vs = filter (all (`elem` xs) . stems) vs
+    ns' = M.union (fmap f s) (fmap f p)
+    ns = (fmap Var $ M.keys ns') ++ concat (M.elems ns')
+    rv = map (\(Var x) -> x) $ filter g ns
+quantifyWith _ _ = error "Cannot restrict quantified type."
+
 -- Infer program
 inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
 inferProg p = do
   let xs = Core.bindersOfBinds p
+
+  -- Add all module level definitions to context with a fresh type (t) and no constraints
   ts <- mapM (freshScheme . toSortScheme . Core.varType) xs
   let m = M.fromList $ zip xs ts
   let withBinds = local (insertMany xs ts)
 
   z <- mapM (\(xs, ts, rhss) -> do
-    (ts', lcg) <- foldM (\(ts, cg) rhs -> do
+    -- Infer a binder group
+    (ts', cg) <- foldM (\(ts, cg) rhs -> do
+        -- Infer each bind within the group, compiling constraints
         (t, cg') <- withBinds (infer rhs)
         cg'' <- union cg cg'
         return (t:ts, cg'')
         ) ([], empty) rhss
-    let lcg' = interface (\(RVar (x, _, _)) -> any ((x `elem`) . stems) ts') lcg
-    cg <- foldM (\cg (t1, t2) -> insert t1 t2 cg) empty lcg'
+
+    --  Insure fresh types are quantified by infered constraint (t' < t)
     cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
-    return (xs, ts, cg')
+
+    -- Restrict constraints to the interface
+    ts' <- mapM (quantifyWith cg') ts
+    return (xs, ts')
+
     ) $ fmap (\b -> let xs = Core.bindersOf b in (xs, fmap (m M.!) xs, Core.rhssOfBind b)) p
-  return $ fmap (\(xs, ts, cg) -> _) z
+  return $ concatMap (uncurry zip) z
 
 -- Infer fully instantiated polymorphic variable
 inferVar :: Core.Var -> [Sort] -> InferM (Type, ConGraph)
@@ -94,25 +117,27 @@ infer (Core.Let b e) = do
   -- Infer local module (i.e. let expression)
   let xs = Core.bindersOf b
   let rhss = Core.rhssOfBind b
+  
+  -- Add each binds within the group to context with a fresh type (t) and no constraints
   ts <- mapM (freshScheme . toSortScheme . Core.varType) xs
   let withBinds = local (insertMany xs ts)
 
-  -- Infer rhs of binders
-  (ts', lcg) <- foldM (\(ts, cg) rhs -> do
+  (ts', cg) <- foldM (\(ts, cg) rhs -> do
+    -- Infer each bind within the group, compiling constraints
     (t, cg') <- withBinds (infer rhs)
     cg'' <- union cg cg'
     return (t:ts, cg'')
     ) ([], empty) rhss
 
-  -- Restrict constraints to vars with stems appearing in ts'
-  let lcg' = interface (\(RVar (x, _, _)) -> any ((x `elem`) . stems) ts') lcg
+  --  Insure fresh types are quantified by infered constraint (t' < t)
+  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
+
+  -- Restrict constraints to the interface
+  ts' <- mapM (quantifyWith cg') ts
 
   -- Infer in body
   (t, icg) <- withBinds (infer e)
-
-  cg <- foldM (\cg (t1, t2) -> insert t1 t2 cg) icg lcg'
-  -- ts will only be of the form (Forall as [] empty) and ts' will be implicitly quantified over as
-  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
+  cg'' <- cg' `union` icg
   return (t, cg')
 
 infer (Core.Case e b t as) = do

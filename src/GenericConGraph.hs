@@ -3,15 +3,16 @@
 module GenericConGraph (
       SExpr (Var, Con, Sum, One, Zero)
     , Constructor (variance)
-    , ConGraphGen
+    , ConGraphGen (ConGraph, succs, preds)
     , ConstraintError (usingEquivalence, fromCycle, fromClosure, hetrogeneousConstructors, subtypeOfZero, supertypeOfOne)
     , Rewrite (toNorm)
     , empty
+    , fromList
+    , path
     , insert
     , union
     , substitute
     , graphMap
-    , interface
      ) where
 
 import Control.Monad
@@ -69,6 +70,13 @@ throwContext ma f = ma `catchError` (throwError . f)
 -- Additional deterministic rewriting rules for constriants
 class Rewrite x c m where
   toNorm :: SExpr x c -> SExpr x c -> m [(SExpr x c, SExpr x c)]
+
+-- Does a path exist between set expressions
+path = undefined
+
+-- Constructor a new constraint graph from a list
+fromList :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> m (ConGraphGen x c)
+fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 
 -- Insert new constraint with rewriting rule
 insert :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
@@ -222,17 +230,17 @@ graphMap f cg@ConGraph{succs = s, preds = p, subs = sb} =
     subs = fmap f sb
   }
 
--- Saturate the component of the graph which is determined by the function f
--- Warning slow!
-interface :: (Eq c, Ord x, Constructor c) => (x -> Bool) -> ConGraphGen x c -> [(SExpr x c, SExpr x c)]
-interface f cg@ConGraph{succs = s, preds = p} = filter (\(s1, s2) -> f' s1 && f' s2) $ transitiveClosure edges
-  where
-    edges = [(Var k, v)| (k, vs) <- M.toList s, v <- vs] ++ [(v, Var k)| (k, vs) <- M.toList p, v <- vs]
-    f' (Var x) = f x
-    f' (Sum cs) = all (\(c, cargs) -> all f' cargs) cs
-
-    transitiveClosure closure
-      | closure == closureUntilNow = closure
-      | otherwise                  = transitiveClosure closureUntilNow
-      where closureUntilNow =
-              closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
+-- -- Saturate the component of the graph which is determined by the function f
+-- -- Warning slow!
+-- interface :: (Eq c, Ord x, Constructor c) => (x -> Bool) -> ConGraphGen x c -> [(SExpr x c, SExpr x c)]
+-- interface f cg@ConGraph{succs = s, preds = p} = filter (\(s1, s2) -> f' s1 && f' s2) $ transitiveClosure edges
+--   where
+--     edges = [(Var k, v)| (k, vs) <- M.toList s, v <- vs] ++ [(v, Var k)| (k, vs) <- M.toList p, v <- vs]
+--     f' (Var x) = f x
+--     f' (Sum cs) = all (\(c, cargs) -> all f' cargs) cs
+--
+--     transitiveClosure closure
+--       | closure == closureUntilNow = closure
+--       | otherwise                  = transitiveClosure closureUntilNow
+--       where closureUntilNow =
+--               closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']

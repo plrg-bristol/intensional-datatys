@@ -57,9 +57,16 @@ fresh t = do
     return $ head $ upArrow (show i) [polarise True t]
 
 freshScheme :: SortScheme -> InferM TypeScheme
-freshScheme (SForall as s) = do
+freshScheme (SForall as (SVar a)) = return $ Forall as [] empty $ Con (TVar a) []
+freshScheme (SForall as (SBase b)) = return $ Forall as [] empty $ Con (TBase b) []
+freshScheme (SForall as s@(SData _)) = do
   t <- fresh s
   return $ Forall as [] empty t
+freshScheme (SForall as (SArrow s1 s2)) = do
+  Forall _ _ _ t1 <- freshScheme (SForall as s1)
+  Forall _ _ _ t2 <- freshScheme (SForall as s2)
+  return $ Forall as [] empty (t1 :=> t2)
+
 
 delta :: Bool -> Core.Var -> Core.Var -> InferM [PType]
 delta p d k = do

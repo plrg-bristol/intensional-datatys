@@ -2,9 +2,9 @@
 
 module Types
     (
-      Sort (SVar, SArrow, SData),
+      Sort (SVar, SArrow, SData, SBase),
       SortScheme (SForall),
-      UType (TCon, TVar, TData),
+      UType (TCon, TVar, TData, TArrow, TBase),
       PType,
       RVar (RVar),
       Type,
@@ -52,7 +52,6 @@ pattern V x p d = Var (RVar (x, p, d))
 
 stems :: Type -> [String]
 stems (V x _ _) = [x]
-stems (Con c cargs) = concatMap stems cargs
 stems (Sum cs) = concatMap (\(_, cargs) -> concatMap stems cargs) cs
 stems _ = []
 

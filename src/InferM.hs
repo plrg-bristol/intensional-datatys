@@ -9,7 +9,8 @@ module InferM
       fresh,
       freshScheme,
       insertVar,
-      insertMany
+      insertMany,
+      throwInExpr
     ) where
 
 import Errors
@@ -24,10 +25,14 @@ import Debug.Trace
 
 type InferM = RWST Context () Int (Except Error)
 
+-- Extend a thrown exception
+throwInExpr :: InferM a -> Core.Expr Core.Var -> InferM a
+throwInExpr ma se = ma `catchError` (\e -> throwError $ InExpr se e)
+
 data Context = Context {
-    con :: M.Map Core.Var (Core.TyCon, [Sort]), -- k -> (d, args)
+    con :: M.Map String (Core.TyCon, [Sort]), -- k -> (d, args)
     var :: M.Map Core.Var TypeScheme
-}
+} deriving Show
 
 insertVar :: Core.Var -> TypeScheme -> Context ->  Context
 insertVar x f ctx
@@ -43,12 +48,12 @@ safeVar v = do
   ctx <- ask
   case var ctx M.!? v of
     Just ts -> return ts
-    Nothing -> trace (show v) $ error "Variable not in environment."
+    Nothing -> error "Variable not in environment."
 
-safeCon :: Core.Var -> InferM (Core.TyCon, [Sort])
+safeCon :: Core.Name -> InferM (Core.TyCon, [Sort])
 safeCon k = do
   ctx <- ask
-  case con ctx M.!? k of
+  case con ctx M.!? (name k) of
     Just args -> return args
     Nothing   -> error "Constructor not in environment."
 
@@ -69,14 +74,15 @@ freshScheme (SForall as (SArrow s1 s2)) = do
   Forall _ _ _ t2 <- freshScheme (SForall as s2)
   return $ Forall as [] empty (t1 :=> t2)
 
-delta :: Bool -> Core.TyCon -> Core.Var -> InferM [PType]
+delta :: Bool -> Core.TyCon -> Core.Name -> InferM [PType]
 delta p d k = do
-  ctx <- ask
-  case con ctx M.!? k of
-    Just (d', ts) -> if d == d'
-      then return $ fmap (polarise p) ts
-      else throwError DataTypeError
-    otherwise -> throwError ConstructorError
+    ctx <- ask
+    case con ctx M.!? (name k) of
+      Just (d', ts) ->
+        if d == d'
+          then return $ fmap (polarise p) ts
+          else throwError DataTypeError
+      otherwise -> throwError ConstructorError
 
 instance Rewrite RVar UType InferM where
   toNorm t1@(K k ts) t2@(V x p d) = do
@@ -85,12 +91,14 @@ instance Rewrite RVar UType InferM where
       if ts' /= ts
         then return [(K k ts', V x p d), (K k ts, K k ts')]
         else return [(t1, t2)]
+  toNorm t1@(V _ _ _) t2@(Con _ _) = return [(t1, t2)]
   toNorm t1@(V x p d) t2@(Sum cs) = do
       s <- mapM (refineCon x d) cs
       if cs /= s
         then return [(Sum s, Sum cs),(V x p d, Sum s)]
         else return [(t1, t2)]
       where
-        refineCon x d (TCon k, ts) = do
+        refineCon x d (TData k, ts) = do
           args <- delta p d k
-          return (TCon k, upArrow x args)
+          return (TData k, upArrow x args)
+  toNorm t1 t2 = return [(t1, t2)]

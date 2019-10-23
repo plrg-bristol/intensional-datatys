@@ -4,7 +4,7 @@ module Types
     (
       Sort (SVar, SArrow, SData, SBase),
       SortScheme (SForall),
-      UType (TCon, TVar, TData, TArrow, TBase),
+      UType (TVar, TData, TArrow, TBase),
       PType,
       RVar (RVar),
       Type,
@@ -20,15 +20,16 @@ module Types
 
 import GenericConGraph
 import qualified GhcPlugins as Core
+import Debug.Trace
 
 newtype RVar = RVar (String, Bool, Core.TyCon) deriving (Show, Eq)
 
 instance Ord RVar where
   RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
-data Sort = SVar Core.Var | SBase String | SData Core.TyCon | SArrow Sort Sort
-data UType = TVar Core.Var | TBase String | TData Core.DataCon | TArrow | TCon Core.Var deriving (Show, Eq)
-data PType = PVar Core.Var | PBase String | PData Bool Core.TyCon | PArrow PType PType
+data Sort = SVar Core.Var | SBase Core.TyCon | SData Core.TyCon | SArrow Sort Sort deriving Show
+data UType = TVar Core.Var | TBase Core.TyCon | TData Core.Name | TArrow deriving (Show, Eq)
+data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon | PArrow PType PType
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type deriving Show
 data SortScheme = SForall [Core.Var] Sort
@@ -38,6 +39,9 @@ type ConGraph = ConGraphGen RVar UType
 instance Show Core.Var where
   show = Core.nameStableString . Core.getName
 
+instance Show Core.Name where
+  show = Core.nameStableString
+
 instance Show Core.TyCon where
   show = Core.nameStableString . Core.getName
 
@@ -46,14 +50,14 @@ instance Show Core.DataCon where
 
 instance Constructor UType where
   variance TArrow = [False, True]
-  variance (TCon v) = repeat True
+  variance (TData v) = repeat True
   variance _ = []
 
 pattern (:=>) :: Type -> Type -> Type
 pattern t1 :=> t2 = Con TArrow [t1, t2]
 
-pattern K :: Core.Var -> [Type] -> Type
-pattern K v ts = Con (TCon v) ts
+pattern K :: Core.Name -> [Type] -> Type
+pattern K v ts = Con (TData v) ts
 
 pattern V :: String -> Bool -> Core.TyCon -> Type
 pattern V x p d = Var (RVar (x, p, d))
@@ -67,7 +71,7 @@ upArrow :: String -> [PType] -> [Type]
 upArrow x = fmap upArrow'
   where
     upArrow' (PData p d)     = Var $ RVar (x, p, d)
-    upArrow' (PArrow t1 t2)  = Con TArrow [upArrow' t1, upArrow' t1]
+    upArrow' (PArrow t1 t2)  = Con TArrow [upArrow' t1, upArrow' t2]
     upArrow' (PVar a)        = Con (TVar a) []
     upArrow' (PBase b)       = Con (TBase b) []
 

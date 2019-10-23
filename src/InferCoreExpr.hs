@@ -10,6 +10,7 @@ import InferM
 import GenericConGraph
 import Control.Monad.Except
 import Control.Monad.RWS hiding (Sum)
+import qualified Data.List as L
 import qualified Data.Map as M
 import qualified GhcPlugins as Core
 import qualified CoreUtils as Utils
@@ -21,13 +22,13 @@ data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type]
 quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
 quantifyWith cg@ConGraph{succs = s, preds = p} (Forall as [] _ u) = do
   -- Nodes of the restricted congraph
-  let ns = filter (all (`elem` stems u) . stems) $ nodes cg
+  let ns = L.nub $ filter (all (`elem` stems u) . stems) $ nodes cg
 
   -- Transitive closure (using edges for unrestricted graph) of restricted node
-  cg' <- fromList [(n1, n2) | n1 <- ns, n2 <- ns, path cg n1 n2]
-
+  cg' <- fromList [(n1, n2) | n1 <- ns, n2 <- ns, path cg [] [n1] n2]
+  
   -- Only quantified by refinement variables that appear in the inferface
-  return $ Forall as [x | Var x <- ns ] cg' u
+  return $ Forall as [x | Var x <- ns] cg' u
 
 quantifyWith _ _ = error "Cannot restrict quantified type."
 
@@ -50,7 +51,7 @@ inferProg p = do
         return (t:ts, cg'')
         ) ([], empty) rhss
 
-    --  Insure fresh types are quantified by infered constraint (t' < t)
+    -- Insure fresh types are quantified by infered constraint (t' < t)
     cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
 
     -- Restrict constraints to the interface
@@ -79,10 +80,11 @@ infer (Core.Var x) =
   if isConstructor x
     then do
       -- Infer constructor
-      (d, args) <- safeCon x
+      let x' = Core.getName x
+      (d, args) <- safeCon x'
       ts <- mapM fresh args
       t  <- fresh $ SData d
-      cg <- insert (K x ts) t empty
+      cg <- insert (K x' ts) t empty
       return (foldr (:=>) t ts, cg)
     else
       -- Infer monomorphic variable
@@ -141,30 +143,30 @@ infer (Core.Let b e) = do
   cg'' <- cg' `union` icg
   return (t, cg')
 
-infer (Core.Case e b t as) = do
+infer (Core.Case e b rt as) = do
   -- Infer case expession
   et <- fresh $ toSort $ Utils.exprType e
-  t' <- fresh $ toSort t
+  t  <- fresh $ toSort rt
   (t0, c0)   <- infer e
   (caseType, cg) <- local (insertVar b $ Forall [] [] empty et) $ foldM (\(caseType, cg) a ->
     case a of
       -- Infer constructor alternative
       (Core.DataAlt d, bs, rhs) -> do
-        ts <- mapM (freshScheme . toSortScheme . Core.varType) bs
-        let ts' = undefined -- getArgs of d
-        cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
-        (dt, cg'') <- local (insertMany bs ts) (infer rhs)
-        cg''' <- insert dt t' cg''
-        cg'''' <- cg' `union` cg'''
+        ts <- mapM (fresh . toSort . Core.varType) bs
+        -- let ts' = _ -- getArgs of d
+        -- cg' <- foldM (\cg (t', Forall _ _ _ t) -> insert t' t cg) cg (zip ts' ts)
+        (ti', cg') <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs)
+        cg''' <- insert ti' t cg'
+        cg'''' <- cg `union` cg'
         case caseType of
-          Empty     -> return (DataCon [(d, ts')], cg'''')
+          Empty     -> return (DataCon [(d, ts)], cg'''')
           Default   -> return (Default, cg'''')
-          DataCon s -> return (DataCon ((d, ts'):s), cg'''')
+          DataCon s -> return (DataCon ((d, ts):s), cg'''')
 
       -- Infer literal alternative
       (Core.LitAlt l, [], rhs) -> do
-        (dt, cg') <- infer rhs
-        cg'' <- insert dt t' cg'
+        (ti', cg') <- infer rhs
+        cg'' <- insert ti' t cg'
         cg''' <- cg `union` cg''
         case caseType of
           Default    -> return (Default, cg''')
@@ -173,18 +175,18 @@ infer (Core.Case e b t as) = do
 
       -- Infer default alternative
       (Core.DEFAULT, [], rhs) -> do
-        (dt, cg') <- infer rhs
-        cg'' <- insert dt t' cg'
+        (ti', cg') <- infer rhs
+        cg'' <- insert ti' t cg'
         cg''' <- cg `union` cg''
         return (Default, cg''')
     ) (Empty, c0) as
 
   -- Ensure destructor is total
   case caseType of
-    Default -> return (t', cg)
+    Default -> return (t, cg)
     DataCon dts -> do
-      cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg
-      return (t', cg)
+      cg' <- insert t0 (Sum [(TData $ Core.getName dc, ts) | (dc, ts) <- dts]) cg
+      return (t, cg)
     Literal lss -> error "Literal cases must contain defaults."
 
 infer _ = error "Unimplemented"

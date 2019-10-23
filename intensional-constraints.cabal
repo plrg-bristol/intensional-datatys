@@ -53,7 +53,7 @@ test-suite intensional-constraints-test
       Paths_intensional_constraints
   hs-source-dirs:
       test
-  ghc-options: -threaded -rtsopts -with-rtsopts=-N -fplugin Lib
+  ghc-options: -O0 -fplugin Lib
   build-depends:
       base >=4.7
     , containers

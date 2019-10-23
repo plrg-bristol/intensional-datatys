@@ -19,6 +19,7 @@ module GenericConGraph (
 import Control.Monad
 import Control.Monad.Except
 import qualified Data.Map as M
+import Debug.Trace
 
 -- Set expression with disjoint sum
 data SExpr x c = Var x | Sum [(c, [SExpr x c])] | One deriving Show
@@ -80,20 +81,16 @@ fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 nodes :: ConGraphGen x c -> [SExpr x c]
 nodes ConGraph{succs = s, preds = p} = fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p)
 
--- Determine whether a path exist between set expressions
-path :: (Ord x, Eq c) => ConGraphGen x c -> SExpr x c -> SExpr x c -> Bool
-path cg@ConGraph{succs = s, preds = p} x z = forward x || backward z || any (\y -> path cg y z) fromX || any (\y -> path cg x y) toZ
+path cg@ConGraph{succs = s, preds = p} visited [] _ = False
+path cg@ConGraph{succs = s, preds = p} visited (x:xs) z
+  | x == z = True
+  | elem x (trace (show visited) visited) = path cg visited xs z
+  | otherwise = path cg (x:visited) (edges x ++ (fmap Var $ M.keys $ M.map (filter (== x)) p) ++ xs) z
   where
-    fromX = fmap Var $ M.keys $ M.map (filter (== x)) p
-    toZ   = fmap Var $ M.keys $ M.map (filter (== z)) s
-    forward (Var x') = case s M.!? x' of
-      Just ss -> (z `elem` ss) || any (\y -> path cg y z) ss
-      Nothing -> False
-    forward _ = False
-    backward (Var z') = case p M.!? z' of
-      Just ps -> (x `elem` ps) || any (\y -> path cg x y) ps
-      Nothing -> False
-    backward _ = False
+    edges (Var x) = case s M.!? x of
+      Just ss -> ss
+      otherwise -> []
+    edges _ = []
 
 -- Insert new constraint with rewriting rule
 insert :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
@@ -103,24 +100,24 @@ insert t1 t2 cg = do
 
 -- Insert new constraint
 insertInner :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
-insertInner vx@(Var x) vy@(Var y) cg
+insertInner x y cg
   | x == y                          = return cg
-  | x > y                           = insertSucc x vy cg
-  | otherwise                       = insertPred vx y cg
 insertInner _ One cg                = return cg
 insertInner Zero _ cg               = return cg
+insertInner One t cg                = throwError $ supertypeOfOne t
+insertInner t Zero cg               = throwError $ subtypeOfZero t
+insertInner vx@(Var x) vy@(Var y) cg
+  | x > y                           = insertSucc x vy cg
+  | otherwise                       = insertPred vx y cg
 insertInner (Con c cargs) (Con d dargs) cg
   | c == d                          = foldM (\cg (v, ci, di) -> if v then insert ci di cg else insert di ci cg) cg $ zip3 (variance c) cargs dargs
   | otherwise                       = throwError $ hetrogeneousConstructors c d
-insertInner t@(Con _ _) Zero _      = throwError $ subtypeOfZero t
-insertInner t@One Zero _            = throwError $ subtypeOfZero t
-insertInner One t@(Con _ _) _       = throwError $ supertypeOfOne t
-insertInner (Var x) c@(Con _ _) cg  = insertSucc x c cg
+insertInner (Var x) c@(Sum _) cg    = insertSucc x c cg
 insertInner c@(Con _ _) (Var y) cg  = insertPred c y cg
-insertInner (Sum cs) t cg           = foldM (\cg (c, cargs) -> insert (Con c cargs) t cg) cg cs
 insertInner cx@(Con c cargs) (Sum ((d, dargs):ds)) cg
   | c == d                          = foldM (\cg (v, ci, di) -> if v then insert ci di cg else insert di ci cg) cg $ zip3 (variance c) cargs dargs
   | otherwise                       = insert cx (Sum ds) cg
+insertInner (Sum cs) t cg           = foldM (\cg (c, cargs) -> insert (Con c cargs) t cg) cg cs
 
 insertSucc :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
 insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
@@ -136,7 +133,7 @@ insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
               case predChain cg' x sy [] of
                 Just xs -> foldM (substitute sy) cg' xs `throwContext` fromCycle xs sy
                 otherwise -> return cg'
-        otherwise -> return cg
+        otherwise -> closeSucc x sy cg{succs = M.insert x [sy] s} `throwContext` fromClosure (Var x) sy
 
 insertPred:: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> m (ConGraphGen x c)
 insertPred sx y cg@ConGraph{preds = p, subs = sb} =
@@ -152,7 +149,7 @@ insertPred sx y cg@ConGraph{preds = p, subs = sb} =
               case succChain cg' sx y [] of
                 Just xs -> foldM (substitute sx) cg' xs `throwContext` fromCycle xs sx
                 otherwise -> return cg'
-        otherwise -> return cg
+        otherwise -> closePred sx y cg{preds = M.insert y [sx] p} `throwContext` fromClosure sx (Var y)
 
 -- Partial online transitive closure
 closeSucc :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)

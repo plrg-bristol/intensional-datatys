@@ -5,17 +5,28 @@ module Utils
       isConstructor,
       fromPolyVar,
       isWild,
-      name
+      name,
+      isPrim
     ) where
 
 import Types
 import Data.List
 import qualified TyCoRep as T
 import qualified GhcPlugins as Core
+import Debug.Trace
+
+isPrim :: Core.NamedThing t => t -> Bool
+isPrim t = isPrefixOf "$ghc-prim$" $ name t
 
 toSort :: Core.Type -> Sort
 toSort (T.TyVarTy v) = SVar v
-toSort (T.FunTy t1 t2) = SArrow (toSort t1) (toSort t2)
+toSort (T.FunTy t1 t2) =
+  let s1 = toSort t1
+      s2 = toSort t2
+  in SArrow s1 s2
+toSort (T.TyConApp t [])
+  | isPrim t = SBase t
+  | otherwise = SData t
 toSort (T.LitTy _) = error "Unimplemented"
 toSort _ = error "Core type is not a valid sort."
 
@@ -29,13 +40,14 @@ toSortScheme (T.ForAllTy b t) =
   let (SForall as st) = toSortScheme t
       a = Core.binderVar b
   in SForall (a:as) st
-toSortScheme (T.TyConApp c args) = SForall [] $ SData c
+toSortScheme (T.TyConApp c args)
+  | isPrim c = SForall [] $ SBase c
+  | otherwise = SForall [] $ SData c
+toSortScheme (T.LitTy _) = error "Unimplemented"
 toSortScheme _ = error "Unimplemented"
 
 isConstructor :: Core.Var -> Bool
-isConstructor x = case Core.varType x of
-  T.TyConApp _ _ -> True
-  otherwise -> False
+isConstructor = Core.isDataConWorkId
 
 isWild :: Core.Var -> Bool
 isWild x = name x == "$_sys$wild"

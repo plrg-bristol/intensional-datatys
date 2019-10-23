@@ -48,14 +48,14 @@ safeVar v = do
   ctx <- ask
   case var ctx M.!? v of
     Just ts -> return ts
-    Nothing -> error "Variable not in environment."
+    Nothing -> throwError $ VariableError v
 
 safeCon :: Core.Name -> InferM (Core.TyCon, [Sort])
 safeCon k = do
   ctx <- ask
   case con ctx M.!? (name k) of
     Just args -> return args
-    Nothing   -> error "Constructor not in environment."
+    Nothing   -> throwError $ ConstructorError k
 
 fresh :: Sort -> InferM Type
 fresh t = do
@@ -81,8 +81,8 @@ delta p d k = do
       Just (d', ts) ->
         if d == d'
           then return $ fmap (polarise p) ts
-          else throwError DataTypeError
-      otherwise -> throwError ConstructorError
+          else throwError $ DataTypeError d k
+      otherwise -> throwError $ ConstructorError k
 
 instance Rewrite RVar UType InferM where
   toNorm t1@(K k ts) t2@(V x p d) = do

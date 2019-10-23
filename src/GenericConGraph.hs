@@ -1,5 +1,4 @@
 {-# LANGUAGE PatternSynonyms, MultiParamTypeClasses, FunctionalDependencies #-}
-
 module GenericConGraph (
       SExpr (Var, Con, Sum, One, Zero)
     , Constructor (variance)
@@ -19,6 +18,7 @@ module GenericConGraph (
 import Control.Monad
 import Control.Monad.Except
 import qualified Data.Map as M
+import qualified Data.List as L
 import Debug.Trace
 
 -- Set expression with disjoint sum
@@ -61,7 +61,7 @@ class ConstraintError x c e | c -> x where
   fromClosure               :: SExpr x c -> SExpr x c -> e -> e
 
   -- Base errors
-  hetrogeneousConstructors  :: c -> c -> e
+  hetrogeneousConstructors  :: SExpr x c -> SExpr x c -> e
   subtypeOfZero             :: SExpr x c -> e
   supertypeOfOne            :: SExpr x c -> e
 
@@ -81,12 +81,16 @@ fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 nodes :: ConGraphGen x c -> [SExpr x c]
 nodes ConGraph{succs = s, preds = p} = fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p)
 
+-- Depth first search
+path :: (Eq c, Show c, Show x, Ord x) => ConGraphGen x c -> [SExpr x c] -> [SExpr x c] -> SExpr x c -> Bool
 path cg@ConGraph{succs = s, preds = p} visited [] _ = False
 path cg@ConGraph{succs = s, preds = p} visited (x:xs) z
   | x == z = True
-  | elem x (trace (show visited) visited) = path cg visited xs z
-  | otherwise = path cg (x:visited) (edges x ++ (fmap Var $ M.keys $ M.map (filter (== x)) p) ++ xs) z
+  | elem x visited = path cg visited xs z
+  | expand x xs == (x:xs) = False
+  | otherwise = path cg (x:visited) (expand x xs) z
   where
+    expand x xs = L.nub (edges x ++ (fmap Var $ M.keys $ M.map (filter (== x)) p) ++ xs)
     edges (Var x) = case s M.!? x of
       Just ss -> ss
       otherwise -> []
@@ -97,6 +101,7 @@ insert :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Construc
 insert t1 t2 cg = do
   cs <- toNorm t1 t2
   foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg cs
+
 
 -- Insert new constraint
 insertInner :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
@@ -109,9 +114,9 @@ insertInner t Zero cg               = throwError $ subtypeOfZero t
 insertInner vx@(Var x) vy@(Var y) cg
   | x > y                           = insertSucc x vy cg
   | otherwise                       = insertPred vx y cg
-insertInner (Con c cargs) (Con d dargs) cg
+insertInner cx@(Con c cargs) dy@(Con d dargs) cg
   | c == d                          = foldM (\cg (v, ci, di) -> if v then insert ci di cg else insert di ci cg) cg $ zip3 (variance c) cargs dargs
-  | otherwise                       = throwError $ hetrogeneousConstructors c d
+  | otherwise                       = throwError $ hetrogeneousConstructors cx dy
 insertInner (Var x) c@(Sum _) cg    = insertSucc x c cg
 insertInner c@(Con _ _) (Var y) cg  = insertPred c y cg
 insertInner cx@(Con c cargs) (Sum ((d, dargs):ds)) cg

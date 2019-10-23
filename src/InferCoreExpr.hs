@@ -20,13 +20,13 @@ data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type]
 
 -- Add restricted constraints to an unquantifed type scheme
 quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
-quantifyWith cg@ConGraph{succs = s, preds = p} (Forall as [] _ u) = do
+quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
   -- Nodes of the restricted congraph
   let ns = L.nub $ filter (all (`elem` stems u) . stems) $ nodes cg
 
   -- Transitive closure (using edges for unrestricted graph) of restricted node
-  cg' <- fromList [(n1, n2) | n1 <- ns, n2 <- ns, path cg [] [n1] n2]
-  
+  cg' <- fromList $ [(n1, n2) | n1 <- ns, n2 <- ns, n1 /= n2, path cg [] [n1] n2]
+
   -- Only quantified by refinement variables that appear in the inferface
   return $ Forall as [x | Var x <- ns] cg' u
 
@@ -43,6 +43,7 @@ inferProg p = do
   let withBinds = local (insertMany xs ts)
 
   z <- mapM (\(xs, ts, rhss) -> do
+
     -- Infer a binder group
     (ts', cg) <- foldM (\(ts, cg) rhs -> do
         -- Infer each bind within the group, compiling constraints
@@ -50,7 +51,6 @@ inferProg p = do
         cg'' <- union cg cg'
         return (t:ts, cg'')
         ) ([], empty) rhss
-
     -- Insure fresh types are quantified by infered constraint (t' < t)
     cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
 
@@ -66,7 +66,7 @@ inferVar :: Core.Var -> [Sort] -> InferM (Type, ConGraph)
 inferVar x ts = do
   (Forall as xs cg u) <- safeVar x
   if length as /= length ts
-    then throwError $ PolyTypeError
+    then throwError $ PolyTypeError x
     else do
       ys  <- mapM fresh $ map (\(RVar (x, p, d)) -> SData d) xs
       ts' <- mapM fresh ts
@@ -145,40 +145,40 @@ infer (Core.Let b e) = do
 
 infer (Core.Case e b rt as) = do
   -- Infer case expession
-  et <- fresh $ toSort $ Utils.exprType e
-  t  <- fresh $ toSort rt
-  (t0, c0)   <- infer e
-  (caseType, cg) <- local (insertVar b $ Forall [] [] empty et) $ foldM (\(caseType, cg) a ->
+  et <- fresh $ toSort $ Utils.exprType e -- Constrain this
+  t <- fresh $ toSort rt
+  (t0, c0)        <- infer e
+  (caseType, cg)  <- local (insertVar b $ Forall [] [] empty et) $ foldM (\(caseType, cg) a ->
     case a of
       -- Infer constructor alternative
       (Core.DataAlt d, bs, rhs) -> do
         ts <- mapM (fresh . toSort . Core.varType) bs
         -- let ts' = _ -- getArgs of d
         -- cg' <- foldM (\cg (t', Forall _ _ _ t) -> insert t' t cg) cg (zip ts' ts)
-        (ti', cg') <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs)
-        cg''' <- insert ti' t cg'
-        cg'''' <- cg `union` cg'
+        (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs)
+        cgi' <- insert ti' t cgi
+        cg' <- cg `union` cgi `throwInExpr` rhs
         case caseType of
-          Empty     -> return (DataCon [(d, ts)], cg'''')
-          Default   -> return (Default, cg'''')
-          DataCon s -> return (DataCon ((d, ts):s), cg'''')
+          Empty     -> return (DataCon [(d, ts)], cg')
+          DataCon s -> return (DataCon ((d, ts):s), cg')
+          Default   -> return (Default, cg')
 
       -- Infer literal alternative
       (Core.LitAlt l, [], rhs) -> do
-        (ti', cg') <- infer rhs
-        cg'' <- insert ti' t cg'
-        cg''' <- cg `union` cg''
+        (ti', cgi) <- infer rhs
+        cgi' <- insert ti' t cgi
+        cg' <- cg `union` cgi'
         case caseType of
-          Default    -> return (Default, cg''')
-          Literal s  -> return (Literal (l:s), cg''')
-          Empty      -> return (Literal [l], cg''')
+          Default    -> return (Default, cg')
+          Literal s  -> return (Literal (l:s), cg')
+          Empty      -> return (Literal [l], cg')
 
       -- Infer default alternative
       (Core.DEFAULT, [], rhs) -> do
-        (ti', cg') <- infer rhs
-        cg'' <- insert ti' t cg'
-        cg''' <- cg `union` cg''
-        return (Default, cg''')
+        (ti', cgi) <- infer rhs
+        cgi' <- insert ti' t cgi
+        cg' <- cg `union` cgi'
+        return (Default, cg')
     ) (Empty, c0) as
 
   -- Ensure destructor is total
@@ -189,4 +189,5 @@ infer (Core.Case e b rt as) = do
       return (t, cg)
     Literal lss -> error "Literal cases must contain defaults."
 
+infer (Core.Tick t e) = infer e
 infer _ = error "Unimplemented"

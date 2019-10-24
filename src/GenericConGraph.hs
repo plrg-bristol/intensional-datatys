@@ -83,12 +83,13 @@ fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 nodes :: ConGraphGen x c -> [SExpr x c]
 nodes ConGraph{succs = s, preds = p} = fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p)
 
--- This needs to be iterative deepening
+-- This should be iterative deepening
 path :: (Eq c, Show c, Show x, Ord x) => ConGraphGen x c -> [SExpr x c] -> [SExpr x c] -> SExpr x c -> Bool
 path cg@ConGraph{succs = s, preds = p} visited [] _ = False
 path cg@ConGraph{succs = s, preds = p} visited (x:xs) z
   | x == z = True
   | elem x visited = path cg visited xs z
+  | expand x xs == x:xs = path cg visited xs z
   | otherwise = path cg (x:visited) (expand x xs) z
   where
     expand x xs = L.nub (edges x ++ (fmap Var $ M.keys $ M.map (filter (== x)) p) ++ xs)
@@ -235,8 +236,8 @@ substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
     sub (Var y) | x == y = se
     sub (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap sub cargs)) cs
     sub One = One
-    p'  = L.nub $ fmap (fmap sub) p
-    s'  = L.nub $ fmap (fmap sub) s
+    p'  = fmap (L.nub . fmap sub) p
+    s'  = fmap (L.nub . fmap sub) s
     cg = ConGraph { succs = s', preds = p', subs = M.insert x se $ fmap sub sb }
 
 -- Apply function to set expressions without effecting variables

@@ -13,8 +13,8 @@ data Error =
     InExpr (Core.Expr Core.Var) Error
   | VariableError Core.Var
   | PolyTypeError Core.Var
-  | ConstructorError Core.Name
-  | DataTypeError Core.TyCon Core.Name
+  | ConstructorError Core.DataCon
+  | DataTypeError Core.TyCon Core.DataCon
   | Hetro Type Type
   | FromClosure Type Type Error
   | UsingEq RVar Type Error

@@ -28,11 +28,18 @@ instance Ord RVar where
   RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
 data Sort = SVar Core.Var | SBase Core.TyCon | SData Core.TyCon | SArrow Sort Sort deriving Show
-data UType = TVar Core.Var | TBase Core.TyCon | TData Core.Name | TArrow deriving (Show, Eq)
+data UType = TVar Core.Var | TBase Core.TyCon | TData Core.DataCon | TArrow deriving Show
 data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon | PArrow PType PType
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type deriving Show
 data SortScheme = SForall [Core.Var] Sort
+
+instance Eq UType where
+  TVar x == TVar y = Core.getName x == Core.getName y
+  TBase b == TBase b' = Core.getName b == Core.getName b'
+  TData d == TData d' = Core.getName d == Core.getName d'
+  TArrow == TArrow = True
+  _ == _ = False
 
 type ConGraph = ConGraphGen RVar UType
 
@@ -50,13 +57,12 @@ instance Show Core.DataCon where
 
 instance Constructor UType where
   variance TArrow = [False, True]
-  variance (TData v) = repeat True
-  variance _ = []
+  variance _ = repeat True
 
 pattern (:=>) :: Type -> Type -> Type
 pattern t1 :=> t2 = Con TArrow [t1, t2]
 
-pattern K :: Core.Name -> [Type] -> Type
+pattern K :: Core.DataCon -> [Type] -> Type
 pattern K v ts = Con (TData v) ts
 
 pattern V :: String -> Bool -> Core.TyCon -> Type
@@ -71,7 +77,7 @@ upArrow :: String -> [PType] -> [Type]
 upArrow x = fmap upArrow'
   where
     upArrow' (PData p d)     = Var $ RVar (x, p, d)
-    upArrow' (PArrow t1 t2)  = Con TArrow [upArrow' t1, upArrow' t2]
+    upArrow' (PArrow t1 t2)  = upArrow' t1 :=> upArrow' t2
     upArrow' (PVar a)        = Con (TVar a) []
     upArrow' (PBase b)       = Con (TBase b) []
 
@@ -82,23 +88,21 @@ polarise p (SData d) = PData p d
 polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
 
 sub :: [RVar] -> [Type] -> Type -> Type
-sub _ _ Zero = Zero
-sub _ _ One = One
-sub [] _ t = t
-sub _ [] t = t
+sub [] [] t = t
 sub (x:xs) (y:ys) (Var x')
   | x == x' = y
   | otherwise = sub xs ys (Var x')
-sub xs ys (Con c cargs) = Con c $ fmap (sub xs ys) cargs
 sub xs ys (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap (sub xs ys) cargs)) cs
+sub _ _ _ = error "Substitution vectors have different lengths"
 
 subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
-subTypeVars [] _ u = u
-subTypeVars _ [] u = u
-subTypeVars (a:as) (t:ts) (Con (TVar a') [])
-  | a == a' = subTypeVars as ts t
-  | otherwise = subTypeVars as ts $ Con (TVar a') []
-subTypeVars (a:as) (t:ts) (Sum [(TVar a', [])])
-  | a == a' = subTypeVars as ts t
-  | otherwise = subTypeVars as ts $ Con (TVar a') []
-subTypeVars (a:as) (t:ts) t' = subTypeVars as ts t'
+subTypeVars [] [] u = u
+-- subTypeVars (a:as) (t:ts) (Con (TVar a') [])
+--   | a == a' = subTypeVars as ts t
+--   | otherwise = subTypeVars as ts $ Con (TVar a') []
+-- subTypeVars (a:as) (t:ts) (Sum cs) = subTypeVars as ts $ (fmap subtv' cs)
+--   where
+--     subtv' :: (UType, [Type]) -> (UType, [Type])
+--     subtv' (c, cargs)
+--       | c == TVar a = t
+subTypeVars _ _  _ = error "Substitution vectors have different lengths"

@@ -47,7 +47,7 @@ inferProg p = do
     (ts', bcg) <- foldM (\(ts, cg) rhs -> do
         -- Infer each bind within the group, compiling constraints
         (t, cg') <- withBinds (infer rhs) `throwInExpr` rhs
-        cg'' <- union cg cg'
+        cg'' <- union cg cg' `throwInExpr` rhs
         return (t:ts, cg'')
         ) ([], empty) rhss
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
@@ -76,16 +76,15 @@ inferVar x ts = do
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer (Core.Var x) =
-  if isConstructor x
-    then do
+  case isConstructor x of
+    Just k -> do
       -- Infer constructor
-      let k = Core.getName x
       (d, args) <- safeCon k
       ts <- mapM fresh args
       t  <- fresh $ SData d
       cg <- insert (K k ts) t empty
       return (foldr (:=>) t ts, cg)
-    else
+    Nothing ->
       -- Infer monomorphic variable
       inferVar x []
 
@@ -185,7 +184,7 @@ infer (Core.Case e b rt as) = do
   case caseType of
     Default -> return (t, cg)
     DataCon dts -> do
-      cg' <- insert t0 (Sum [(TData $ Core.getName dc, ts) | (dc, ts) <- dts]) cg  `throwInExpr` e
+      cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg  `throwInExpr` e
       return (t, cg')
     Literal lss -> error "Literal cases must contain defaults."
 

@@ -33,8 +33,8 @@ toSort _ = error "Core type is not a valid sort."
 toSortScheme :: Core.Type -> SortScheme
 toSortScheme (T.TyVarTy v) = SForall [] (SVar v)
 toSortScheme (T.FunTy t1 t2) =
-  let SForall [] s1 = toSortScheme t1
-      SForall [] s2 = toSortScheme t2
+  let s1 = toSort t1
+      s2 = toSort t2
   in SForall [] (SArrow s1 s2)
 toSortScheme (T.ForAllTy b t) =
   let (SForall as st) = toSortScheme t
@@ -44,10 +44,10 @@ toSortScheme (T.TyConApp c args)
   | isPrim c = SForall [] $ SBase c
   | otherwise = SForall [] $ SData c
 toSortScheme (T.LitTy _) = error "Unimplemented"
-toSortScheme _ = error "Unimplemented"
+toSortScheme _ = error "Core type is not a valid sort scheme."
 
-isConstructor :: Core.Var -> Bool
-isConstructor = Core.isDataConWorkId
+isConstructor :: Core.Var -> Maybe Core.DataCon
+isConstructor = Core.isDataConId_maybe
 
 isWild :: Core.Var -> Bool
 isWild x = name x == "$_sys$wild"
@@ -58,6 +58,6 @@ name = Core.nameStableString . Core.getName
 fromPolyVar :: Core.CoreExpr -> Maybe (Core.Id, [Sort])
 fromPolyVar (Core.Var i) = Just (i, [])
 fromPolyVar (Core.App e1 (Core.Type t)) = do
-  (id, ts) <- fromPolyVar e1
-  return (id, toSort t:ts)
+  (i, ts) <- fromPolyVar e1
+  return (i, toSort t:ts)
 fromPolyVar _ = Nothing

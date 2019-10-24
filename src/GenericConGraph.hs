@@ -8,6 +8,7 @@ module GenericConGraph (
     , Rewrite (toNorm)
     , empty
     , fromList
+    , toList
     , nodes
     , path
     , insert
@@ -24,7 +25,7 @@ import qualified Data.List as L
 import Debug.Trace
 
 -- Set expression with disjoint sum
-data SExpr x c = Var x | Sum [(c, [SExpr x c])] | One deriving Show
+data SExpr x c = Var x | Sum [(c, [SExpr x c])] | One
 
 -- Singleton sum
 pattern Con :: c -> [SExpr x c] -> SExpr x c
@@ -49,7 +50,7 @@ data ConGraphGen x c = ConGraph {
   succs :: M.Map x [SExpr x c],
   preds :: M.Map x [SExpr x c],
   subs  :: M.Map x (SExpr x c)    -- Unique representations for cyclic equivalence classes
-} deriving Show
+}
 
 -- Empty constraint graph
 empty :: ConGraphGen x c
@@ -78,6 +79,9 @@ class Rewrite x c m where
 -- Constructor a new constraint graph from a list
 fromList :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> m (ConGraphGen x c)
 fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
+
+toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]
+toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
 
 -- A list of all nodes that appear in the constriant graph
 nodes :: ConGraphGen x c -> [SExpr x c]

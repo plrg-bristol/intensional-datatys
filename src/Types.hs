@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE PatternSynonyms, TypeSynonymInstances, FlexibleInstances #-}
 
 module Types
     (
@@ -18,21 +18,39 @@ module Types
       stems
     ) where
 
+import Data.List
 import GenericConGraph
 import qualified GhcPlugins as Core
 import Debug.Trace
 
-newtype RVar = RVar (String, Bool, Core.TyCon) deriving (Show, Eq)
+newtype RVar = RVar (String, Bool, Core.TyCon) deriving Eq
 
 instance Ord RVar where
   RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
-data Sort = SVar Core.Var | SBase Core.TyCon | SData Core.TyCon | SArrow Sort Sort deriving Show
-data UType = TVar Core.Var | TBase Core.TyCon | TData Core.DataCon | TArrow deriving Show
+data Sort = SVar Core.Var | SBase Core.TyCon | SData Core.TyCon | SArrow Sort Sort
+data UType = TVar Core.Var | TBase Core.TyCon | TData Core.DataCon | TArrow
 data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon | PArrow PType PType
 type Type = SExpr RVar UType
-data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type deriving Show
+data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type
 data SortScheme = SForall [Core.Var] Sort
+
+instance Show UType where
+  show (TVar v) = show v
+  show (TBase b) = show b
+  show (TData dc) = show dc
+
+instance Show RVar where
+  show (RVar (x, p, d)) = "[" ++ x ++ (if p then "+" else "-") ++ show d ++ "]"
+
+instance Show Type where
+  show (V x p d) = "[" ++ x ++ (if p then "+" else "-") ++ show d ++ "]"
+  show (t1 :=> t2) = "(" ++ show t1 ++ "->" ++ show t2 ++ ")"
+  show (K v ts) =show v ++"(" ++ intercalate "," (fmap show ts) ++ ")"
+  show (Sum cs) = intercalate "+" (fmap (\(c, cargs) -> show c ++ "(" ++ intercalate "," (fmap show cargs) ++ ")" ) cs)
+
+instance Show TypeScheme where
+  show (Forall as xs cg t) = "∀" ++ intercalate " " (fmap show as) ++ ".∀"  ++ intercalate  " " (fmap show xs) ++ "." ++ show t ++"\n\nwhere:\n\n" ++ intercalate "\n" (fmap show $ toList cg)
 
 instance Eq UType where
   TVar x == TVar y = Core.getName x == Core.getName y
@@ -43,17 +61,23 @@ instance Eq UType where
 
 type ConGraph = ConGraphGen RVar UType
 
+split :: String -> [String]
+split [] = [""]
+split (c:cs) | c == '$'  = "" : rest
+             | otherwise = (c : head rest) : tail rest
+    where rest = split cs
+
 instance Show Core.Var where
-  show = Core.nameStableString . Core.getName
+  show n = last $ split (Core.nameStableString $ Core.getName n)
 
 instance Show Core.Name where
-  show = Core.nameStableString
+  show n = last $ split (Core.nameStableString $ Core.getName n)
 
 instance Show Core.TyCon where
-  show = Core.nameStableString . Core.getName
+  show n = last $ split (Core.nameStableString $ Core.getName n)
 
 instance Show Core.DataCon where
-  show = Core.nameStableString . Core.getName
+  show n = last $ split (Core.nameStableString $ Core.getName n)
 
 instance Constructor UType where
   variance TArrow = [False, True]
@@ -97,6 +121,7 @@ sub _ _ _ = error "Substitution vectors have different lengths"
 
 subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
 subTypeVars [] [] u = u
+subTypeVars _ _  _ = error "Unimplemented"
 -- subTypeVars (a:as) (t:ts) (Con (TVar a') [])
 --   | a == a' = subTypeVars as ts t
 --   | otherwise = subTypeVars as ts $ Con (TVar a') []
@@ -105,4 +130,3 @@ subTypeVars [] [] u = u
 --     subtv' :: (UType, [Type]) -> (UType, [Type])
 --     subtv' (c, cargs)
 --       | c == TVar a = t
-subTypeVars _ _  _ = error "Substitution vectors have different lengths"

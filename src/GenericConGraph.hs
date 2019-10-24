@@ -235,8 +235,8 @@ substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
     sub (Var y) | x == y = se
     sub (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap sub cargs)) cs
     sub One = One
-    p'  = fmap (fmap sub) p  -- nub
-    s'  = fmap (fmap sub) s
+    p'  = L.nub $ fmap (fmap sub) p
+    s'  = L.nub $ fmap (fmap sub) s
     cg = ConGraph { succs = s', preds = p', subs = M.insert x se $ fmap sub sb }
 
 -- Apply function to set expressions without effecting variables

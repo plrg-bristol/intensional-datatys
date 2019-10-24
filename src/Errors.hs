@@ -17,14 +17,18 @@ data Error =
   | DataTypeError Core.TyCon Core.Name
   | Hetro Type Type
   | FromClosure Type Type Error
+  | UsingEq RVar Type Error
+  | SubZero Type
+  | FromCycle [RVar] Type Error
+  | SuperOne Type
 
 instance ConstraintError RVar UType Error where
-  usingEquivalence = error "usingEquivalence"
-  fromCycle = error "fromCycle"
+  usingEquivalence = UsingEq
+  fromCycle = FromCycle
   fromClosure = FromClosure
   hetrogeneousConstructors = Hetro
-  subtypeOfZero = error "subtypeOfZero"
-  supertypeOfOne = error "supertypeOfOne"
+  subtypeOfZero = SubZero
+  supertypeOfOne = SuperOne
 
 instance Show Error where
   show (VariableError x) = "The variable " ++ show x ++ " is not in scope."
@@ -34,3 +38,5 @@ instance Show Error where
   show (InExpr s e) = Core.pprPanic ("The error: " ++ show e ++ " has occured in the expression: \n") $ Core.ppr s
   show (Hetro c d) = "hetrogeneousConstructors: " ++ show c ++ show d
   show (FromClosure c d e) = "from closure: " ++ show c ++ show d ++ "in the error:" ++ show e
+  show (FromCycle xs t e) = "from cycle " ++ show xs ++ show t ++ "in the error: " ++ show e
+  show (UsingEq xs t e) = "using the substitution " ++ show xs ++ show t ++ "in the error: " ++ show e

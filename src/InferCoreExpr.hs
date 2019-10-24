@@ -43,19 +43,18 @@ inferProg p = do
   let withBinds = local (insertMany xs ts)
 
   z <- mapM (\(xs, ts, rhss) -> do
-
     -- Infer a binder group
-    (ts', cg) <- foldM (\(ts, cg) rhs -> do
+    (ts', bcg) <- foldM (\(ts, cg) rhs -> do
         -- Infer each bind within the group, compiling constraints
-        (t, cg') <- withBinds (infer rhs)
+        (t, cg') <- withBinds (infer rhs) `throwInExpr` rhs
         cg'' <- union cg cg'
         return (t:ts, cg'')
         ) ([], empty) rhss
-    -- Insure fresh types are quantified by infered constraint (t' < t)
-    cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
+    -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
+    bcg' <- foldM (\bcg' (t', Forall as _ _ t) -> insert t' t bcg') bcg (zip ts' ts)
 
     -- Restrict constraints to the interface
-    ts' <- mapM (quantifyWith cg') ts
+    ts' <- mapM (quantifyWith bcg') ts
     return (xs, ts')
 
     ) $ fmap (\b -> let xs = Core.bindersOf b in (xs, fmap (m M.!) xs, Core.rhssOfBind b)) p
@@ -80,11 +79,11 @@ infer (Core.Var x) =
   if isConstructor x
     then do
       -- Infer constructor
-      let x' = Core.getName x
-      (d, args) <- safeCon x'
+      let k = Core.getName x
+      (d, args) <- safeCon k
       ts <- mapM fresh args
       t  <- fresh $ SData d
-      cg <- insert (K x' ts) t empty
+      cg <- insert (K k ts) t empty
       return (foldr (:=>) t ts, cg)
     else
       -- Infer monomorphic variable
@@ -110,10 +109,10 @@ infer e@(Core.App e1 e2) =
           cg' <- insert t2 t3 cg
           return (t4, cg')
 
-infer (Core.Lam x e) = do
+infer e'@(Core.Lam x e) = do
   -- Infer abstraction
   t1 <- fresh $ toSort $ Core.varType x
-  (t2, cg) <- local (insertVar x $ Forall [] [] empty t1) (infer e)
+  (t2, cg) <- local (insertVar x $ Forall [] [] empty t1) (infer e `throwInExpr` e')
   return (t1 :=> t2, cg)
 
 infer (Core.Let b e) = do
@@ -145,9 +144,10 @@ infer (Core.Let b e) = do
 
 infer (Core.Case e b rt as) = do
   -- Infer case expession
-  et <- fresh $ toSort $ Utils.exprType e -- Constrain this
-  t <- fresh $ toSort rt
-  (t0, c0)        <- infer e
+  et <- fresh $ toSort $ Utils.exprType e
+  t  <- fresh $ toSort rt
+  (t0, c0) <- infer e `throwInExpr` e
+  c0' <- insert et t0 c0 `throwInExpr` e
   (caseType, cg)  <- local (insertVar b $ Forall [] [] empty et) $ foldM (\(caseType, cg) a ->
     case a of
       -- Infer constructor alternative
@@ -155,8 +155,8 @@ infer (Core.Case e b rt as) = do
         ts <- mapM (fresh . toSort . Core.varType) bs
         -- let ts' = _ -- getArgs of d
         -- cg' <- foldM (\cg (t', Forall _ _ _ t) -> insert t' t cg) cg (zip ts' ts)
-        (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs)
-        cgi' <- insert ti' t cgi
+        (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs) `throwInExpr` rhs
+        cgi' <- insert ti' t cgi `throwInExpr` rhs
         cg' <- cg `union` cgi `throwInExpr` rhs
         case caseType of
           Empty     -> return (DataCon [(d, ts)], cg')
@@ -169,9 +169,9 @@ infer (Core.Case e b rt as) = do
         cgi' <- insert ti' t cgi
         cg' <- cg `union` cgi'
         case caseType of
-          Default    -> return (Default, cg')
-          Literal s  -> return (Literal (l:s), cg')
           Empty      -> return (Literal [l], cg')
+          Literal s  -> return (Literal (l:s), cg')
+          Default    -> return (Default, cg')
 
       -- Infer default alternative
       (Core.DEFAULT, [], rhs) -> do
@@ -179,14 +179,14 @@ infer (Core.Case e b rt as) = do
         cgi' <- insert ti' t cgi
         cg' <- cg `union` cgi'
         return (Default, cg')
-    ) (Empty, c0) as
+    ) (Empty, c0') as `throwInExpr` e
 
-  -- Ensure destructor is total
+  -- Insure destructor is total
   case caseType of
     Default -> return (t, cg)
     DataCon dts -> do
-      cg' <- insert t0 (Sum [(TData $ Core.getName dc, ts) | (dc, ts) <- dts]) cg
-      return (t, cg)
+      cg' <- insert t0 (Sum [(TData $ Core.getName dc, ts) | (dc, ts) <- dts]) cg  `throwInExpr` e
+      return (t, cg')
     Literal lss -> error "Literal cases must contain defaults."
 
 infer (Core.Tick t e) = infer e

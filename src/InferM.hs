@@ -70,8 +70,8 @@ freshScheme (SForall as s@(SData _)) = do
   t <- fresh s
   return $ Forall as [] empty t
 freshScheme (SForall as (SArrow s1 s2)) = do
-  Forall _ _ _ t1 <- freshScheme (SForall as s1)
-  Forall _ _ _ t2 <- freshScheme (SForall as s2)
+  Forall _ _ _ t1 <- freshScheme (SForall [] s1)
+  Forall _ _ _ t2 <- freshScheme (SForall [] s2)
   return $ Forall as [] empty (t1 :=> t2)
 
 delta :: Bool -> Core.TyCon -> Core.Name -> InferM [PType]
@@ -91,7 +91,7 @@ instance Rewrite RVar UType InferM where
       if ts' /= ts
         then return [(K k ts', V x p d), (K k ts, K k ts')]
         else return [(t1, t2)]
-  toNorm t1@(V _ _ _) t2@(Con _ _) = return [(t1, t2)]
+  toNorm t1@(V _ _ _) t2@(_ :=> _) = return [(t1, t2)]
   toNorm t1@(V x p d) t2@(Sum cs) = do
       s <- mapM (refineCon x d) cs
       if cs /= s

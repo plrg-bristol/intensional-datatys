@@ -1,4 +1,5 @@
 {-# LANGUAGE PatternSynonyms, MultiParamTypeClasses, FunctionalDependencies #-}
+
 module GenericConGraph (
       SExpr (Var, Con, Sum, One, Zero)
     , Constructor (variance)
@@ -81,13 +82,12 @@ fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 nodes :: ConGraphGen x c -> [SExpr x c]
 nodes ConGraph{succs = s, preds = p} = fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p)
 
--- Depth first search
+-- This needs to be iterative deepening
 path :: (Eq c, Show c, Show x, Ord x) => ConGraphGen x c -> [SExpr x c] -> [SExpr x c] -> SExpr x c -> Bool
 path cg@ConGraph{succs = s, preds = p} visited [] _ = False
 path cg@ConGraph{succs = s, preds = p} visited (x:xs) z
   | x == z = True
   | elem x visited = path cg visited xs z
-  | expand x xs == (x:xs) = False
   | otherwise = path cg (x:visited) (expand x xs) z
   where
     expand x xs = L.nub (edges x ++ (fmap Var $ M.keys $ M.map (filter (== x)) p) ++ xs)
@@ -101,7 +101,6 @@ insert :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Construc
 insert t1 t2 cg = do
   cs <- toNorm t1 t2
   foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg cs
-
 
 -- Insert new constraint
 insertInner :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
@@ -136,7 +135,7 @@ insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
             else do
               cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s} `throwContext` fromClosure (Var x) sy
               case predChain cg' x sy [] of
-                Just xs -> foldM (substitute sy) cg' xs `throwContext` fromCycle xs sy
+                Just vs -> foldM (substitute sy) cg' vs `throwContext` fromCycle vs sy
                 otherwise -> return cg'
         otherwise -> closeSucc x sy cg{succs = M.insert x [sy] s} `throwContext` fromClosure (Var x) sy
 
@@ -152,7 +151,7 @@ insertPred sx y cg@ConGraph{preds = p, subs = sb} =
             else do
               cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p} `throwContext` fromClosure sx (Var y)
               case succChain cg' sx y [] of
-                Just xs -> foldM (substitute sx) cg' xs `throwContext` fromCycle xs sx
+                Just vs -> foldM (substitute sx) cg' vs `throwContext` fromCycle vs sx
                 otherwise -> return cg'
         otherwise -> closePred sx y cg{preds = M.insert y [sx] p} `throwContext` fromClosure sx (Var y)
 
@@ -219,7 +218,8 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
   M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (return cg1''') p
   where
     subVar (Var x) = M.findWithDefault (Var x) x sb
-    subVar se = se
+    subVar (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap subVar cargs)) cs
+    suBVar One = One
 
 -- Safely substitute variable (x) with expression (se)
 substitute :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => SExpr x c -> ConGraphGen x c -> x -> m (ConGraphGen x c)

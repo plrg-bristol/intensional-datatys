@@ -92,11 +92,12 @@ instance Rewrite RVar UType InferM where
       let ts' = upArrow x args
       return [(K k ts', V x p d), (K k ts, K k ts')]
   toNorm t1@(V _ _ _) t2@(_ :=> _) = return [(t1, t2)]  -- Arrows are singleton sum so this shouldn't fall through
+  toNorm t1@(V _ _ _) t2@(K _ _) = return [(t1, t2)]
   toNorm t1@(V x p d) t2@(Sum cs) = do
-      s <- mapM (refineCon x d) cs
+      s <- mapM refineCon cs
       return [(Sum s, Sum cs),(V x p d, Sum s)]
       where
-        refineCon x d (TData k, ts) = do
+        refineCon (TData k, ts) = do
           args <- delta p d k
           return (TData k, upArrow x args)
   toNorm t1 t2 = return [(t1, t2)]

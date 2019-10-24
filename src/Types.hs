@@ -50,7 +50,7 @@ instance Show Type where
   show (Sum cs) = intercalate "+" (fmap (\(c, cargs) -> show c ++ "(" ++ intercalate "," (fmap show cargs) ++ ")" ) cs)
 
 instance Show TypeScheme where
-  show (Forall as xs cg t) = "∀" ++ intercalate " " (fmap show as) ++ ".∀"  ++ intercalate  " " (fmap show xs) ++ "." ++ show t ++"\n\nwhere:\n\n" ++ intercalate "\n" (fmap show $ toList cg)
+  show (Forall as xs cg t) = "\n∀" ++ intercalate " " (fmap show as) ++ ".∀"  ++ intercalate  " " (fmap show xs) ++ "." ++ show t ++"\n\nwhere:\n\n" ++ intercalate "\n" (fmap show $ toList cg) ++ "\n"
 
 instance Eq UType where
   TVar x == TVar y = Core.getName x == Core.getName y
@@ -60,6 +60,9 @@ instance Eq UType where
   _ == _ = False
 
 type ConGraph = ConGraphGen RVar UType
+
+instance Show ConGraph where
+  show (ConGraph{succs = s, preds = p, subs =sb}) = show s ++ "\n" ++ show p ++ "\n" ++ show sb
 
 split :: String -> [String]
 split [] = [""]

@@ -25,12 +25,20 @@ quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
   let ns = L.nub $ filter (all (`elem` stems u) . stems) $ nodes cg
 
   -- Transitive closure (using edges for unrestricted graph) of restricted node
-  cg' <- fromList $ [(n1, n2) | n1 <- ns, n2 <- ns, n1 /= n2, path cg [] [n1] n2]
+  cg' <- fromList $ [(n1, n2) | n1 <- ns, n2 <- ns, n1 /= n2, (n1, n2) `elem` (trans $ toList cg)]
 
   -- Only quantified by refinement variables that appear in the inferface
   return $ Forall as [x | Var x <- ns] cg' u
 
 quantifyWith _ _ = error "Cannot restrict quantified type."
+
+--  Boooo
+trans :: Eq a => [(a, a)] -> [(a, a)]
+trans closure
+  | closure == closureUntilNow = closure
+  | otherwise                  = trans closureUntilNow
+  where closureUntilNow =
+          L.nub $ closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
 
 -- Infer program
 inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
@@ -75,11 +83,11 @@ inferVar x ts = do
       return $ (v, graphMap (subTypeVars as ts') cg'')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
-infer (Core.Var x) =
+infer e'@(Core.Var x) =
   case isConstructor x of
     Just k -> do
       -- Infer constructor
-      (d, args) <- safeCon k
+      (d, args) <- safeCon k `throwInExpr` e'
       ts <- mapM fresh args
       t  <- fresh $ SData d
       cg <- insert (K k ts) t empty
@@ -100,8 +108,8 @@ infer e@(Core.App e1 e2) =
       inferVar x ts
     otherwise -> do
       -- Infer application
-      (t1, c1) <- infer e1
-      (t2, c2) <- infer e2
+      (t1, c1) <- infer e1 `throwInExpr` e
+      (t2, c2) <- infer e2 `throwInExpr` e
       case t1 of
         t3 :=> t4 -> do
           cg <- union c1 c2
@@ -188,5 +196,7 @@ infer (Core.Case e b rt as) = do
       return (t, cg')
     Literal lss -> error "Literal cases must contain defaults."
 
+-- Remove core ticks
 infer (Core.Tick t e) = infer e
+
 infer _ = error "Unimplemented"

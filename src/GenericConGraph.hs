@@ -3,18 +3,19 @@
 module GenericConGraph (
       SExpr (Var, Con, Sum, One, Zero)
     , Constructor (variance)
-    , ConGraphGen (ConGraph, succs, preds)
+    , ConGraphGen (ConGraph, succs, preds, subs)
     , ConstraintError (usingEquivalence, fromCycle, fromClosure, hetrogeneousConstructors, subtypeOfZero, supertypeOfOne)
     , Rewrite (toNorm)
     , empty
     , fromList
     , toList
     , nodes
-    , path
+    -- , path
     , insert
     , union
     , substitute
     , graphMap
+    -- , leastSolution
      ) where
 
 import Control.Applicative hiding (empty)
@@ -80,27 +81,25 @@ class Rewrite x c m where
 fromList :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> m (ConGraphGen x c)
 fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 
+-- Return a list of constraints
 toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]
 toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
 
 -- A list of all nodes that appear in the constriant graph
 nodes :: ConGraphGen x c -> [SExpr x c]
 nodes ConGraph{succs = s, preds = p} = fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p)
-
--- This should be iterative deepening
-path :: (Eq c, Show c, Show x, Ord x) => ConGraphGen x c -> [SExpr x c] -> [SExpr x c] -> SExpr x c -> Bool
-path cg@ConGraph{succs = s, preds = p} visited [] _ = False
-path cg@ConGraph{succs = s, preds = p} visited (x:xs) z
-  | x == z = True
-  | elem x visited = path cg visited xs z
-  | expand x xs == x:xs = path cg visited xs z
-  | otherwise = path cg (x:visited) (expand x xs) z
-  where
-    expand x xs = L.nub (edges x ++ (fmap Var $ M.keys $ M.map (filter (== x)) p) ++ xs)
-    edges (Var x) = case s M.!? x of
-      Just ss -> ss
-      otherwise -> []
-    edges _ = []
+--
+-- path graph visited [] z = ([], False)
+-- path cg@ConGraph{succs = s, preds = p} visited (x:xs) z
+--   | x == z = (visited, True)
+--   | elem x visited = path cg visited xs z
+--   | otherwise = path cg (x:visited) (edges x) z
+--   where
+--     edges x = L.nub ((xs ++ edges' x) L.\\ visited)
+--     edges' (Var x) = case s M.!? x of
+--       Just ss -> ss
+--       otherwise -> []
+--     edges' _ = []
 
 -- Insert new constraint with rewriting rule
 insert :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)

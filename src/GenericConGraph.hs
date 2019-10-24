@@ -16,6 +16,7 @@ module GenericConGraph (
     , graphMap
      ) where
 
+import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Except
 import qualified Data.Map as M
@@ -157,49 +158,47 @@ insertPred sx y cg@ConGraph{preds = p, subs = sb} =
 
 -- Partial online transitive closure
 closeSucc :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
-closeSucc x fy cg =
+closeSucc x sy cg =
   case preds cg M.!? x of
-    Just ps   -> foldM (\cg p -> insert p fy cg) cg ps
+    Just ps   -> foldM (\cg p -> insert p sy cg) cg ps
     otherwise -> return cg
 
 closePred :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> m (ConGraphGen x c)
-closePred fx y cg =
+closePred sx y cg =
   case succs cg M.!? y of
-    Just ss   -> foldM (\cg s -> insert s fx cg) cg ss
+    Just ss   -> foldM (\cg s -> insert sx s cg) cg ss
     otherwise -> return cg
 
 -- Partial online cycle elimination
 predChain :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> x -> SExpr x c -> [x] -> Maybe [x]
 predChain cg f (Var t) m = do
   guard $ f == t
-  return $ m
+  return $ f:m
 predChain cg f t m = do
   ps <- preds cg M.!? f
-  foldr predLoop Nothing ps
+  foldr (\t pl -> predLoop t <|> pl) Nothing ps
   where
     m' = f:m
-    predLoop (Var p) pl =
-      if p `elem` m' || p > f
-        then pl
-        else predChain cg p t m'
-    predLoop t' _ = do
+    predLoop (Var p) = do
+      guard $ p `elem` m' || p > f
+      predChain cg p t m'
+    predLoop t' = do
       guard $ t == t'
       return m'
 
 succChain :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> SExpr x c -> x -> [x] -> Maybe [x]
 succChain cg (Var f) t m = do
   guard $ f == t
-  return $ m
+  return $ t:m
 succChain cg f t m = do
   ss <- succs cg M.!? t
-  foldr succLoop Nothing ss
+  foldr (\f sl -> succLoop f <|> sl) Nothing ss
   where
     m' = t:m
-    succLoop (Var s) sl =
-      if s `elem` m' || t <= s
-        then sl
-        else succChain cg f s m'
-    succLoop f' _ = do
+    succLoop (Var s) = do
+      guard $ s `elem` m' || t <= s
+      succChain cg f s m'
+    succLoop f' = do
       guard $ f == f'
       return m'
 
@@ -207,15 +206,14 @@ succChain cg f t m = do
 union :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => ConGraphGen x c -> ConGraphGen x c -> m (ConGraphGen x c)
 union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
   -- Combine equivalence classes using left representation
-  let sb'' = fmap subVar sb'
-  let cg1' = cg1{subs = M.union sb sb''}
+  let msb  = M.union sb $ fmap subVar sb'
 
   -- Update cg1 with new equivalences
-  cg1'' <- M.foldrWithKey (\x se -> (>>= \cg -> substitute se cg x)) (return cg1') sb''
+  cg1' <- M.foldrWithKey (\x se -> (>>= \cg -> substitute se cg x)) (return cg1) msb
 
   -- Insert edges from cg2 into cg1
-  cg1''' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert (Var k) v cg') cg vs)) (return cg1'') s
-  M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (return cg1''') p
+  cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert (Var k) v cg') cg vs)) (return cg1') s
+  M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (return cg1'') p
   where
     subVar (Var x) = M.findWithDefault (Var x) x sb
     subVar (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap subVar cargs)) cs
@@ -235,10 +233,11 @@ substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
   return cg''{ succs = M.delete x $ succs cg'', preds = M.delete x $ preds cg''}
   where
     sub (Var y) | x == y = se
-    sub se' = se'
+    sub (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap sub cargs)) cs
+    sub One = One
     p'  = fmap (fmap sub) p  -- nub
     s'  = fmap (fmap sub) s
-    cg = ConGraph { succs = s', preds = p', subs = M.insert x se sb }
+    cg = ConGraph { succs = s', preds = p', subs = M.insert x se $ fmap sub sb }
 
 -- Apply function to set expressions without effecting variables
 graphMap :: (Eq c, Ord x, Constructor c) => (SExpr x c -> SExpr x c) -> ConGraphGen x c -> ConGraphGen x c

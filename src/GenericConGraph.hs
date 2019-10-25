@@ -104,13 +104,11 @@ saturate cg@ConGraph{succs = s, preds = p} = saturate' (M.toList s) (M.toList p)
       | (t1, t2) `elem` cs = return cs
       | otherwise = return $ trans ((t1, t2) : cs)
 
--- Inline transitive closure
-trans :: Eq a => [(a, a)] -> [(a, a)]
-trans closure
-  | closure == closureUntilNow = closure
-  | otherwise                  = trans closureUntilNow
-  where closureUntilNow =
-          L.nub $ closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
+    trans closure
+      | closure == closureUntilNow = closure
+      | otherwise                  = trans closureUntilNow
+      where closureUntilNow =
+              L.nub $ closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
 
 -- Returns a list of constraints as internally represented
 toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]

@@ -128,12 +128,9 @@ sub _ _ _ = error "Substitution vectors have different lengths"
 
 subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
 subTypeVars [] [] u = u
-subTypeVars _ _  _ = error "Unimplemented"
--- subTypeVars (a:as) (t:ts) (Con (TVar a') [])
---   | a == a' = subTypeVars as ts t
---   | otherwise = subTypeVars as ts $ Con (TVar a') []
--- subTypeVars (a:as) (t:ts) (Sum cs) = subTypeVars as ts $ (fmap subtv' cs)
---   where
---     subtv' :: (UType, [Type]) -> (UType, [Type])
---     subtv' (c, cargs)
---       | c == TVar a = t
+subTypeVars (a:as) (t:ts) (Con (TVar a') [])
+  | a == a' = subTypeVars as ts t
+  | otherwise = subTypeVars as ts $ Con (TVar a') []
+subTypeVars as ts (Sum ((c, cargs):cs)) = Sum $ (c, fmap (subTypeVars as ts) cargs):cs'
+  where
+    Sum cs' = subTypeVars as ts (Sum cs)

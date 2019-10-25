@@ -14,7 +14,9 @@ import qualified Data.List as L
 import qualified Data.Map as M
 import qualified GhcPlugins as Core
 import qualified CoreUtils as Utils
+import Demand
 import Debug.Trace
+import CoreArity
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
 
@@ -34,15 +36,7 @@ quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
 
   -- Only quantified by refinement variables that appear in the inferface
   return $ Forall as [x | Var x <- nodes cg'] cg' u
-quantifyWith _ _ = error "Cannot restrict quantified type."
-
---  Boooo
-trans :: Eq a => [(a, a)] -> [(a, a)]
-trans closure
-  | closure == closureUntilNow = closure
-  | otherwise                  = trans closureUntilNow
-  where closureUntilNow =
-          L.nub $ closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
+quantifyWith _ _ = error "Cannot restrict refinement quantified type."
 
 -- Infer program
 inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
@@ -171,16 +165,21 @@ infer (Core.Case e b rt as) = do
   (caseType, cg)  <- local (insertVar b $ Forall [] [] empty et) $ foldM (\(caseType, cg) a ->
     case a of
       -- Infer constructor alternative
-      (Core.DataAlt d, bs, rhs) -> do
-        -- Check rhs isn't bottom
-        ts <- mapM (fresh . toSort . Core.varType) bs
-        (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs)
-        cgi' <- insert ti' t cgi
-        cg' <- cg `union` cgi'
-        case caseType of
-          Empty     -> return (DataCon [(d, ts)], cg')
-          DataCon s -> return (DataCon ((d, ts):s), cg')
-          Default   -> return (Default, cg')
+      (Core.DataAlt d, bs, rhs) ->
+        -- Check if rhs is bottom
+          if Utils.exprIsBottom rhs
+            then do
+              -- Pass information to user about error
+              return (caseType, cg)
+            else do
+              ts <- mapM (fresh . toSort . Core.varType) bs
+              (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs)
+              cgi' <- insert ti' t cgi
+              cg' <- cg `union` cgi'
+              case caseType of
+                Empty     -> return (DataCon [(d, ts)], cg')
+                DataCon s -> return (DataCon ((d, ts):s), cg')
+                Default   -> return (Default, cg')
 
       -- Infer literal alternative
       (Core.LitAlt l, [], rhs) -> do
@@ -194,10 +193,15 @@ infer (Core.Case e b rt as) = do
 
       -- Infer default alternative
       (Core.DEFAULT, [], rhs) -> do
-        (ti', cgi) <- infer rhs
-        cgi' <- insert ti' t cgi
-        cg' <- cg `union` cgi'
-        return (Default, cg')
+        if Utils.exprIsBottom rhs
+          then do
+            -- Pass information to user about error
+            return (caseType, cg)
+          else do
+            (ti', cgi) <- infer rhs
+            cgi' <- insert ti' t cgi
+            cg' <- cg `union` cgi'
+            return (Default, cg')
     ) (Empty, c0') as `throwInExpr` e
 
   -- Insure destructor is total

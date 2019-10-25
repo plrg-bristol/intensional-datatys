@@ -21,6 +21,10 @@ not False = True
 isOdd :: Nat -> Bool
 isOdd Z = False
 isOdd (S n) = not (isEven (S n))
---
+
 isEven :: Nat -> Bool
-isEven (S n) = not (isOdd (S n))
+-- isEven Z = myerror
+isEven (S n) = isOdd n
+--
+-- myerror :: Bool
+-- myerror = error "Boo"

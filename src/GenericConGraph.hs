@@ -8,6 +8,7 @@ module GenericConGraph (
     , Rewrite (toNorm)
     , empty
     , fromList
+    , saturate
     , toList
     , nodes
     -- , path
@@ -81,25 +82,43 @@ class Rewrite x c m where
 fromList :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> m (ConGraphGen x c)
 fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 
--- Return a list of constraints
+saturate :: (Eq c, Eq x, Monad m, Rewrite x c m) => ConGraphGen x c -> m [(SExpr x c, SExpr x c)]
+saturate cg@ConGraph{succs = s, preds = p} = saturate' (M.toList s) (M.toList p)
+  where
+    -- saturate' :: [(x, [SExpr x c])] -> [(x, [SExpr x c])] -> m [(SExpr x c, SExpr x c)]
+    saturate' ((t, ts):ss) ps = do
+      ss' <- saturate' ss ps
+      foldM (\l t' -> insertSat (Var t) t' l) ss' ts
+    saturate' [] ((t,ts):ps) = do
+      ps' <- saturate' [] ps
+      foldM (\l t' -> insertSat t' (Var t) l) ps' ts
+    saturate' [] [] = return []
+
+    -- insertSat :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
+    insertSat t1 t2 cs = do
+      cs' <- toNorm t1 t2
+      foldM (\l (t1, t2) -> insertSatNorm t1 t2 l) cs cs'
+
+    -- insertSatNorm :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
+    insertSatNorm t1 t2 cs
+      | (t1, t2) `elem` cs = return cs
+      | otherwise = return $ trans ((t1, t2) : cs)
+
+-- Inline transitive closure
+trans :: Eq a => [(a, a)] -> [(a, a)]
+trans closure
+  | closure == closureUntilNow = closure
+  | otherwise                  = trans closureUntilNow
+  where closureUntilNow =
+          L.nub $ closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
+
+-- Returns a list of constraints as internally represented
 toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]
 toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
 
 -- A list of all nodes that appear in the constriant graph
-nodes :: ConGraphGen x c -> [SExpr x c]
-nodes ConGraph{succs = s, preds = p} = fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p)
---
--- path graph visited [] z = ([], False)
--- path cg@ConGraph{succs = s, preds = p} visited (x:xs) z
---   | x == z = (visited, True)
---   | elem x visited = path cg visited xs z
---   | otherwise = path cg (x:visited) (edges x) z
---   where
---     edges x = L.nub ((xs ++ edges' x) L.\\ visited)
---     edges' (Var x) = case s M.!? x of
---       Just ss -> ss
---       otherwise -> []
---     edges' _ = []
+nodes :: (Eq x, Eq c) => ConGraphGen x c -> [SExpr x c]
+nodes ConGraph{succs = s, preds = p} = L.nub (fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p))
 
 -- Insert new constraint with rewriting rule
 insert :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
@@ -119,7 +138,7 @@ insertInner vx@(Var x) vy@(Var y) cg
   | x > y                           = insertSucc x vy cg
   | otherwise                       = insertPred vx y cg
 insertInner cx@(Con c cargs) dy@(Con d dargs) cg
-  | c == d                          = foldM (\cg (v, ci, di) -> if v then insert ci di cg else insert di ci cg) cg $ zip3 (variance c) cargs dargs
+  | c == d                          = foldM (\cg (v, ci, di) -> if v then insert ci di cg else  insert di ci cg) cg $ zip3 (variance c) cargs dargs
   | otherwise                       = throwError $ hetrogeneousConstructors cx dy
 insertInner (Var x) c@(Sum _) cg    = insertSucc x c cg
 insertInner c@(Con _ _) (Var y) cg  = insertPred c y cg

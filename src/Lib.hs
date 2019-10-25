@@ -24,9 +24,10 @@ inferGuts :: ModGuts -> IO ModGuts
 inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs}= do
     let env = Context{con = listToUFM (foldr buildContext [] tcs), var = M.empty}
     let p = filter (all isOfMain . bindersOf) bs
-    case runExcept $ runRWST (listen $ inferProg p) env 0 of
-      Left err -> putStrLn "Inference error: " >> print err >> return guts
-      Right ((m, _), _, _) -> putStrLn "Success" >> (putStrLn $ show m) >> return guts
+    pprTraceM "" (ppr p)
+    -- case runExcept $ runRWST (listen $ inferProg p) env 0 of
+    --   Left err -> putStrLn "Inference error: " >> print err >> return guts
+    --   Right ((m, _), _, _) -> putStrLn "Success" >> (putStrLn $ show m) >> return guts
     return guts
   where
     isOfMain b = isPrefixOf "$main$Test$" (name b) && not (isPrefixOf "$main$Test$$" (name b))

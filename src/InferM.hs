@@ -37,9 +37,7 @@ data Context = Context {
 }
 
 insertVar :: Core.Var -> TypeScheme -> Context ->  Context
-insertVar x f ctx
-  | isWild x  = ctx
-  | otherwise = ctx{var = M.insert x f $ var ctx}
+insertVar x f ctx = ctx{var = M.insert x f $ var ctx}
 
 insertMany :: [Core.Var] -> [TypeScheme] -> Context -> Context
 insertMany [] [] ctx = ctx
@@ -63,7 +61,7 @@ fresh :: Sort -> InferM Type
 fresh t = do
   i <- get
   put (i + 1)
-  return $ head $ upArrow (show i) [polarise True t]
+  return $ head $ upArrow i [polarise True t]
 
 freshScheme :: SortScheme -> InferM TypeScheme
 freshScheme (SForall as (SVar a)) = return $ Forall as [] empty $ Con (TVar a) []
@@ -78,26 +76,34 @@ freshScheme (SForall as (SArrow s1 s2)) = do
 
 delta :: Bool -> Core.TyCon -> Core.DataCon -> InferM [PType]
 delta p d k = do
-  ctx <- ask
-  case lookupUFM (con ctx) k of
-    Just (d', ts) ->
-      if d == d'
-        then return $ fmap (polarise p) ts
-        else throwError $ DataTypeError d k
-    otherwise -> throwError $ ConstructorError k
+  (d', ts) <- safeCon k
+  if d == d'
+    then return $ fmap (polarise p) ts
+    else throwError $ DataTypeError d k
 
 instance Rewrite RVar UType InferM where
   toNorm t1@(K k ts) t2@(V x p d) = do
       args <- delta p d k
       let ts' = upArrow x args
-      return [(K k ts', V x p d), (K k ts, K k ts')]
-  toNorm t1@(V _ _ _) t2@(_ :=> _) = return [(t1, t2)]  -- Arrows are singleton sum so this shouldn't fall through
-  toNorm t1@(V _ _ _) t2@(K _ _) = return [(t1, t2)]
-  toNorm t1@(V x p d) t2@(Sum cs) = do
-      s <- mapM refineCon cs
-      return [(Sum s, Sum cs),(V x p d, Sum s)]
-      where
-        refineCon (TData k, ts) = do
-          args <- delta p d k
-          return (TData k, upArrow x args)
+      if ts' /= ts
+        then do
+          c1 <- toNorm (K k ts') (V x p d)
+          c2 <- toNorm (K k ts) (K k ts')
+          return (c1 ++ c2)
+        else return [(K k ts', V x p d), (K k ts, K k ts')]
+  toNorm t1@(V x p d) t2@(Sum cs) =
+    if length cs == 1
+      then return [(t1, t2)]
+      else do
+        s <- mapM refineCon cs
+        if cs /= s
+          then do
+            c1 <- toNorm (Sum s) (Sum cs)
+            c2 <- toNorm (V x p d) (Sum s)
+            return (c1 ++ c2)
+          else return [(Sum s, Sum cs),(V x p d, Sum s)]
+        where
+          refineCon (TData k, ts) = do
+            args <- delta p d k
+            return (TData k, upArrow x args)
   toNorm t1 t2 = return [(t1, t2)]

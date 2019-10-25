@@ -4,7 +4,6 @@ module Utils
       toSort,
       isConstructor,
       fromPolyVar,
-      isWild,
       name,
       isPrim
     ) where
@@ -27,7 +26,6 @@ toSort (T.FunTy t1 t2) =
 toSort (T.TyConApp t [])
   | isPrim t = SBase t
   | otherwise = SData t
-toSort (T.LitTy _) = error "Unimplemented"
 toSort _ = error "Core type is not a valid sort."
 
 toSortScheme :: Core.Type -> SortScheme
@@ -43,14 +41,10 @@ toSortScheme (T.ForAllTy b t) =
 toSortScheme (T.TyConApp c args)
   | isPrim c = SForall [] $ SBase c
   | otherwise = SForall [] $ SData c
-toSortScheme (T.LitTy _) = error "Unimplemented"
 toSortScheme _ = error "Core type is not a valid sort scheme."
 
 isConstructor :: Core.Var -> Maybe Core.DataCon
 isConstructor = Core.isDataConId_maybe
-
-isWild :: Core.Var -> Bool
-isWild x = name x == "$_sys$wild"
 
 name :: Core.NamedThing a => a -> String
 name = Core.nameStableString . Core.getName

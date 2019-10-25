@@ -18,18 +18,22 @@ import Debug.Trace
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
 
--- Add restricted constraints to an unquantifed type scheme
+-- -- Add restricted constraints to an unquantifed type scheme
 quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
 quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
-  -- Nodes of the restricted congraph
-  let ns = L.nub $ filter (all (`elem` stems u) . stems) $ nodes cg
 
-  -- Transitive closure (using edges for unrestricted graph) of restricted node
-  cg' <- fromList $ [(n1, n2) | n1 <- ns, n2 <- ns, n1 /= n2, (n1, n2) `elem` (trans $ toList cg)]
+  -- Take the full transitive closure of the graph using rewriting rules
+  lcg <- saturate cg
+
+  -- Are all the stems in the interface?
+  let chkStems = all (`elem` stems u) . stems
+
+  -- Restricted congraph
+  let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
+  cg' <- fromList ns
 
   -- Only quantified by refinement variables that appear in the inferface
-  return $ Forall as [x | Var x <- ns] cg' u
-
+  return $ Forall as [x | Var x <- nodes cg'] cg' u
 quantifyWith _ _ = error "Cannot restrict quantified type."
 
 --  Boooo
@@ -54,12 +58,13 @@ inferProg p = do
     -- Infer a binder group
     (ts', bcg) <- foldM (\(ts, cg) rhs -> do
         -- Infer each bind within the group, compiling constraints
-        (t, cg') <- withBinds (infer rhs) `throwInExpr` rhs
-        cg'' <- union cg cg' `throwInExpr` rhs
+        (t, cg') <- withBinds (infer rhs)
+        cg'' <- union cg cg'
         return (t:ts, cg'')
         ) ([], empty) rhss
+
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
-    bcg' <- foldM (\bcg' (t', Forall as _ _ t) -> insert t' t bcg') bcg (zip ts' ts)
+    bcg' <- foldM (\bcg' (t', Forall as _ _ t) ->  insert t' t bcg') bcg (zip ts' ts)
 
     -- Restrict constraints to the interface
     ts' <- mapM (quantifyWith bcg') ts
@@ -86,12 +91,20 @@ infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e'@(Core.Var x) =
   case isConstructor x of
     Just k -> do
-      -- Infer constructor
-      (d, args) <- safeCon k `throwInExpr` e'
-      ts <- mapM fresh args
-      t  <- fresh $ SData d
-      cg <- insert (K k ts) t empty
-      return (foldr (:=>) t ts, cg)
+      if isPrim k
+        then do
+          -- Infer literal cosntructor
+          let (_, _, args, res) = Core.dataConSig k
+          let (b, _) = Core.splitTyConApp res
+          args' <- mapM (fresh . toSort) args
+          return (foldr (:=>) (B b) args', empty)
+        else do
+          -- Infer constructor
+          (d, args) <- safeCon k `throwInExpr` e'
+          ts <- mapM fresh args
+          t  <- fresh $ SData d
+          cg <- insert (K k ts) t empty
+          return (foldr (:=>) t ts, cg)
     Nothing ->
       -- Infer monomorphic variable
       inferVar x []
@@ -159,12 +172,11 @@ infer (Core.Case e b rt as) = do
     case a of
       -- Infer constructor alternative
       (Core.DataAlt d, bs, rhs) -> do
+        -- Check rhs isn't bottom
         ts <- mapM (fresh . toSort . Core.varType) bs
-        -- let ts' = _ -- getArgs of d
-        -- cg' <- foldM (\cg (t', Forall _ _ _ t) -> insert t' t cg) cg (zip ts' ts)
-        (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs) `throwInExpr` rhs
-        cgi' <- insert ti' t cgi `throwInExpr` rhs
-        cg' <- cg `union` cgi `throwInExpr` rhs
+        (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs)
+        cgi' <- insert ti' t cgi
+        cg' <- cg `union` cgi'
         case caseType of
           Empty     -> return (DataCon [(d, ts)], cg')
           DataCon s -> return (DataCon ((d, ts):s), cg')
@@ -194,7 +206,9 @@ infer (Core.Case e b rt as) = do
     DataCon dts -> do
       cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg  `throwInExpr` e
       return (t, cg')
-    Literal lss -> error "Literal cases must contain defaults."
+    Literal lss -> do
+      cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg  `throwInExpr` e
+      return (t, cg')
 
 -- Remove core ticks
 infer (Core.Tick t e) = infer e

@@ -4,12 +4,12 @@ module Types
     (
       Sort (SVar, SArrow, SData, SBase),
       SortScheme (SForall),
-      UType (TVar, TData, TArrow, TBase),
+      UType (TVar, TData, TArrow, TBase, TLit),
       PType,
       RVar (RVar),
       Type,
       TypeScheme (Forall),
-      SExpr (V, K, (:=>)),
+      SExpr (V, K, B, (:=>)),
       ConGraph,
       upArrow,
       polarise,
@@ -23,13 +23,13 @@ import GenericConGraph
 import qualified GhcPlugins as Core
 import Debug.Trace
 
-newtype RVar = RVar (String, Bool, Core.TyCon) deriving Eq
+newtype RVar = RVar (Int, Bool, Core.TyCon) deriving Eq
 
 instance Ord RVar where
   RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
 data Sort = SVar Core.Var | SBase Core.TyCon | SData Core.TyCon | SArrow Sort Sort
-data UType = TVar Core.Var | TBase Core.TyCon | TData Core.DataCon | TArrow
+data UType = TVar Core.Var | TBase Core.TyCon | TData Core.DataCon | TArrow | TLit Core.Literal -- Sums can contain literals
 data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon | PArrow PType PType
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type
@@ -41,10 +41,10 @@ instance Show UType where
   show (TData dc) = show dc
 
 instance Show RVar where
-  show (RVar (x, p, d)) = "[" ++ x ++ (if p then "+" else "-") ++ show d ++ "]"
+  show (RVar (x, p, d)) = "[" ++ (show x) ++ (if p then "+" else "-") ++ show d ++ "]"
 
 instance Show Type where
-  show (V x p d) = "[" ++ x ++ (if p then "+" else "-") ++ show d ++ "]"
+  show (V x p d) = "[" ++ (show x) ++ (if p then "+" else "-") ++ show d ++ "]"
   show (t1 :=> t2) = "(" ++ show t1 ++ "->" ++ show t2 ++ ")"
   show (K v ts) =show v ++"(" ++ intercalate "," (fmap show ts) ++ ")"
   show (Sum cs) = intercalate "+" (fmap (\(c, cargs) -> show c ++ "(" ++ intercalate "," (fmap show cargs) ++ ")" ) cs)
@@ -56,6 +56,7 @@ instance Eq UType where
   TVar x == TVar y = Core.getName x == Core.getName y
   TBase b == TBase b' = Core.getName b == Core.getName b'
   TData d == TData d' = Core.getName d == Core.getName d'
+  TLit l == TLit l' = l == l'
   TArrow == TArrow = True
   _ == _ = False
 
@@ -92,15 +93,18 @@ pattern t1 :=> t2 = Con TArrow [t1, t2]
 pattern K :: Core.DataCon -> [Type] -> Type
 pattern K v ts = Con (TData v) ts
 
-pattern V :: String -> Bool -> Core.TyCon -> Type
+pattern V :: Int -> Bool -> Core.TyCon -> Type
 pattern V x p d = Var (RVar (x, p, d))
 
-stems :: Type -> [String]
+pattern B :: Core.TyCon -> Type
+pattern B b = Con (TBase b) []
+
+stems :: Type -> [Int]
 stems (V x _ _) = [x]
 stems (Sum cs) = concatMap (\(_, cargs) -> concatMap stems cargs) cs
 stems _ = []
 
-upArrow :: String -> [PType] -> [Type]
+upArrow :: Int -> [PType] -> [Type]
 upArrow x = fmap upArrow'
   where
     upArrow' (PData p d)     = Var $ RVar (x, p, d)

@@ -11,7 +11,6 @@ module GenericConGraph (
     , saturate
     , toList
     , nodes
-    -- , path
     , insert
     , union
     , substitute
@@ -102,13 +101,15 @@ saturate cg@ConGraph{succs = s, preds = p} = saturate' (M.toList s) (M.toList p)
     -- insertSatNorm :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
     insertSatNorm t1 t2 cs
       | (t1, t2) `elem` cs = return cs
-      | otherwise = return $ trans ((t1, t2) : cs)
+      | otherwise = return $ trans (t1, t2) cs
 
-    trans closure
-      | closure == closureUntilNow = closure
-      | otherwise                  = trans closureUntilNow
-      where closureUntilNow =
-              L.nub $ closure ++ [(a, c) | (a, b) <- closure, (b', c) <- closure, b == b']
+    -- trans :: (SExpr x c, SExpr x c) -> [(SExpr x c, SExpr x c)] -> [(SExpr x c, SExpr x c)]
+    -- cs must already be transitively closed
+    trans (t1, t2) cs
+      | cs == cs' = cs
+      | otherwise = trans (t1, t2) cs'
+      where
+        cs' = L.nub $ cs ++ [(t1, t4)| (t3, t4) <- cs, t3 == t2] ++ [(t3, t2)| (t3, t4) <- cs, t4 == t1]
 
 -- Returns a list of constraints as internally represented
 toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]

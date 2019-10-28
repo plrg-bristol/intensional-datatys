@@ -5,38 +5,39 @@ module Errors
       Error (VariableError, PolyTypeError, ConstructorError, DataTypeError, InExpr)
     ) where
 
-import Types
+import Prelude hiding ((<>), text)
+import Types as T
 import GenericConGraph
-import qualified GhcPlugins as Core
+import GhcPlugins
 
 data Error =
-    InExpr (Core.Expr Core.Var) Error
-  | VariableError Core.Var
-  | PolyTypeError Core.Var
-  | ConstructorError Core.DataCon
-  | DataTypeError Core.TyCon Core.DataCon
-  | Hetro Type Type
-  | FromClosure Type Type Error
-  | UsingEq RVar Type Error
-  | SubZero Type
-  | FromCycle [RVar] Type Error
-  | SuperOne Type
+    InExpr (Expr Var) Error
+  | VariableError Var
+  | PolyTypeError Var
+  | ConstructorError DataCon
+  | DataTypeError TyCon DataCon
+  | Hetro T.Type T.Type
+  | FromClosure T.Type T.Type Error
+  | UsingEq RVar T.Type Error
+  | SubZero T.Type
+  | FromCycle [RVar] T.Type Error
+  | SuperOne T.Type
 
 instance ConstraintError RVar UType Error where
   usingEquivalence = UsingEq
   fromCycle = FromCycle
   fromClosure = FromClosure
   hetrogeneousConstructors = Hetro
-  subtypeOfZero = SubZero
-  supertypeOfOne = SuperOne
+  subTypeOfZero = SubZero
+  superTypeOfOne = SuperOne
 
-instance Show Error where
-  show (VariableError x) = "The variable " ++ show x ++ " is not in scope."
-  show (PolyTypeError x) = "The polymorphic variable " ++ show x ++ " hasn't been fully instantiated."
-  show (ConstructorError x) = "The constructor " ++ show x ++ " is not in scope."
-  show (DataTypeError d k) = "The data type " ++ show d ++ " does not have a constructor " ++ show k ++ "."
-  show (InExpr s e) = Core.pprPanic ("The error: " ++ show e ++ " has occured in the expression: \n") $ Core.ppr s
-  show (Hetro c d) = "hetrogeneousConstructors: " ++ show c ++ show d
-  show (FromClosure c d e) = "from closure: " ++ show c ++ show d ++ "in the error:" ++ show e
-  show (FromCycle xs t e) = "from cycle " ++ show xs ++ show t ++ "in the error: " ++ show e
-  show (UsingEq xs t e) = "using the substitution " ++ show xs ++ show t ++ "in the error: " ++ show e
+instance Outputable Error where
+  ppr (VariableError x) = text "The variable " <> ppr x <>text " is not in scope."
+  ppr (PolyTypeError x) = text "The polymorphic variable " <> ppr x <> text " hasn't been fully instantiated."
+  ppr (ConstructorError x) = text "The constructor " <> ppr x <> text " is not in scope."
+  ppr (DataTypeError d k) = text "The data T.Type " <> ppr d <> text " does not have a constructor " <> ppr k <> text "."
+  ppr (InExpr s e) = ppr e -- text "The error: " <> ppr e <> text " has occured in the expression: \n" <> ppr s
+  ppr (Hetro c d) = text "hetrogeneousConstructors: " <> ppr c <> ppr d
+  ppr (FromClosure c d e) = text "from closure: " <> ppr c <> ppr d <> text "in the error:" <> ppr e
+  ppr (FromCycle xs t e) = text "from cycle " <> ppr xs <> ppr t <> text "in the error: " <> ppr e
+  ppr (UsingEq xs t e) =  text "using the substitution " <> ppr xs <> ppr t <> text "in the error: " <> ppr e

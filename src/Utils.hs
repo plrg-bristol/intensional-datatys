@@ -26,7 +26,7 @@ toSort (T.FunTy t1 t2) =
 toSort (T.TyConApp t [])
   | isPrim t = SBase t
   | otherwise = SData t
-toSort _ = error "Core type is not a valid sort."
+toSort _ =  error "Core type is not a valid sort."
 
 toSortScheme :: Core.Type -> SortScheme
 toSortScheme (T.TyVarTy v) = SForall [] (SVar v)
@@ -49,8 +49,8 @@ isConstructor = Core.isDataConId_maybe
 name :: Core.NamedThing a => a -> String
 name = Core.nameStableString . Core.getName
 
-fromPolyVar :: Core.CoreExpr -> Maybe (Core.Id, [Sort])
-fromPolyVar (Core.Var i) = Just (i, [])
+fromPolyVar :: Core.CoreExpr -> Maybe (Core.Var, [Sort])
+fromPolyVar (Core.Var i) = Just (i :: Core.Var, [])
 fromPolyVar (Core.App e1 (Core.Type t)) = do
   (i, ts) <- fromPolyVar e1
   return (i, toSort t:ts)

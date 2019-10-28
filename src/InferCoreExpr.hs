@@ -17,20 +17,20 @@ import qualified CoreUtils as Utils
 import Demand
 import Debug.Trace
 import CoreArity
+import Kind
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
 
 -- -- Add restricted constraints to an unquantifed type scheme
 quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
 quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
-
   -- Take the full transitive closure of the graph using rewriting rules
   lcg <- saturate cg
 
-  -- Are all the stems in the interface?
+  -- Check all the stems in the interface
   let chkStems = all (`elem` stems u) . stems
 
-  -- Restricted congraph
+  -- Restricted congraph with chkStems
   let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
   cg' <- fromList ns
 
@@ -76,10 +76,14 @@ inferVar x ts = do
     else do
       ys  <- mapM fresh $ map (\(RVar (x, p, d)) -> SData d) xs
       ts' <- mapM fresh ts
-      v   <- fresh $ toSort $ Core.varType x
-      cg' <- insert (sub xs ys u) v cg
-      cg'' <- foldM (\cg (x, se) -> substitute se cg x) cg' (zip xs ys)
-      return $ (v, graphMap (subTypeVars as ts') cg'')
+
+      let (SForall vas v) = toSortScheme $ Core.varType x
+      -- length vas = length as = length ts
+      v' <- fresh $ subSortVars vas ts v
+
+      cg' <- foldM (\cg (x, se) -> substitute se cg x) (graphMap (subTypeVars as ts') cg) (zip xs ys)
+      cg'' <- insert (subTypeVars as ts' $ sub xs ys u) v' cg'
+      return $ (v', cg'')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e'@(Core.Var x) =
@@ -87,7 +91,7 @@ infer e'@(Core.Var x) =
     Just k -> do
       if isPrim k
         then do
-          -- Infer literal cosntructor
+          -- Infer literal constructor
           let (_, _, args, res) = Core.dataConSig k
           let (b, _) = Core.splitTyConApp res
           args' <- mapM (fresh . toSort) args
@@ -125,9 +129,14 @@ infer e@(Core.App e1 e2) =
 
 infer e'@(Core.Lam x e) = do
   -- Infer abstraction
-  t1 <- fresh $ toSort $ Core.varType x
-  (t2, cg) <- local (insertVar x $ Forall [] [] empty t1) (infer e `throwInExpr` e')
-  return (t1 :=> t2, cg)
+  if isLiftedTypeKind $ Core.varType x
+    -- Type variable
+    then return (Zero, empty)
+    else do
+      -- Expression variable
+      t1 <- fresh $ toSort $ Core.varType x
+      (t2, cg) <- local (insertVar x $ Forall [] [] empty t1) (infer e `throwInExpr` e')
+      return (t1 :=> t2, cg)
 
 infer (Core.Let b e) = do
   -- Infer local module (i.e. let expression)

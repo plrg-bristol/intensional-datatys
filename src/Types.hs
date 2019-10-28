@@ -14,14 +14,19 @@ module Types
       upArrow,
       polarise,
       subTypeVars,
+      subSortVars,
       sub,
       stems
     ) where
 
+import Prelude hiding ((<>))
 import Data.List
 import GenericConGraph
 import qualified GhcPlugins as Core
 import Debug.Trace
+import Outputable
+
+test = Outputable.text
 
 newtype RVar = RVar (Int, Bool, Core.TyCon) deriving Eq
 
@@ -35,22 +40,22 @@ type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type
 data SortScheme = SForall [Core.Var] Sort
 
-instance Show UType where
-  show (TVar v) = show v
-  show (TBase b) = show b
-  show (TData dc) = show dc
+instance Core.Outputable UType where
+  ppr (TVar v) = ppr v
+  ppr (TBase b) = ppr b
+  ppr (TData dc) = ppr dc
 
-instance Show RVar where
-  show (RVar (x, p, d)) = "[" ++ (show x) ++ (if p then "+" else "-") ++ show d ++ "]"
+instance Core.Outputable RVar where
+  ppr (RVar (x, p, d)) = (text "[") <> (ppr x) <> (if p then text"+" else text "-") <> ppr d <> text "]"
 
-instance Show Type where
-  show (V x p d) = "[" ++ (show x) ++ (if p then "+" else "-") ++ show d ++ "]"
-  show (t1 :=> t2) = "(" ++ show t1 ++ "->" ++ show t2 ++ ")"
-  show (K v ts) =show v ++"(" ++ intercalate "," (fmap show ts) ++ ")"
-  show (Sum cs) = intercalate "+" (fmap (\(c, cargs) -> show c ++ "(" ++ intercalate "," (fmap show cargs) ++ ")" ) cs)
+instance Core.Outputable Type where
+  ppr (V x p d) = text "[" <> (ppr x) <> (if p then (text "+") else text "-") <> ppr d <>  text "]"
+  ppr (t1 :=> t2) =  text "(" <> (ppr t1) <>  text "->" <> (ppr t2) <>  text ")"
+  ppr (K v ts) = ppr v <>  text "(" <> interpp'SP ts <>  text ")"
+  ppr (Sum cs) = pprWithBars (\(c, cargs) -> ppr c <>  text "(" <> interpp'SP cargs <> text ")") cs
 
-instance Show TypeScheme where
-  show (Forall as xs cg t) = "\n∀" ++ intercalate " " (fmap show as) ++ ".∀"  ++ intercalate  " " (fmap show xs) ++ "." ++ show t ++"\n\nwhere:\n\n" ++ intercalate "\n" (fmap show $ toList cg) ++ "\n"
+instance Core.Outputable TypeScheme where
+  ppr (Forall as xs cg t) = text "\n∀" <> interppSP as <> text ".∀"  <> interppSP xs <> text "." <> ppr t <> text "\n\nwhere:\n\n" <> interppSP (toList cg) <> text "\n"
 
 instance Eq UType where
   TVar x == TVar y = Core.getName x == Core.getName y
@@ -62,8 +67,8 @@ instance Eq UType where
 
 type ConGraph = ConGraphGen RVar UType
 
-instance Show ConGraph where
-  show (ConGraph{succs = s, preds = p, subs =sb}) = show s ++ "\n" ++ show p ++ "\n" ++ show sb
+-- instance Core.Outputable ConGraph where
+--   ppr (ConGraph{succs = s, preds = p, subs =sb}) = ppr s <> text "\n" <> ppr p <> text "\n" -- <> (text $ show sb)
 
 split :: String -> [String]
 split [] = [""]
@@ -71,17 +76,17 @@ split (c:cs) | c == '$'  = "" : rest
              | otherwise = (c : head rest) : tail rest
     where rest = split cs
 
-instance Show Core.Var where
-  show n = last $ split (Core.nameStableString $ Core.getName n)
-
-instance Show Core.Name where
-  show n = last $ split (Core.nameStableString $ Core.getName n)
-
-instance Show Core.TyCon where
-  show n = last $ split (Core.nameStableString $ Core.getName n)
-
-instance Show Core.DataCon where
-  show n = last $ split (Core.nameStableString $ Core.getName n)
+-- instance Show Core.Var where
+--   show n = last $ split (Core.nameStableString $ Core.getName n)
+--
+-- instance Show Core.Name where
+--   show n = last $ split (Core.nameStableString $ Core.getName n)
+--
+-- instance Show Core.TyCon where
+--   show n = last $ split (Core.nameStableString $ Core.getName n)
+--
+-- instance Show Core.DataCon where
+--   show n = last $ split (Core.nameStableString $ Core.getName n)
 
 instance Constructor UType where
   variance TArrow = [False, True]
@@ -126,11 +131,22 @@ sub (x:xs) (y:ys) (Var x')
 sub xs ys (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap (sub xs ys) cargs)) cs
 sub _ _ _ = error "Substitution vectors have different lengths"
 
+subSortVars :: [Core.Var] -> [Sort] -> Sort -> Sort
+subSortVars [] [] u = u
+subSortVars (a:as) (t:ts) (SVar a')
+  | a == a' = subSortVars as ts t
+  | otherwise = subSortVars as ts (SVar a')
+subSortVars as ts (SArrow s1 s2) = SArrow (subSortVars as ts s1) (subSortVars as ts s2)
+subSortVars _ _ s = s
+
 subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
 subTypeVars [] [] u = u
 subTypeVars (a:as) (t:ts) (Con (TVar a') [])
   | a == a' = subTypeVars as ts t
   | otherwise = subTypeVars as ts $ Con (TVar a') []
-subTypeVars as ts (Sum ((c, cargs):cs)) = Sum $ (c, fmap (subTypeVars as ts) cargs):cs'
-  where
-    Sum cs' = subTypeVars as ts (Sum cs)
+subTypeVars as ts (Sum ((c, cargs):cs)) = let
+  Sum cs' = subTypeVars as ts (Sum cs)
+  in Sum $ (c, fmap (subTypeVars as ts) cargs):cs'
+subTypeVars as ts (Var v) = Var v -- Type and refinement variables are orthogonal
+subTypeVars as ts One = One
+subTypeVars as ts Zero = Zero

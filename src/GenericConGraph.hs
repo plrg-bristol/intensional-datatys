@@ -4,7 +4,7 @@ module GenericConGraph (
       SExpr (Var, Con, Sum, One, Zero)
     , Constructor (variance)
     , ConGraphGen (ConGraph, succs, preds, subs)
-    , ConstraintError (usingEquivalence, fromCycle, fromClosure, hetrogeneousConstructors, subtypeOfZero, supertypeOfOne)
+    , ConstraintError (usingEquivalence, fromCycle, fromClosure, hetrogeneousConstructors, subTypeOfZero, superTypeOfOne)
     , Rewrite (toNorm)
     , empty
     , fromList
@@ -67,8 +67,8 @@ class ConstraintError x c e | c -> x where
 
   -- Base errors
   hetrogeneousConstructors  :: SExpr x c -> SExpr x c -> e
-  subtypeOfZero             :: SExpr x c -> e
-  supertypeOfOne            :: SExpr x c -> e
+  subTypeOfZero             :: SExpr x c -> e
+  superTypeOfOne            :: SExpr x c -> e
 
 -- Extend a thrown exception
 throwContext :: MonadError e m => m a -> (e -> e) -> m a
@@ -130,8 +130,8 @@ insertInner x y cg
   | x == y                          = return cg
 insertInner _ One cg                = return cg
 insertInner Zero _ cg               = return cg
-insertInner One t cg                = throwError $ supertypeOfOne t
-insertInner t Zero cg               = throwError $ subtypeOfZero t
+insertInner One t cg                = throwError $ superTypeOfOne t
+insertInner t Zero cg               = throwError $ subTypeOfZero t
 insertInner vx@(Var x) vy@(Var y) cg
   | x > y                           = insertSucc x vy cg
   | otherwise                       = insertPred vx y cg

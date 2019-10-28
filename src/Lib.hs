@@ -26,9 +26,8 @@ inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs}= do
     let p = filter (all isOfMain . bindersOf) bs
     -- pprTraceM "" (ppr p)
     case runExcept $ runRWST (listen $ inferProg p) env 0 of
-      Left err -> putStrLn "Inference error: " >> print err >> return guts
-      Right ((m, _), _, _) -> putStrLn "Success" >> (putStrLn $ show m) >> return guts
-    return guts
+      Left err -> putStrLn "Inference error: " >> (pprTrace "" (ppr err) $ return ()) >> return guts
+      Right ((m, _), _, _) -> putStrLn "Success" >> (pprTrace "" (ppr m) $ return ()) >> return guts
   where
     isOfMain b = isPrefixOf "$main$Test$" (name b) && not (isPrefixOf "$main$Test$$" (name b))
 

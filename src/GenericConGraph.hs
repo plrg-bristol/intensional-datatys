@@ -1,16 +1,15 @@
-{-# LANGUAGE PatternSynonyms, MultiParamTypeClasses, FunctionalDependencies #-}
+{-# LANGUAGE PatternSynonyms, MultiParamTypeClasses, FlexibleInstances #-}
 
 module GenericConGraph (
       SExpr (Var, Con, Sum, One, Zero)
     , Constructor (variance)
     , ConGraphGen (ConGraph, succs, preds, subs)
-    , ConstraintError (usingEquivalence, fromCycle, fromClosure, hetrogeneousConstructors, subTypeOfZero, superTypeOfOne)
     , Rewrite (toNorm)
     , empty
     , fromList
-    , saturate
     , toList
     , nodes
+    , saturate
     , insert
     , union
     , substitute
@@ -21,6 +20,7 @@ module GenericConGraph (
 import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Trans.Maybe
 import qualified Data.Map as M
 import qualified Data.List as L
 import Debug.Trace
@@ -57,29 +57,25 @@ data ConGraphGen x c = ConGraph {
 empty :: ConGraphGen x c
 empty = ConGraph { succs = M.empty, preds = M.empty, subs = M.empty }
 
--- Extend an existing MonadError with constraint specific errors
-class ConstraintError x c e | c -> x where
-  -- Contextual error information
-  usingEquivalence          :: x -> SExpr x c -> e -> e
-  fromCycle                 :: [x] -> SExpr x c -> e -> e
-  fromClosure               :: SExpr x c -> SExpr x c -> e -> e
-
-  -- Base errors
-  hetrogeneousConstructors  :: SExpr x c -> SExpr x c -> e
-  subTypeOfZero             :: SExpr x c -> e
-  superTypeOfOne            :: SExpr x c -> e
-
--- Extend a thrown exception
-throwContext :: MonadError e m => m a -> (e -> e) -> m a
-throwContext ma f = ma `catchError` (throwError . f)
-
 -- Additional deterministic rewriting rules for constriants
 class Rewrite x c m where
   toNorm :: SExpr x c -> SExpr x c -> m [(SExpr x c, SExpr x c)]
 
+instance (Monad m, Rewrite x c m) => Rewrite x c (MaybeT m) where
+  -- toNorm :: SExpr x c -> SExpr x c -> MaybeT m [(SExpr x c, SExpr x c)]
+  toNorm se1 se2 = MaybeT (toNorm se1 se2 >>= return . Just)
+
 -- Constructor a new constraint graph from a list
-fromList :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> m (ConGraphGen x c)
+fromList :: (Rewrite x c m, Monad m, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> MaybeT m (ConGraphGen x c)
 fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
+
+-- Returns a list of constraints as internally represented
+toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]
+toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
+
+-- A list of all nodes that appear in the constriant graph
+nodes :: (Eq x, Eq c) => ConGraphGen x c -> [SExpr x c]
+nodes ConGraph{succs = s, preds = p} = L.nub (fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p))
 
 saturate :: (Eq c, Eq x, Monad m, Rewrite x c m) => ConGraphGen x c -> m [(SExpr x c, SExpr x c)]
 saturate cg@ConGraph{succs = s, preds = p} = saturate' (M.toList s) (M.toList p)
@@ -101,44 +97,44 @@ saturate cg@ConGraph{succs = s, preds = p} = saturate' (M.toList s) (M.toList p)
     -- insertSatNorm :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
     insertSatNorm t1 t2 cs
       | (t1, t2) `elem` cs = return cs
-      | otherwise = return $ trans (t1, t2) cs
+      | otherwise = return $ trans ((t1, t2):cs)
 
     -- trans :: (SExpr x c, SExpr x c) -> [(SExpr x c, SExpr x c)] -> [(SExpr x c, SExpr x c)]
-    -- cs must already be transitively closed
-    trans (t1, t2) cs
+    trans cs
       | cs == cs' = cs
-      | otherwise = trans (t1, t2) cs'
+      | otherwise = trans cs'
       where
-        cs' = L.nub $ cs ++ [(t1, t4)| (t3, t4) <- cs, t3 == t2] ++ [(t3, t2)| (t3, t4) <- cs, t4 == t1]
+        cs' = L.nub $ cs ++ [(a, c) | (a, b) <- cs, (b', c) <- cs, b == b']
 
--- Returns a list of constraints as internally represented
-toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]
-toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
-
--- A list of all nodes that appear in the constriant graph
-nodes :: (Eq x, Eq c) => ConGraphGen x c -> [SExpr x c]
-nodes ConGraph{succs = s, preds = p} = L.nub (fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p))
+-- Apply function to set expressions without effecting variables
+graphMap :: (Eq c, Ord x, Constructor c) => (SExpr x c -> SExpr x c) -> ConGraphGen x c -> ConGraphGen x c
+graphMap f cg@ConGraph{succs = s, preds = p, subs = sb} =
+  ConGraph {
+    succs = fmap (fmap f) s,
+    preds = fmap (fmap f) p,
+    subs = fmap f sb
+  }
 
 -- Insert new constraint with rewriting rule
-insert :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
+insert :: (Rewrite x c m, Monad m, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 insert t1 t2 cg = do
   cs <- toNorm t1 t2
   foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg cs
 
 -- Insert new constraint
-insertInner :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
+insertInner :: (Rewrite x c m, Monad m, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 insertInner x y cg
   | x == y                          = return cg
 insertInner _ One cg                = return cg
 insertInner Zero _ cg               = return cg
-insertInner One t cg                = throwError $ superTypeOfOne t
-insertInner t Zero cg               = throwError $ subTypeOfZero t
+insertInner One t cg                = mzero
+insertInner t Zero cg               = mzero
 insertInner vx@(Var x) vy@(Var y) cg
   | x > y                           = insertSucc x vy cg
   | otherwise                       = insertPred vx y cg
 insertInner cx@(Con c cargs) dy@(Con d dargs) cg
   | c == d                          = foldM (\cg (v, ci, di) -> if v then insert ci di cg else  insert di ci cg) cg $ zip3 (variance c) cargs dargs
-  | otherwise                       = throwError $ hetrogeneousConstructors cx dy
+  | otherwise                       = mzero
 insertInner (Var x) c@(Sum _) cg    = insertSucc x c cg
 insertInner c@(Con _ _) (Var y) cg  = insertPred c y cg
 insertInner cx@(Con c cargs) (Sum ((d, dargs):ds)) cg
@@ -146,46 +142,46 @@ insertInner cx@(Con c cargs) (Sum ((d, dargs):ds)) cg
   | otherwise                       = insert cx (Sum ds) cg
 insertInner (Sum cs) t cg           = foldM (\cg (c, cargs) -> insert (Con c cargs) t cg) cg cs
 
-insertSucc :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
+insertSucc :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
   case sb M.!? x of
-    Just z    -> insert z sy cg `throwContext` usingEquivalence x z
+    Just z    -> insert z sy cg
     otherwise ->
       case s M.!? x of
         Just ss ->
           if sy `elem` ss
             then return cg
             else do
-              cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s} `throwContext` fromClosure (Var x) sy
+              cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s}
               case predChain cg' x sy [] of
-                Just vs -> foldM (substitute sy) cg' vs `throwContext` fromCycle vs sy
+                Just vs -> foldM (substitute sy) cg' vs
                 otherwise -> return cg'
-        otherwise -> closeSucc x sy cg{succs = M.insert x [sy] s} `throwContext` fromClosure (Var x) sy
+        otherwise -> closeSucc x sy cg{succs = M.insert x [sy] s}
 
-insertPred:: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> m (ConGraphGen x c)
+insertPred:: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 insertPred sx y cg@ConGraph{preds = p, subs = sb} =
   case sb M.!? y of
-    Just z    -> insert sx z cg  `throwContext` usingEquivalence y z
+    Just z    -> insert sx z cg
     otherwise ->
       case p M.!? y of
         Just ps ->
           if sx `elem` ps
             then return cg
             else do
-              cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p} `throwContext` fromClosure sx (Var y)
+              cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p}
               case succChain cg' sx y [] of
-                Just vs -> foldM (substitute sx) cg' vs `throwContext` fromCycle vs sx
+                Just vs -> foldM (substitute sx) cg' vs
                 otherwise -> return cg'
-        otherwise -> closePred sx y cg{preds = M.insert y [sx] p} `throwContext` fromClosure sx (Var y)
+        otherwise -> closePred sx y cg{preds = M.insert y [sx] p}
 
 -- Partial online transitive closure
-closeSucc :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> m (ConGraphGen x c)
+closeSucc :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 closeSucc x sy cg =
   case preds cg M.!? x of
     Just ps   -> foldM (\cg p -> insert p sy cg) cg ps
     otherwise -> return cg
 
-closePred :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> m (ConGraphGen x c)
+closePred :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 closePred sx y cg =
   case succs cg M.!? y of
     Just ss   -> foldM (\cg s -> insert sx s cg) cg ss
@@ -225,7 +221,7 @@ succChain cg f t m = do
       return m'
 
 -- Union of constraint graphs
-union :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => ConGraphGen x c -> ConGraphGen x c -> m (ConGraphGen x c)
+union :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => ConGraphGen x c -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
   -- Combine equivalence classes using left representation
   let msb  = M.union sb $ fmap subVar sb'
@@ -242,7 +238,7 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
     suBVar One = One
 
 -- Safely substitute variable (x) with expression (se)
-substitute :: (Rewrite x c m, MonadError e m, ConstraintError x c e, Eq c, Ord x, Constructor c) => SExpr x c -> ConGraphGen x c -> x -> m (ConGraphGen x c)
+substitute :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => SExpr x c -> ConGraphGen x c -> x -> MaybeT m (ConGraphGen x c)
 substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
   -- Necessary to recalculate preds and succs as se might not be a Var.
   -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications.
@@ -260,12 +256,3 @@ substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
     p'  = fmap (L.nub . fmap sub) p
     s'  = fmap (L.nub . fmap sub) s
     cg = ConGraph { succs = s', preds = p', subs = M.insert x se $ fmap sub sb }
-
--- Apply function to set expressions without effecting variables
-graphMap :: (Eq c, Ord x, Constructor c) => (SExpr x c -> SExpr x c) -> ConGraphGen x c -> ConGraphGen x c
-graphMap f cg@ConGraph{succs = s, preds = p, subs = sb} =
-  ConGraph {
-    succs = fmap (fmap f) s,
-    preds = fmap (fmap f) p,
-    subs = fmap f sb
-  }

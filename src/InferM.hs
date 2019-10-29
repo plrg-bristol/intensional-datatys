@@ -10,7 +10,7 @@ module InferM
       freshScheme,
       insertVar,
       insertMany,
-      throwInExpr
+      inExpr
     ) where
 
 import Errors
@@ -18,6 +18,7 @@ import Types
 import Utils
 import GenericConGraph
 import Control.Monad.Except
+import Control.Monad.Trans.Maybe
 import Control.Monad.RWS hiding (Sum)
 import qualified Data.Map as M
 import qualified GhcPlugins as Core
@@ -26,15 +27,17 @@ import Debug.Trace
 
 type InferM = RWST Context () Int (Except Error)
 
--- Extend a thrown exception
-throwInExpr :: InferM a -> Core.Expr Core.Var -> InferM a
-throwInExpr ma se = ma `catchError` (throwError . InExpr se)
-
--- Chagen to ghc maps
 data Context = Context {
     con :: UniqFM {- Core.DataCon -} (Core.TyCon, [Sort]), -- k -> (d, args)
     var :: M.Map Core.Var TypeScheme
 }
+
+inExpr :: Core.Outputable a => MaybeT InferM a -> b -> InferM a
+inExpr mcg e = do
+  mcg' <- runMaybeT mcg
+  case mcg' of
+    Just cg' -> return cg'
+    Nothing  -> error "This is where we handle the error."
 
 insertVar :: Core.Var -> TypeScheme -> Context ->  Context
 insertVar x f ctx = ctx{var = M.insert x f $ var ctx}

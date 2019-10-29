@@ -1,6 +1,7 @@
 module InferCoreExpr
     (
-      inferProg
+      inferProg,
+      quantifyWith
     ) where
 
 import Utils
@@ -9,6 +10,7 @@ import Errors
 import InferM
 import GenericConGraph
 import Control.Monad.Except
+import Control.Monad.Trans.Maybe
 import Control.Monad.RWS hiding (Sum)
 import qualified Data.List as L
 import qualified Data.Map as M
@@ -32,7 +34,7 @@ quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
 
   -- Restricted congraph with chkStems
   let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
-  cg' <- fromList ns
+  cg' <- fromList ns `inExpr` 0
 
   -- Only quantified by refinement variables that appear in the inferface
   return $ Forall as [x | Var x <- nodes cg'] cg' u
@@ -53,12 +55,12 @@ inferProg p = do
     (ts', bcg) <- foldM (\(ts, cg) rhs -> do
         -- Infer each bind within the group, compiling constraints
         (t, cg') <- withBinds (infer rhs)
-        cg'' <- union cg cg'
+        cg'' <- union cg cg' `inExpr` rhs
         return (t:ts, cg'')
         ) ([], empty) rhss
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
-    bcg' <- foldM (\bcg' (t', Forall as _ _ t) ->  insert t' t bcg') bcg (zip ts' ts)
+    bcg' <- foldM (\bcg' (t', Forall as _ _ t) ->  insert t' t bcg') bcg (zip ts' ts) `inExpr` 0
 
     -- Restrict constraints to the interface
     ts' <- mapM (quantifyWith bcg') ts
@@ -68,8 +70,8 @@ inferProg p = do
   return $ concatMap (uncurry zip) z
 
 -- Infer fully instantiated polymorphic variable
-inferVar :: Core.Var -> [Sort] -> InferM (Type, ConGraph)
-inferVar x ts = do
+inferVar :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)
+inferVar x ts e = do
   (Forall as xs cg u) <- safeVar x
   if length as /= length ts
     then throwError $ PolyTypeError x
@@ -81,12 +83,12 @@ inferVar x ts = do
       -- length vas = length as = length ts
       v' <- fresh $ subSortVars vas ts v
 
-      cg' <- foldM (\cg (x, se) -> substitute se cg x) (graphMap (subTypeVars as ts') cg) (zip xs ys)
-      cg'' <- insert (subTypeVars as ts' $ sub xs ys u) v' cg'
+      cg' <- foldM (\cg (x, se) -> substitute se cg x) (graphMap (subTypeVars as ts') cg) (zip xs ys) `inExpr` e
+      cg'' <- insert (subTypeVars as ts' $ sub xs ys u) v' cg' `inExpr` e
       return $ (v', cg'')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
-infer e'@(Core.Var x) =
+infer e@(Core.Var x) =
   case isConstructor x of
     Just k -> do
       if isPrim k
@@ -98,14 +100,14 @@ infer e'@(Core.Var x) =
           return (foldr (:=>) (B b) args', empty)
         else do
           -- Infer constructor
-          (d, args) <- safeCon k `throwInExpr` e'
+          (d, args) <- safeCon k
           ts <- mapM fresh args
           t  <- fresh $ SData d
-          cg <- insert (K k ts) t empty
+          cg <- insert (K k ts) t empty `inExpr` e
           return (foldr (:=>) t ts, cg)
     Nothing ->
       -- Infer monomorphic variable
-      inferVar x []
+      inferVar x [] e
 
 infer l@(Core.Lit _) = do
   -- Infer literal expression
@@ -116,15 +118,15 @@ infer e@(Core.App e1 e2) =
   case fromPolyVar e of
     Just (x, ts) -> do
       -- Infer polymorphic variable
-      inferVar x ts
+      inferVar x ts e
     otherwise -> do
       -- Infer application
-      (t1, c1) <- infer e1 `throwInExpr` e
-      (t2, c2) <- infer e2 `throwInExpr` e
+      (t1, c1) <- infer e1
+      (t2, c2) <- infer e2
       case t1 of
         t3 :=> t4 -> do
-          cg <- union c1 c2
-          cg' <- insert t2 t3 cg
+          cg <- union c1 c2 `inExpr` e
+          cg' <- insert t2 t3 cg `inExpr` e
           return (t4, cg')
 
 infer e'@(Core.Lam x e) = do
@@ -135,10 +137,10 @@ infer e'@(Core.Lam x e) = do
     else do
       -- Expression variable
       t1 <- fresh $ toSort $ Core.varType x
-      (t2, cg) <- local (insertVar x $ Forall [] [] empty t1) (infer e `throwInExpr` e')
+      (t2, cg) <- local (insertVar x $ Forall [] [] empty t1) (infer e)
       return (t1 :=> t2, cg)
 
-infer (Core.Let b e) = do
+infer e'@(Core.Let b e) = do
   -- Infer local module (i.e. let expression)
   let xs = Core.bindersOf b
   let rhss = Core.rhssOfBind b
@@ -150,27 +152,27 @@ infer (Core.Let b e) = do
   (ts', cg) <- foldM (\(ts, cg) rhs -> do
     -- Infer each bind within the group, compiling constraints
     (t, cg') <- withBinds (infer rhs)
-    cg'' <- union cg cg'
+    cg'' <- union cg cg' `inExpr` rhs
     return (t:ts, cg'')
     ) ([], empty) rhss
 
   --  Insure fresh types are quantified by infered constraint (t' < t)
-  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
+  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts) `inExpr` e'
 
   -- Restrict constraints to the interface
   ts' <- mapM (quantifyWith cg') ts
 
   -- Infer in body
   (t, icg) <- withBinds (infer e)
-  cg'' <- cg' `union` icg
+  cg'' <- union cg' icg `inExpr` e'
   return (t, cg')
 
-infer (Core.Case e b rt as) = do
+infer e'@(Core.Case e b rt as) = do
   -- Infer case expession
   et <- fresh $ toSort $ Utils.exprType e
   t  <- fresh $ toSort rt
-  (t0, c0) <- infer e `throwInExpr` e
-  c0' <- insert et t0 c0 `throwInExpr` e
+  (t0, c0) <- infer e
+  c0' <- insert et t0 c0 `inExpr` e
   (caseType, cg)  <- local (insertVar b $ Forall [] [] empty et) $ foldM (\(caseType, cg) a ->
     case a of
       -- Infer constructor alternative
@@ -183,8 +185,8 @@ infer (Core.Case e b rt as) = do
             else do
               ts <- mapM (fresh . toSort . Core.varType) bs
               (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] empty) ts) (infer rhs)
-              cgi' <- insert ti' t cgi
-              cg' <- cg `union` cgi'
+              cgi' <- insert ti' t cgi `inExpr` rhs
+              cg' <- union cg cgi' `inExpr` rhs
               case caseType of
                 Empty     -> return (DataCon [(d, ts)], cg')
                 DataCon s -> return (DataCon ((d, ts):s), cg')
@@ -193,8 +195,8 @@ infer (Core.Case e b rt as) = do
       -- Infer literal alternative
       (Core.LitAlt l, [], rhs) -> do
         (ti', cgi) <- infer rhs
-        cgi' <- insert ti' t cgi
-        cg' <- cg `union` cgi'
+        cgi' <- insert ti' t cgi `inExpr` rhs
+        cg' <- union cg cgi' `inExpr` rhs
         case caseType of
           Empty      -> return (Literal [l], cg')
           Literal s  -> return (Literal (l:s), cg')
@@ -208,19 +210,19 @@ infer (Core.Case e b rt as) = do
             return (caseType, cg)
           else do
             (ti', cgi) <- infer rhs
-            cgi' <- insert ti' t cgi
-            cg' <- cg `union` cgi'
+            cgi' <- insert ti' t cgi `inExpr` rhs
+            cg' <- union cg cgi' `inExpr` rhs
             return (Default, cg')
-    ) (Empty, c0') as `throwInExpr` e
+    ) (Empty, c0') as
 
-  -- Insure destructor is total
+  -- Insure destructor is total, GHC will conservatively insert defaults
   case caseType of
     Default -> return (t, cg)
     DataCon dts -> do
-      cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg  `throwInExpr` e
+      cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg `inExpr` e'
       return (t, cg')
     Literal lss -> do
-      cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg  `throwInExpr` e
+      cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg `inExpr` e'
       return (t, cg')
 
 -- Remove core ticks

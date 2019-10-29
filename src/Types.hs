@@ -26,8 +26,6 @@ import qualified GhcPlugins as Core
 import Debug.Trace
 import Outputable
 
-test = Outputable.text
-
 newtype RVar = RVar (Int, Bool, Core.TyCon) deriving Eq
 
 instance Ord RVar where
@@ -55,7 +53,7 @@ instance Core.Outputable Type where
   ppr (Sum cs) = pprWithBars (\(c, cargs) -> ppr c <>  text "(" <> interpp'SP cargs <> text ")") cs
 
 instance Core.Outputable TypeScheme where
-  ppr (Forall as xs cg t) = text "\n∀" <> interppSP as <> text ".∀"  <> interppSP xs <> text "." <> ppr t <> text "\n\nwhere:\n\n" <> interppSP (toList cg) <> text "\n"
+  ppr (Forall as xs cg t) = text "∀" <> interppSP as <> text ".∀"  <> interppSP xs <> text "." <> ppr t <> text "where:" <> interppSP (toList cg)
 
 instance Eq UType where
   TVar x == TVar y = Core.getName x == Core.getName y
@@ -67,8 +65,8 @@ instance Eq UType where
 
 type ConGraph = ConGraphGen RVar UType
 
--- instance Core.Outputable ConGraph where
---   ppr (ConGraph{succs = s, preds = p, subs =sb}) = ppr s <> text "\n" <> ppr p <> text "\n" -- <> (text $ show sb)
+instance Core.Outputable ConGraph where
+  ppr (ConGraph{succs = s, preds = p, subs =sb}) = ppr s <> text "\n" <> ppr p <> text "\n" -- <> (text $ show sb)
 
 split :: String -> [String]
 split [] = [""]

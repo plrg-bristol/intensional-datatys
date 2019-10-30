@@ -3,87 +3,38 @@
 module InferM
     (
       InferM,
-      Context (Context, con, var),
-      safeVar,
-      safeCon,
-      fresh,
-      freshScheme,
+      Context (Context),
+      con,
+      var,
+      inExpr,
       insertVar,
       insertMany,
-      inExpr
+      safeCon,
+      safeVar,
+      fresh,
+      freshScheme,
+      quantifyWith
     ) where
 
-import Errors
 import Types
-import Utils
 import GenericConGraph
+
 import Control.Monad.Except
 import Control.Monad.Trans.Maybe
 import Control.Monad.RWS hiding (Sum)
 import qualified Data.Map as M
-import qualified GhcPlugins as Core
-import UniqFM
-import Debug.Trace
+import qualified Data.List as L
 
-type InferM = RWST Context () Int (Except Error)
+import qualified GhcPlugins as Core
+
+type InferM = RWS Context () Int
 
 data Context = Context {
-    con :: UniqFM {- Core.DataCon -} (Core.TyCon, [Sort]), -- k -> (d, args)
+    con :: Core.UniqFM {- Core.DataCon -} (Core.TyCon, [Sort]), -- k -> (d, args)
     var :: M.Map Core.Var TypeScheme
 }
 
-inExpr :: Core.Outputable a => MaybeT InferM a -> b -> InferM a
-inExpr mcg e = do
-  mcg' <- runMaybeT mcg
-  case mcg' of
-    Just cg' -> return cg'
-    Nothing  -> error "This is where we handle the error."
-
-insertVar :: Core.Var -> TypeScheme -> Context ->  Context
-insertVar x f ctx = ctx{var = M.insert x f $ var ctx}
-
-insertMany :: [Core.Var] -> [TypeScheme] -> Context -> Context
-insertMany [] [] ctx = ctx
-insertMany (x:xs) (t:ts) ctx = insertVar x t (insertMany xs ts ctx)
-
-safeVar :: Core.Var -> InferM (TypeScheme)
-safeVar v = do
-  ctx <- ask
-  case var ctx M.!? v of
-    Just ts -> return ts
-    Nothing -> throwError $ VariableError v
-
-safeCon :: Core.DataCon -> InferM (Core.TyCon, [Sort])
-safeCon k = do
-  ctx <- ask
-  case lookupUFM (con ctx) k of
-    Just args -> return args
-    Nothing   -> throwError $ ConstructorError k
-
-fresh :: Sort -> InferM Type
-fresh t = do
-  i <- get
-  put (i + 1)
-  return $ head $ upArrow i [polarise True t]
-
-freshScheme :: SortScheme -> InferM TypeScheme
-freshScheme (SForall as (SVar a)) = return $ Forall as [] empty $ Con (TVar a) []
-freshScheme (SForall as (SBase b)) = return $ Forall as [] empty $ Con (TBase b) []
-freshScheme (SForall as s@(SData _)) = do
-  t <- fresh s
-  return $ Forall as [] empty t
-freshScheme (SForall as (SArrow s1 s2)) = do
-  Forall _ _ _ t1 <- freshScheme (SForall [] s1)  -- Fresh schemes have multiple refinement variables
-  Forall _ _ _ t2 <- freshScheme (SForall [] s2)
-  return $ Forall as [] empty (t1 :=> t2)
-
-delta :: Bool -> Core.TyCon -> Core.DataCon -> InferM [PType]
-delta p d k = do
-  (d', ts) <- safeCon k
-  if d == d'
-    then return $ fmap (polarise p) ts
-    else throwError $ DataTypeError d k
-
+-- Last two constraint simplification rules
 instance Rewrite RVar UType InferM where
   toNorm t1@(K k ts) t2@(V x p d) = do
       args <- delta p d k
@@ -110,3 +61,80 @@ instance Rewrite RVar UType InferM where
             args <- delta p d k
             return (TData k, upArrow x args)
   toNorm t1 t2 = return [(t1, t2)]
+
+-- Handle constraint errors
+inExpr :: Core.Outputable b => MaybeT InferM a -> b -> InferM a
+inExpr ma e = do
+  ma' <- runMaybeT ma
+  case ma' of
+    Just a -> return a
+    Nothing  -> Core.pprPanic "Constraint conflict arrising from: " (Core.ppr e)
+
+insertVar :: Core.Var -> TypeScheme -> Context ->  Context
+insertVar x f ctx = ctx{var = M.insert x f $ var ctx}
+
+insertMany :: [Core.Var] -> [TypeScheme] -> Context -> Context
+insertMany [] [] ctx = ctx
+insertMany (x:xs) (t:ts) ctx = insertVar x t (insertMany xs ts ctx)
+
+safeVar :: Core.Var -> InferM (TypeScheme)
+safeVar v = do
+  ctx <- ask
+  case var ctx M.!? v of
+    Just ts -> return ts
+    Nothing -> Core.pprPanic "Variable not in scope: " (Core.ppr v)
+
+safeCon :: Core.DataCon -> InferM (Core.TyCon, [Sort])
+safeCon k = do
+  ctx <- ask
+  case Core.lookupUFM (con ctx) k of
+    Just args -> return args
+    Nothing   -> Core.pprPanic "Constructor not in scope: " (Core.ppr k)
+
+-- A fresh refinement variable
+fresh :: Sort -> InferM Type
+fresh t = do
+  i <- get
+  put (i + 1)
+  return $ head $ upArrow i [polarise True t]
+
+-- A fresh refinement scheme for module/let bindings
+freshScheme :: SortScheme -> InferM TypeScheme
+freshScheme (SForall as (SVar a)) = return $ Forall as [] empty $ Con (TVar a) []
+freshScheme (SForall as (SBase b)) = return $ Forall as [] empty $ Con (TBase b) []
+freshScheme (SForall as s@(SData _)) = do
+  t <- fresh s
+  return $ Forall as [] empty t
+freshScheme (SForall as (SArrow s1 s2)) = do
+  Forall _ _ _ t1 <- freshScheme (SForall [] s1)  -- Fresh schemes have multiple refinement variables
+  Forall _ _ _ t2 <- freshScheme (SForall [] s2)
+  return $ Forall as [] empty (t1 :=> t2)
+
+-- Extract polarised constructor arguments from context
+delta :: Bool -> Core.TyCon -> Core.DataCon -> InferM [PType]
+delta p d k = do
+  (d', ts) <- safeCon k
+  if d == d'
+    then return $ fmap (polarise p) ts
+    else Core.pprPanic "DataType doesn't contain constructor: " (Core.ppr (d, k))
+
+-- Add restricted constraints to an unquantifed type scheme
+quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
+quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
+  -- Take the full transitive closure of the graph using rewriting rules
+  lcg <- saturate cg
+
+  -- Check all the stems in the interface
+  let chkStems = all (`elem` stems u) . stems
+
+  -- Restricted congraph with chkStems
+  let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
+  mcg <- runMaybeT $ fromList ns
+  case mcg of
+    Just cg' ->
+      -- Only quantified by refinement variables that appear in the inferface
+      return $ Forall as [x | Var x <- nodes cg'] cg' u
+    Nothing ->
+      Core.pprPanic "The constraints are inconsistent." (Core.ppr ns)
+
+quantifyWith _ _ = error "Cannot restrict refinement quantified type."

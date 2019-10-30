@@ -1,55 +1,29 @@
 module InferCoreExpr
     (
-      inferProg,
-      quantifyWith
+      inferProg
     ) where
 
-import Utils
 import Types
-import Errors
 import InferM
 import GenericConGraph
-import Control.Monad.Except
-import Control.Monad.Trans.Maybe
+
 import Control.Monad.RWS hiding (Sum)
-import qualified Data.List as L
 import qualified Data.Map as M
+
 import qualified GhcPlugins as Core
-import qualified CoreUtils as Utils
-import Demand
-import Debug.Trace
-import CoreArity
 import Kind
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Type])] | Empty
-
--- -- Add restricted constraints to an unquantifed type scheme
-quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
-quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
-  -- Take the full transitive closure of the graph using rewriting rules
-  lcg <- saturate cg
-
-  -- Check all the stems in the interface
-  let chkStems = all (`elem` stems u) . stems
-
-  -- Restricted congraph with chkStems
-  let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
-  cg' <- fromList ns `inExpr` 0
-
-  -- Only quantified by refinement variables that appear in the inferface
-  return $ Forall as [x | Var x <- nodes cg'] cg' u
-quantifyWith _ _ = error "Cannot restrict refinement quantified type."
 
 -- Infer program
 inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
 inferProg p = do
   let xs = Core.bindersOfBinds p
-
   -- Add all module level definitions to context with a fresh type (t) and no constraints
   ts <- mapM (freshScheme . toSortScheme . Core.varType) xs
+  Core.pprTraceM "Dumping ts" (Core.ppr ts)
   let m = M.fromList $ zip xs ts
   let withBinds = local (insertMany xs ts)
-
   z <- mapM (\(xs, ts, rhss) -> do
     -- Infer a binder group
     (ts', bcg) <- foldM (\(ts, cg) rhs -> do
@@ -60,7 +34,7 @@ inferProg p = do
         ) ([], empty) rhss
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
-    bcg' <- foldM (\bcg' (t', Forall as _ _ t) ->  insert t' t bcg') bcg (zip ts' ts) `inExpr` 0
+    bcg' <- foldM (\bcg' (t', Forall as _ _ t) ->  insert t' t bcg') bcg (zip ts' ts) `inExpr` ()
 
     -- Restrict constraints to the interface
     ts' <- mapM (quantifyWith bcg') ts
@@ -74,7 +48,7 @@ inferVar :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)
 inferVar x ts e = do
   (Forall as xs cg u) <- safeVar x
   if length as /= length ts
-    then throwError $ PolyTypeError x
+    then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
     else do
       ys  <- mapM fresh $ map (\(RVar (x, p, d)) -> SData d) xs
       ts' <- mapM fresh ts
@@ -89,7 +63,7 @@ inferVar x ts e = do
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e@(Core.Var x) =
-  case isConstructor x of
+  case Core.isDataConId_maybe x of
     Just k -> do
       if isPrim k
         then do
@@ -111,7 +85,7 @@ infer e@(Core.Var x) =
 
 infer l@(Core.Lit _) = do
   -- Infer literal expression
-  t' <- fresh $ toSort $ Utils.exprType l
+  t' <- fresh $ toSort $ Core.exprType l
   return (t', empty)
 
 infer e@(Core.App e1 e2) =
@@ -169,7 +143,7 @@ infer e'@(Core.Let b e) = do
 
 infer e'@(Core.Case e b rt as) = do
   -- Infer case expession
-  et <- fresh $ toSort $ Utils.exprType e
+  et <- fresh $ toSort $ Core.exprType e
   t  <- fresh $ toSort rt
   (t0, c0) <- infer e
   c0' <- insert et t0 c0 `inExpr` e
@@ -178,7 +152,7 @@ infer e'@(Core.Case e b rt as) = do
       -- Infer constructor alternative
       (Core.DataAlt d, bs, rhs) ->
         -- Check if rhs is bottom
-          if Utils.exprIsBottom rhs
+          if Core.exprIsBottom rhs
             then do
               -- Pass information to user about error
               return (caseType, cg)
@@ -204,7 +178,7 @@ infer e'@(Core.Case e b rt as) = do
 
       -- Infer default alternative
       (Core.DEFAULT, [], rhs) -> do
-        if Utils.exprIsBottom rhs
+        if Core.exprIsBottom rhs
           then do
             -- Pass information to user about error
             return (caseType, cg)
@@ -222,7 +196,7 @@ infer e'@(Core.Case e b rt as) = do
       cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg `inExpr` e'
       return (t, cg')
     Literal lss -> do
-      cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg `inExpr` e'
+      cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg `inExpr` (t0, e')
       return (t, cg')
 
 -- Remove core ticks

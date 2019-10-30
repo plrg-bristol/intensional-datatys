@@ -16,7 +16,11 @@ module Types
       subTypeVars,
       subSortVars,
       sub,
-      stems
+      stems,
+      toSort,
+      toSortScheme,
+      fromPolyVar,
+      isPrim
     ) where
 
 import Prelude hiding ((<>))
@@ -24,6 +28,7 @@ import Data.List
 import GenericConGraph
 import qualified GhcPlugins as Core
 import Debug.Trace
+import qualified TyCoRep as T
 import Outputable
 
 newtype RVar = RVar (Int, Bool, Core.TyCon) deriving Eq
@@ -37,6 +42,48 @@ data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon | PArrow P
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type
 data SortScheme = SForall [Core.Var] Sort
+
+isPrim :: Core.NamedThing t => t -> Bool
+isPrim t = isPrefixOf "$ghc-prim$" $ name t
+
+isConstructor :: Core.Var -> Maybe Core.DataCon
+isConstructor = Core.isDataConId_maybe
+
+name :: Core.NamedThing a => a -> String
+name = Core.nameStableString . Core.getName
+
+fromPolyVar :: Core.CoreExpr -> Maybe (Core.Var, [Sort])
+fromPolyVar (Core.Var i) = Just (i :: Core.Var, [])
+fromPolyVar (Core.App e1 (Core.Type t)) = do
+  (i, ts) <- fromPolyVar e1
+  return (i, toSort t:ts)
+fromPolyVar _ = Nothing
+
+toSort :: Core.Type -> Sort
+toSort (T.TyVarTy v) = SVar v
+toSort (T.FunTy t1 t2) =
+  let s1 = toSort t1
+      s2 = toSort t2
+  in SArrow s1 s2
+toSort (T.TyConApp t [])
+  | isPrim t = SBase t
+  | otherwise = SData t
+toSort _ =  error "Core type is not a valid sort."
+
+toSortScheme :: Core.Type -> SortScheme
+toSortScheme (T.TyVarTy v) = SForall [] (SVar v)
+toSortScheme (T.FunTy t1 t2) =
+  let s1 = toSort t1
+      s2 = toSort t2
+  in SForall [] (SArrow s1 s2)
+toSortScheme (T.ForAllTy b t) =
+  let (SForall as st) = toSortScheme t
+      a = Core.binderVar b
+  in SForall (a:as) st
+toSortScheme (T.TyConApp c args)
+  | isPrim c = SForall [] $ SBase c
+  | otherwise = SForall [] $ SData c
+toSortScheme _ = error "Core type is not a valid sort scheme."
 
 instance Core.Outputable UType where
   ppr (TVar v) = ppr v

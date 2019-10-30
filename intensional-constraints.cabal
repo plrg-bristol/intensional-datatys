@@ -29,8 +29,6 @@ library
   exposed-modules:
       GenericConGraph
       Types
-      Errors
-      Utils
       InferM
       InferCoreExpr
       Lib
@@ -53,7 +51,7 @@ test-suite intensional-constraints-test
       Paths_intensional_constraints
   hs-source-dirs:
       test
-  ghc-options: -O0 -fplugin Lib -dppr-debug
+  ghc-options: -O0 -fplugin Lib
   build-depends:
       base >=4.7
     , intensional-constraints

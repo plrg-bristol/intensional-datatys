@@ -20,7 +20,8 @@ module Types
       toSort,
       toSortScheme,
       fromPolyVar,
-      isPrim
+      isPrim,
+      disp
     ) where
 
 import Prelude hiding ((<>))
@@ -29,6 +30,8 @@ import GenericConGraph
 import qualified GhcPlugins as Core
 import Debug.Trace
 import qualified TyCoRep as T
+import qualified Data.Map as M
+import Control.Monad.RWS hiding (Sum, Alt, (<>))
 import Outputable
 
 newtype RVar = RVar (Int, Bool, Core.TyCon) deriving Eq
@@ -36,11 +39,11 @@ newtype RVar = RVar (Int, Bool, Core.TyCon) deriving Eq
 instance Ord RVar where
   RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
-data Sort = SVar Core.Var | SBase Core.TyCon | SData Core.TyCon | SArrow Sort Sort
+data Sort = SVar Core.Var | SBase Core.TyCon | SData Core.TyCon | SArrow Sort Sort deriving Show
 data UType = TVar Core.Var | TBase Core.TyCon | TData Core.DataCon | TArrow | TLit Core.Literal -- Sums can contain literals
 data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon | PArrow PType PType
 type Type = SExpr RVar UType
-data TypeScheme = Forall [Core.Var] [RVar] ConGraph Type
+data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type
 data SortScheme = SForall [Core.Var] Sort
 
 isPrim :: Core.NamedThing t => t -> Bool
@@ -90,8 +93,16 @@ instance Core.Outputable UType where
   ppr (TBase b) = ppr b
   ppr (TData dc) = ppr dc
 
+instance Show UType where
+  show (TVar v) = show v
+  show (TBase b) = show b
+  show (TData dc) = show dc
+
 instance Core.Outputable RVar where
   ppr (RVar (x, p, d)) = (text "[") <> (ppr x) <> (if p then text"+" else text "-") <> ppr d <> text "]"
+
+instance Show RVar where
+  show (RVar (x, p, d)) = "[" ++ (show x) ++ (if p then "+" else "-") ++ (show d) ++ "]"
 
 instance Core.Outputable Type where
   ppr (V x p d) = text "[" <> (ppr x) <> (if p then (text "+") else text "-") <> ppr d <>  text "]"
@@ -99,8 +110,18 @@ instance Core.Outputable Type where
   ppr (K v ts) = ppr v <>  text "(" <> interpp'SP ts <>  text ")"
   ppr (Sum cs) = pprWithBars (\(c, cargs) -> ppr c <>  text "(" <> interpp'SP cargs <> text ")") cs
 
-instance Core.Outputable TypeScheme where
-  ppr (Forall as xs cg t) = text "∀" <> interppSP as <> text ".∀"  <> interppSP xs <> text "." <> ppr t <> text "where:" <> interppSP (toList cg)
+instance Show Type where
+  show (V x p d) = "[" ++ (show x) ++ (if p then "+" else "-") ++ show d ++ "]"
+  show (t1 :=> t2) =  "(" ++ (show t1) ++  "->" ++ (show t2) ++  ")"
+  show (K v ts) = show v ++  "(" ++ (concat $ intersperse "," (fmap show ts)) ++ ")"
+  show (Sum cs) = concat $ intersperse " | " (fmap (\(c, cargs) -> show c ++ "(" ++ (concat $ intersperse "," (fmap show cargs)) ++ ")") cs)
+
+-- instance Core.Outputable TypeScheme where
+--   ppr (Forall as xs cg t) = text "∀" <> interppSP as <> text ".∀"  <> interppSP xs <> text "." <> ppr t <> text "where:" <> interppSP (toList cg)
+
+disp as xs cs t = "∀" ++ (concat $ intersperse ", " (fmap show as)) ++ ".∀" ++ (concat $ intersperse ", " (fmap show xs)) ++ "." ++ show t ++ "\nwhere:\n" ++ (concat $ intersperse ";\n" (fmap f cs))
+  where
+    f (t1, t2) = show t1 ++ " < " ++ show t2
 
 instance Eq UType where
   TVar x == TVar y = Core.getName x == Core.getName y
@@ -121,17 +142,18 @@ split (c:cs) | c == '$'  = "" : rest
              | otherwise = (c : head rest) : tail rest
     where rest = split cs
 
--- instance Show Core.Var where
---   show n = last $ split (Core.nameStableString $ Core.getName n)
---
--- instance Show Core.Name where
---   show n = last $ split (Core.nameStableString $ Core.getName n)
---
--- instance Show Core.TyCon where
---   show n = last $ split (Core.nameStableString $ Core.getName n)
---
--- instance Show Core.DataCon where
---   show n = last $ split (Core.nameStableString $ Core.getName n)
+-- assume everything is coming from the same module
+instance Show Core.Var where
+  show n = last $ split (Core.nameStableString $ Core.getName n)
+
+instance Show Core.Name where
+  show n = last $ split (Core.nameStableString $ Core.getName n)
+
+instance Show Core.TyCon where
+  show n = last $ split (Core.nameStableString $ Core.getName n)
+
+instance Show Core.DataCon where
+  show n = last $ split (Core.nameStableString $ Core.getName n)
 
 instance Constructor UType where
   variance TArrow = [False, True]

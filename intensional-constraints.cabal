@@ -36,6 +36,7 @@ library
       Paths_intensional_constraints
   hs-source-dirs:
       src
+  ghc-options: -O0
   build-depends:
       base >=4.7
     , containers

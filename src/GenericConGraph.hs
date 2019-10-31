@@ -19,7 +19,6 @@ module GenericConGraph (
 
 import Control.Applicative hiding (empty)
 import Control.Monad
-import Control.Monad.Except
 import Control.Monad.Trans.Maybe
 import qualified Data.Map as M
 import qualified Data.List as L
@@ -78,33 +77,44 @@ nodes :: (Eq x, Eq c) => ConGraphGen x c -> [SExpr x c]
 nodes ConGraph{succs = s, preds = p} = L.nub (fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p))
 
 saturate :: (Eq c, Eq x, Monad m, Rewrite x c m) => ConGraphGen x c -> m [(SExpr x c, SExpr x c)]
-saturate cg@ConGraph{succs = s, preds = p} = saturate' (M.toList s) (M.toList p)
+saturate = saturate' . toList
   where
-    -- saturate' :: [(x, [SExpr x c])] -> [(x, [SExpr x c])] -> m [(SExpr x c, SExpr x c)]
-    saturate' ((t, ts):ss) ps = do
-      ss' <- saturate' ss ps
-      foldM (\l t' -> insertSat (Var t) t' l) ss' ts
-    saturate' [] ((t,ts):ps) = do
-      ps' <- saturate' [] ps
-      foldM (\l t' -> insertSat t' (Var t) l) ps' ts
-    saturate' [] [] = return []
+    saturate' cs = do
+      delta <- concatMapM (\(a, b) -> concatMapM (\(b', c) -> if b == b' then toNorm a c else return []) cs) cs
+      let cs' = L.nub (cs ++ delta)
+      if cs == cs'
+        then return cs
+        else saturate' cs'
 
-    -- insertSat :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
-    insertSat t1 t2 cs = do
-      cs' <- toNorm t1 t2
-      foldM (\l (t1, t2) -> insertSatNorm t1 t2 l) cs cs'
-
-    -- insertSatNorm :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
-    insertSatNorm t1 t2 cs
-      | (t1, t2) `elem` cs = return cs
-      | otherwise = return $ trans ((t1, t2):cs)
-
-    -- trans :: (SExpr x c, SExpr x c) -> [(SExpr x c, SExpr x c)] -> [(SExpr x c, SExpr x c)]
-    trans cs
-      | cs == cs' = cs
-      | otherwise = trans cs'
+    concatMapM op = foldr f (return [])
       where
-        cs' = L.nub $ cs ++ [(a, c) | (a, b) <- cs, (b', c) <- cs, b == b']
+        f x xs = do x <- op x; if null x then xs else do xs <- xs; return $ x++xs
+
+    -- -- saturate' :: [(x, [SExpr x c])] -> [(x, [SExpr x c])] -> m [(SExpr x c, SExpr x c)]
+    -- saturate' ((t, ts):ss) ps = do
+    --   ss' <- saturate' ss ps
+    --   foldM (\l t' -> insertSat (Var t) t' l) ss' ts
+    -- saturate' [] ((t,ts):ps) = do
+    --   ps' <- saturate' [] ps
+    --   foldM (\l t' -> insertSat t' (Var t) l) ps' ts
+    -- saturate' [] [] = return []
+    --
+    -- -- insertSat :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
+    -- insertSat t1 t2 cs = do
+    --   cs' <- toNorm t1 t2
+    --   foldM (\l (t1, t2) -> insertSatNorm t1 t2 l) cs cs'
+    --
+    -- -- insertSatNorm :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
+    -- insertSatNorm t1 t2 cs
+    --   | (t1, t2) `elem` cs = return cs
+    --   | otherwise = return $ trans ((t1, t2):cs)
+    --
+    -- -- trans :: (SExpr x c, SExpr x c) -> [(SExpr x c, SExpr x c)] -> [(SExpr x c, SExpr x c)]
+    -- trans cs
+    --   | cs == cs' = cs
+    --   | otherwise = trans cs'
+    --   where
+    --     cs' = L.nub $ cs ++ [(a, c) | (a, b) <- cs, (b', c) <- cs, b == b']
 
 -- Apply function to set expressions without effecting variables
 graphMap :: (Eq c, Ord x, Constructor c) => (SExpr x c -> SExpr x c) -> ConGraphGen x c -> ConGraphGen x c
@@ -252,7 +262,7 @@ substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
   where
     sub (Var y) | x == y = se
     sub (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap sub cargs)) cs
-    sub One = One
+    sub t = t
     p'  = fmap (L.nub . fmap sub) p
     s'  = fmap (L.nub . fmap sub) s
     cg = ConGraph { succs = s', preds = p', subs = M.insert x se $ fmap sub sb }

@@ -27,6 +27,8 @@ import qualified Data.List as L
 
 import qualified GhcPlugins as Core
 
+import Debug.Trace
+
 type InferM = RWS Context () Int
 
 data Context = Context {
@@ -45,21 +47,18 @@ instance Rewrite RVar UType InferM where
           c2 <- toNorm (K k ts) (K k ts')
           return (c1 ++ c2)
         else return [(K k ts', V x p d), (K k ts, K k ts')]
-  toNorm t1@(V x p d) t2@(Sum cs) =
-    if length cs == 1
-      then return [(t1, t2)]
-      else do
-        s <- mapM refineCon cs
-        if cs /= s
-          then do
-            c1 <- toNorm (Sum s) (Sum cs)
-            c2 <- toNorm (V x p d) (Sum s)
-            return (c1 ++ c2)
-          else return [(Sum s, Sum cs),(V x p d, Sum s)]
-        where
-          refineCon (TData k, ts) = do
-            args <- delta p d k
-            return (TData k, upArrow x args)
+  toNorm t1@(V x p d) t2@(Sum cs) = do
+      s <- mapM refineCon cs
+      if cs /= s
+        then do
+          c1 <- toNorm (Sum s) (Sum cs)
+          c2 <- toNorm (V x p d) (Sum s)
+          return (c1 ++ c2)
+        else return [(Sum s, Sum cs),(V x p d, Sum s)]
+      where
+        refineCon (TData k, ts) = do
+          args <- delta p d k
+          return (TData k, upArrow x args)
   toNorm t1 t2 = return [(t1, t2)]
 
 -- Handle constraint errors
@@ -100,15 +99,19 @@ fresh t = do
 
 -- A fresh refinement scheme for module/let bindings
 freshScheme :: SortScheme -> InferM TypeScheme
-freshScheme (SForall as (SVar a)) = return $ Forall as [] empty $ Con (TVar a) []
-freshScheme (SForall as (SBase b)) = return $ Forall as [] empty $ Con (TBase b) []
+freshScheme (SForall as (SVar a)) = return $ Forall as [] [] $ Con (TVar a) []
+freshScheme (SForall as (SBase b)) = return $ Forall as [] [] $ Con (TBase b) []
 freshScheme (SForall as s@(SData _)) = do
   t <- fresh s
-  return $ Forall as [] empty t
+  case t of
+    V x p d -> return $ Forall as [RVar (x, p, d)] [] t
+    otherwise -> error "Fresh has gone wrong!"
 freshScheme (SForall as (SArrow s1 s2)) = do
-  Forall _ _ _ t1 <- freshScheme (SForall [] s1)  -- Fresh schemes have multiple refinement variables
-  Forall _ _ _ t2 <- freshScheme (SForall [] s2)
-  return $ Forall as [] empty (t1 :=> t2)
+  Forall l1 v1 _ t1 <- freshScheme (SForall [] s1)  -- Fresh schemes have multiple refinement variables
+  Forall l2 v2 _ t2 <- freshScheme (SForall [] s2)
+  if length l1 + length l2 > 0
+    then error "Rank 1 please."
+    else return $ Forall as (v1 ++ v2) [] (t1 :=> t2)
 
 -- Extract polarised constructor arguments from context
 delta :: Bool -> Core.TyCon -> Core.DataCon -> InferM [PType]
@@ -120,7 +123,7 @@ delta p d k = do
 
 -- Add restricted constraints to an unquantifed type scheme
 quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
-quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
+quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as _ _ u) = do
   -- Take the full transitive closure of the graph using rewriting rules
   lcg <- saturate cg
 
@@ -129,12 +132,8 @@ quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as [] _ u) = do
 
   -- Restricted congraph with chkStems
   let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
-  mcg <- runMaybeT $ fromList ns
-  case mcg of
-    Just cg' ->
-      -- Only quantified by refinement variables that appear in the inferface
-      return $ Forall as [x | Var x <- nodes cg'] cg' u
-    Nothing ->
-      Core.pprPanic "The constraints are inconsistent." (Core.ppr ns)
 
-quantifyWith _ _ = error "Cannot restrict refinement quantified type."
+  -- Only quantified by refinement variables that appear in the inferface
+  return $ Forall as [x | Var x <- nodes ns] ns u
+  where
+    nodes = concatMap (\(x, y) -> [x, y])

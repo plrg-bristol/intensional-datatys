@@ -36,12 +36,12 @@ inferProg p = do
     -- Infer each bind within the group
     bind <- mapM (withBinds . infer) rhss
     let (ts', cgs) = unzip bind
-
+    
     -- Combine constraint graphs of group
     bcg <- foldM (\bcg' cg -> union bcg' cg `inExpr` ()) empty cgs
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
-    bcg' <- foldM (\bcg' (t', Forall as _ _ t) ->  insert t' t bcg') bcg (zip ts' ts) `inExpr` ()
+    bcg' <- foldM (\bcg' (t', Forall as _ _ t) -> insert t' t bcg') bcg (zip ts' ts) `inExpr` ()
 
     -- Restrict constraints to the interface
     ts'' <- mapM (quantifyWith bcg') ts
@@ -58,7 +58,7 @@ inferVar x ts e = do
     then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
     else do
 
-      ys  <- mapM fresh $ map (\(RVar (_, _, d)) -> SData d) xs
+      ys  <- mapM (fresh . \(RVar (_, _, d)) -> SData d) xs
       ts' <- mapM fresh ts
 
       let (SForall vas v) = toSortScheme $ Core.varType x -- length vas = length as = length ts
@@ -76,12 +76,12 @@ inferVar x ts e = do
         Nothing -> error "Variable has inconsistent constriants."
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
-infer e
-  | Core.exprIsBottom e && False = undefined -- If expr is bottom and data then give zero constraint
+-- infer e
+--    Core.exprIsBottom e && False = undefined -- If expr is bottom and data then give zero constraint
 
 infer e@(Core.Var x) =
   case Core.isDataConId_maybe x of
-    Just k -> do
+    Just k ->
       if isPrim k
         then do
           -- Infer literal constructor
@@ -108,7 +108,7 @@ infer l@(Core.Lit _) = do
 
 infer e@(Core.App e1 e2) =
   case fromPolyVar e of
-    Just (x, ts) -> do
+    Just (x, ts) ->
       -- Infer polymorphic variable
       inferVar x ts e
     Nothing -> do
@@ -121,13 +121,13 @@ infer e@(Core.App e1 e2) =
           cg' <- insert t2 t3 cg `inExpr` e
           return (t4, cg')
 
-infer e'@(Core.Lam x e) = do
-  -- Infer abstraction
+infer e'@(Core.Lam x e) =
   if isLiftedTypeKind $ Core.varType x
-    -- Type variable
-    then return (Zero, empty)
+    then
+      -- Type abstraction
+      infer e
     else do
-      -- Expression variable
+      -- Variable abstraction
       t1 <- fresh $ toSort $ Core.varType x
       (t2, cg) <- local (insertVar x $ Forall [] [] [] t1) (infer e)
       return (t1 :=> t2, cg)
@@ -171,7 +171,7 @@ infer e'@(Core.Case e b rt as) = do
       (Core.DataAlt d, bs, rhs) ->
         -- Check if rhs is bottom
           if Core.exprIsBottom rhs
-            then do
+            then
               -- Pass information to user about error
               return (caseType, cg)
             else do
@@ -195,9 +195,9 @@ infer e'@(Core.Case e b rt as) = do
           Default    -> return (Default, cg')
 
       -- Infer default alternative
-      (Core.DEFAULT, _, rhs) -> do
+      (Core.DEFAULT, _, rhs) ->
         if Core.exprIsBottom rhs
-          then do
+          then
             -- Pass information to user about error
             return (caseType, cg)
           else do

@@ -38,5 +38,4 @@ data Nat = Z | S Nat
 -- foldr f x (Cons a as) = f a (foldr f x as)
 
 rebuild :: List -> a
-rebuild Empty = undefined
 rebuild (Cons a b) = rebuild b

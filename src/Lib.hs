@@ -26,11 +26,9 @@ inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs}= do
     let p = filter (all isOfMain . bindersOf) bs
     -- pprTraceM "" (ppr p)
     let ((ts, _), _, _) = runRWS (listen $ inferProg p) env 0
-    mapM (\(t, Forall as xs cs u) -> do
+    mapM_ (\(t, Forall as xs cs u) -> do
       putStr (show t ++ "::")
-      -- let (cs, _, _) = runRWS (saturate cg :: InferM [(Types.Type, Types.Type)]) env 0
       putStrLn $ disp as xs cs u
-      -- pprTraceM "" (ppr cg)
       putStrLn "") ts
     return guts
   where
@@ -44,4 +42,4 @@ buildContext t xs = xs' ++ xs
     go :: DataCon -> [(DataCon, (TyCon, [Sort]))] -> [(DataCon, (TyCon, [Sort]))]
     go d ys = (d, (t, sorts)):ys
       where
-        sorts = fmap toSort $ dataConOrigArgTys d
+        sorts = toSort <$> dataConOrigArgTys d

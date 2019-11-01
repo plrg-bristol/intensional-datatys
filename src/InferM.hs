@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, TypeSynonymInstances #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances #-}
 
 module InferM
     (
@@ -76,7 +76,7 @@ insertMany :: [Core.Var] -> [TypeScheme] -> Context -> Context
 insertMany [] [] ctx = ctx
 insertMany (x:xs) (t:ts) ctx = insertVar x t (insertMany xs ts ctx)
 
-safeVar :: Core.Var -> InferM (TypeScheme)
+safeVar :: Core.Var -> InferM TypeScheme
 safeVar v = do
   ctx <- ask
   case var ctx M.!? v of
@@ -105,7 +105,7 @@ freshScheme (SForall as s@(SData _)) = do
   t <- fresh s
   case t of
     V x p d -> return $ Forall as [RVar (x, p, d)] [] t
-    otherwise -> error "Fresh has gone wrong!"
+    _ -> error "Fresh has gone wrong!"
 freshScheme (SForall as (SArrow s1 s2)) = do
   Forall l1 v1 _ t1 <- freshScheme (SForall [] s1)  -- Fresh schemes have multiple refinement variables
   Forall l2 v2 _ t2 <- freshScheme (SForall [] s2)
@@ -124,16 +124,14 @@ delta p d k = do
 -- Add restricted constraints to an unquantifed type scheme
 quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
 quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as _ _ u) = do
-  -- Take the full transitive closure of the graph using rewriting rules
-  lcg <- saturate cg
+   -- Take the full transitive closure of the graph using rewriting rules
+   lcg <- saturate cg
 
-  -- Check all the stems in the interface
-  let chkStems = const True -- all (`elem` stems u) . stems
+   -- Check all the stems in the interface
+   let chkStems = all (`elem` stems u) . stems
 
-  -- Restricted congraph with chkStems
-  let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
+   -- Restricted congraph with chkStems
+   let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
 
-  -- Only quantified by refinement variables that appear in the inferface
-  return $ Forall as [x | Var x <- nodes ns] ns u
-  where
-    nodes = concatMap (\(x, y) -> [x, y])
+   -- Only quantified by refinement variables that appear in the inferface
+   return $ Forall as [x | (Var x, _) <- ns, (_, Var x) <- ns] ns u

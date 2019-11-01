@@ -8,7 +8,6 @@ module GenericConGraph (
     , empty
     , fromList
     , toList
-    , nodes
     , saturate
     , insert
     , union
@@ -71,10 +70,6 @@ fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 -- Returns a list of constraints as internally represented
 toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]
 toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
-
--- A list of all nodes that appear in the constriant graph
-nodes :: (Eq x, Eq c) => ConGraphGen x c -> [SExpr x c]
-nodes ConGraph{succs = s, preds = p} = L.nub (fmap Var (M.keys s) ++ fmap Var (M.keys p) ++ concat (M.elems s ++ M.elems p))
 
 saturate :: (Eq c, Eq x, Monad m, Rewrite x c m) => ConGraphGen x c -> m [(SExpr x c, SExpr x c)]
 saturate = saturate' . toList
@@ -156,7 +151,7 @@ insertSucc :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => x -> SExpr
 insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
   case sb M.!? x of
     Just z    -> insert z sy cg
-    otherwise ->
+    _ ->
       case s M.!? x of
         Just ss ->
           if sy `elem` ss
@@ -165,14 +160,14 @@ insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
               cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s}
               case predChain cg' x sy [] of
                 Just vs -> foldM (substitute sy) cg' vs
-                otherwise -> return cg'
-        otherwise -> closeSucc x sy cg{succs = M.insert x [sy] s}
+                _ -> return cg'
+        _ -> closeSucc x sy cg{succs = M.insert x [sy] s}
 
 insertPred:: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 insertPred sx y cg@ConGraph{preds = p, subs = sb} =
   case sb M.!? y of
     Just z    -> insert sx z cg
-    otherwise ->
+    _ ->
       case p M.!? y of
         Just ps ->
           if sx `elem` ps
@@ -181,21 +176,21 @@ insertPred sx y cg@ConGraph{preds = p, subs = sb} =
               cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p}
               case succChain cg' sx y [] of
                 Just vs -> foldM (substitute sx) cg' vs
-                otherwise -> return cg'
-        otherwise -> closePred sx y cg{preds = M.insert y [sx] p}
+                _ -> return cg'
+        _ -> closePred sx y cg{preds = M.insert y [sx] p}
 
 -- Partial online transitive closure
 closeSucc :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => x -> SExpr x c -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 closeSucc x sy cg =
   case preds cg M.!? x of
     Just ps   -> foldM (\cg p -> insert p sy cg) cg ps
-    otherwise -> return cg
+    _ -> return cg
 
 closePred :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 closePred sx y cg =
   case succs cg M.!? y of
     Just ss   -> foldM (\cg s -> insert sx s cg) cg ss
-    otherwise -> return cg
+    _ -> return cg
 
 -- Partial online cycle elimination
 predChain :: (Eq c, Ord x, Constructor c) => ConGraphGen x c -> x -> SExpr x c -> [x] -> Maybe [x]

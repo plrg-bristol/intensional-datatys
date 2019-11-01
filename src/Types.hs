@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternSynonyms, TypeSynonymInstances, FlexibleInstances #-}
+{-# LANGUAGE PatternSynonyms, FlexibleInstances #-}
 
 module Types
     (
@@ -44,7 +44,7 @@ data UType = TVar Core.Var | TBase Core.TyCon | TData Core.DataCon | TArrow | TL
 data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon | PArrow PType PType
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type
-data SortScheme = SForall [Core.Var] Sort
+data SortScheme = SForall [Core.Var] Sort deriving Show
 
 isPrim :: Core.NamedThing t => t -> Bool
 isPrim t = isPrefixOf "$ghc-prim$" $ name t
@@ -124,7 +124,7 @@ disp as xs cs t = "∀" ++ (concat $ intersperse ", " (fmap show as)) ++ ".∀" 
     f (t1, t2) = show t1 ++ " < " ++ show t2
 
 instance Eq UType where
-  TVar x == TVar y = Core.getName x == Core.getName y
+  TVar x == TVar y = name x == name y
   TBase b == TBase b' = Core.getName b == Core.getName b'
   TData d == TData d' = Core.getName d == Core.getName d'
   TLit l == TLit l' = l == l'
@@ -134,7 +134,7 @@ instance Eq UType where
 type ConGraph = ConGraphGen RVar UType
 
 instance Core.Outputable ConGraph where
-  ppr (ConGraph{succs = s, preds = p, subs =sb}) = ppr s <> text "\n" <> ppr p <> text "\n" -- <> (text $ show sb)
+  ppr ConGraph{succs = s, preds = p, subs =sb} = ppr s <> text "\n" <> ppr p <> text "\n" -- <> (text $ show sb)
 
 split :: String -> [String]
 split [] = [""]

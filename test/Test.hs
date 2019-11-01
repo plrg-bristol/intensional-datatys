@@ -6,8 +6,8 @@ import Prelude hiding (Bool, True, False, not, List, foldr)
 
 -- data Bool = True | False
 
-data List = Empty | Cons Nat List
-
+data List a = Empty | Cons a (List a)
+-- 
 data Nat = Z | S Nat
 
 -- myAddr = (:) :: Int -> [Int] -> [Int]
@@ -30,12 +30,12 @@ data Nat = Z | S Nat
 -- isOdd Z = False
 -- isOdd (S n) = isOdd n
 -- --
--- -- myerror :: Bool
--- -- myerror = error "Boo"
+-- myerror :: Bool
+-- myerror = error "Boo"
 --
--- foldr :: (Nat -> b -> b) -> b -> List -> b
--- foldr f x Empty = x
--- foldr f x (Cons a as) = f a (foldr f x as)
+foldr :: (a -> b -> b) -> b -> (List a) -> b
+foldr f x Empty = x
+foldr f x (Cons a as) = f a (foldr f x as)
 
-rebuild :: List -> a
-rebuild (Cons a b) = rebuild b
+-- rebuild :: List -> a
+-- rebuild (Cons a b) = rebuild b

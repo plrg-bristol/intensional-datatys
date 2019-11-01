@@ -24,7 +24,7 @@ import qualified Data.List as L
 import Debug.Trace
 
 -- Set expression with disjoint sum
-data SExpr x c = Var x | Sum [(c, [SExpr x c])] | One
+data SExpr x c = Var x | Sum [(c, [SExpr x c])] | One | Dot
 
 -- Singleton sum
 pattern Con :: c -> [SExpr x c] -> SExpr x c
@@ -36,7 +36,7 @@ pattern Zero = Sum []
 
 instance (Eq c, Eq x) => Eq (SExpr x c) where
   Var x == Var y    = x == y
-  Sum cs == Sum ds  = (length cs == length ds) && (all (uncurry (==)) $ zip cs ds)
+  Sum cs == Sum ds  = (length cs == length ds) && all (uncurry (==)) (zip cs ds)
   One == One        = True
   _ == _            = False
 
@@ -61,7 +61,7 @@ class Rewrite x c m where
 
 instance (Monad m, Rewrite x c m) => Rewrite x c (MaybeT m) where
   -- toNorm :: SExpr x c -> SExpr x c -> MaybeT m [(SExpr x c, SExpr x c)]
-  toNorm se1 se2 = MaybeT (toNorm se1 se2 >>= return . Just)
+  toNorm se1 se2 = MaybeT (Just <$> toNorm se1 se2)
 
 -- Constructor a new constraint graph from a list
 fromList :: (Rewrite x c m, Monad m, Ord x, Constructor c, Eq c) => [(SExpr x c, SExpr x c)] -> MaybeT m (ConGraphGen x c)
@@ -71,6 +71,7 @@ fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]
 toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
 
+-- The fixed point of normalisation and transitivity
 saturate :: (Eq c, Eq x, Monad m, Rewrite x c m) => ConGraphGen x c -> m [(SExpr x c, SExpr x c)]
 saturate = saturate' . toList
   where
@@ -84,32 +85,6 @@ saturate = saturate' . toList
     concatMapM op = foldr f (return [])
       where
         f x xs = do x <- op x; if null x then xs else do xs <- xs; return $ x++xs
-
-    -- -- saturate' :: [(x, [SExpr x c])] -> [(x, [SExpr x c])] -> m [(SExpr x c, SExpr x c)]
-    -- saturate' ((t, ts):ss) ps = do
-    --   ss' <- saturate' ss ps
-    --   foldM (\l t' -> insertSat (Var t) t' l) ss' ts
-    -- saturate' [] ((t,ts):ps) = do
-    --   ps' <- saturate' [] ps
-    --   foldM (\l t' -> insertSat t' (Var t) l) ps' ts
-    -- saturate' [] [] = return []
-    --
-    -- -- insertSat :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
-    -- insertSat t1 t2 cs = do
-    --   cs' <- toNorm t1 t2
-    --   foldM (\l (t1, t2) -> insertSatNorm t1 t2 l) cs cs'
-    --
-    -- -- insertSatNorm :: SExpr x c -> SExpr x c -> [(SExpr x c, SExpr x c)] -> m [(SExpr x c, SExpr x c)]
-    -- insertSatNorm t1 t2 cs
-    --   | (t1, t2) `elem` cs = return cs
-    --   | otherwise = return $ trans ((t1, t2):cs)
-    --
-    -- -- trans :: (SExpr x c, SExpr x c) -> [(SExpr x c, SExpr x c)] -> [(SExpr x c, SExpr x c)]
-    -- trans cs
-    --   | cs == cs' = cs
-    --   | otherwise = trans cs'
-    --   where
-    --     cs' = L.nub $ cs ++ [(a, c) | (a, b) <- cs, (b', c) <- cs, b == b']
 
 -- Apply function to set expressions without effecting variables
 graphMap :: (Eq c, Ord x, Constructor c) => (SExpr x c -> SExpr x c) -> ConGraphGen x c -> ConGraphGen x c
@@ -189,7 +164,7 @@ closeSucc x sy cg =
 closePred :: (Rewrite x c m, Monad m, Eq c, Ord x, Constructor c) => SExpr x c -> x -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
 closePred sx y cg =
   case succs cg M.!? y of
-    Just ss   -> foldM (\cg s -> insert sx s cg) cg ss
+    Just ss   -> foldM (flip $ insert sx) cg ss
     _ -> return cg
 
 -- Partial online cycle elimination
@@ -251,7 +226,7 @@ substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
     Just ps -> foldM (\cg pi -> insert pi se cg) cg ps
     Nothing -> return cg
   cg'' <- case s' M.!? x of
-    Just ss -> foldM (\cg si -> insert se si cg) cg' ss
+    Just ss -> foldM (flip $ insert se) cg' ss
     Nothing -> return cg'
   return cg''{ succs = M.delete x $ succs cg'', preds = M.delete x $ preds cg''}
   where

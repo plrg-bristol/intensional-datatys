@@ -24,7 +24,7 @@ inferGuts :: ModGuts -> IO ModGuts
 inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs}= do
     let env = Context{con = listToUFM (foldr buildContext [] tcs), var = M.empty}
     let p = filter (all isOfMain . bindersOf) bs
-    -- pprTraceM "" (ppr p)
+    pprTraceM "" (ppr p)
     let ((ts, _), _, _) = runRWS (listen $ inferProg p) env 0
     mapM_ (\(t, Forall as xs cs u) -> do
       putStr (show t ++ "::")
@@ -32,8 +32,10 @@ inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs}= do
       putStrLn "") ts
     return guts
   where
-    isOfMain b = isPrefixOf "$main$Test$" (name b) && not (isPrefixOf "$main$Test$$" (name b))
+    -- Generalise this to check module name
+    isOfMain b = isPrefixOf "$main$Test$" (name b) && not ("$main$Test$$" `isPrefixOf` name b)
 
+-- Add tycon to underlying delta (polarisation is implicit)
 buildContext :: TyCon -> [(DataCon, (TyCon, [Sort]))] -> [(DataCon, (TyCon, [Sort]))]
 buildContext t xs = xs' ++ xs
   where

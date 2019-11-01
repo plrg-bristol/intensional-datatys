@@ -31,17 +31,15 @@ inferProg p = do
   -- Mut rec groups
   let groups = fmap (\b -> let xs = Core.bindersOf b in (xs, fmap (m M.!) xs, Core.rhssOfBind b)) p
   z <- mapM (\(xs, ts, rhss) -> do
-    -- Infer a binder group
-
     -- Infer each bind within the group
     bind <- mapM (withBinds . infer) rhss
     let (ts', cgs) = unzip bind
-    
+
     -- Combine constraint graphs of group
-    bcg <- foldM (\bcg' cg -> union bcg' cg `inExpr` ()) empty cgs
+    bcg <- foldM (\bcg' cg -> union bcg' cg `inExpr` ("Union", bcg', cg)) empty cgs
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
-    bcg' <- foldM (\bcg' (t', Forall as _ _ t) -> insert t' t bcg') bcg (zip ts' ts) `inExpr` ()
+    bcg' <- foldM (\bcg' (t', Forall as _ _ t) -> insert t' t bcg' `inExpr` ("Insert", t', t, bcg')) bcg (zip ts' ts)
 
     -- Restrict constraints to the interface
     ts'' <- mapM (quantifyWith bcg') ts
@@ -70,15 +68,12 @@ inferVar x ts e = do
       mcg <- runMaybeT $ fromList cs
       case mcg of
         Just cg -> do
-          cg' <- foldM (\cg' (r, se) -> substitute se cg' r) (graphMap (subTypeVars as ts') cg) (zip xs ys) `inExpr` e
-          cg'' <- insert u' v' cg' `inExpr` e
+          cg' <- foldM (\cg' (r, se) -> substitute se cg' r) (graphMap (subTypeVars as ts') cg) (zip xs ys) `inExpr` ("Sub", e)
+          cg'' <- insert u' v' cg' `inExpr` ("Insert", u', v', e)
           return (v', cg'')
         Nothing -> error "Variable has inconsistent constriants."
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
--- infer e
---    Core.exprIsBottom e && False = undefined -- If expr is bottom and data then give zero constraint
-
 infer e@(Core.Var x) =
   case Core.isDataConId_maybe x of
     Just k ->
@@ -219,5 +214,12 @@ infer e'@(Core.Case e b rt as) = do
 
 -- Remove core ticks
 infer (Core.Tick _ e) = infer e
+
+-- Maintain constraints but give trivial type (Zero - a subtype of everything) to expression - effectively ignore casts
+-- GHC already requires the prog to well typed
+-- This will only work for some applciation of cast a truly trivial type is necessary
+infer (Core.Cast e c) = do
+  (t, cg) <- infer e
+  return (Zero, cg)
 
 infer _ = error "Unimplemented"

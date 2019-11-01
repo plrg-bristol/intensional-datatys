@@ -24,7 +24,7 @@ inferProg p = do
   let xs = Core.bindersOfBinds p
 
   -- Add all module level definitions to context with an unconstrainted fresh type (t)
-  ts <- mapM (freshScheme . toSortScheme . Core.varType) xs
+  ts <- mapM (freshScheme . toSortScheme .Core.exprType) (concatMap Core.rhssOfBind p)
   let m = M.fromList $ zip xs ts
   let withBinds = local (insertMany xs ts)
 
@@ -44,7 +44,6 @@ inferProg p = do
     -- Restrict constraints to the interface
     ts'' <- mapM (quantifyWith bcg') ts
     return (xs, ts'')
-
     ) groups
   return $ concatMap (uncurry zip) z
 
@@ -55,20 +54,22 @@ inferVar x ts e = do
   if length as /= length ts
     then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
     else do
-
+      -- Fresh refinement variables for local usagge
       ys  <- mapM (fresh . \(RVar (_, _, d)) -> SData d) xs
       ts' <- mapM fresh ts
-
-      let (SForall vas v) = toSortScheme $ Core.varType x -- length vas = length as = length ts
-
-      v' <- fresh $ subSortVars vas ts v
-
-      let u' = sub xs ys $ subTypeVars as ts' u
 
       mcg <- runMaybeT $ fromList cs
       case mcg of
         Just cg -> do
+          -- Import x's constraints with local refinement variables
           cg' <- foldM (\cg' (r, se) -> substitute se cg' r) (graphMap (subTypeVars as ts') cg) (zip xs ys) `inExpr` ("Sub", e)
+          
+          -- Substitute type/ variables 
+          let u' = sub xs ys $ subTypeVars as ts' u
+          let (SForall vas v) = toSortScheme $ Core.varType x
+          -- length vas = length as = length ts
+          v' <- fresh $ subSortVars vas ts v
+
           cg'' <- insert u' v' cg' `inExpr` ("Insert", u', v', e)
           return (v', cg'')
         Nothing -> error "Variable has inconsistent constriants."
@@ -112,8 +113,8 @@ infer e@(Core.App e1 e2) =
       (t2, c2) <- infer e2
       case t1 of
         t3 :=> t4 -> do
-          cg <- union c1 c2 `inExpr` e
-          cg' <- insert t2 t3 cg `inExpr` e
+          cg <- union c1 c2 `inExpr` ("Union", c1, c2)
+          cg' <- insert t2 t3 cg `inExpr` ("Insert", t2, t3, cg)
           return (t4, cg')
 
 infer e'@(Core.Lam x e) =
@@ -133,7 +134,7 @@ infer e'@(Core.Let b e) = do
   let rhss = Core.rhssOfBind b
 
   -- Add each binds within the group to context with a fresh type (t) and no constraints
-  ts <- mapM (freshScheme . toSortScheme . Core.varType) xs
+  ts <- mapM (freshScheme . toSortScheme . Core.exprType) rhss
   let withBinds = local (insertMany xs ts)
 
   (ts', cg) <- foldM (\(ts, cg) rhs -> do
@@ -170,7 +171,7 @@ infer e'@(Core.Case e b rt as) = do
               -- Pass information to user about error
               return (caseType, cg)
             else do
-              ts <- mapM (fresh . toSort . Core.varType) bs
+              ts <- mapM (fresh . toSort . Core.varType) bs -- Instatiate polymorphic variables!!
               (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] []) ts) (infer rhs)
               cgi' <- insert ti' t cgi `inExpr` rhs
               cg' <- union cg cgi' `inExpr` rhs
@@ -206,20 +207,21 @@ infer e'@(Core.Case e b rt as) = do
   case caseType of
     Default -> return (t, cg)
     DataCon dts -> do
-      cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg `inExpr` (t0, e')
+      cg' <- insert t0 (Sum [(TData dc, ts) | (dc, ts) <- dts]) cg `inExpr` ("DataCon", t0, dts, e')
       return (t, cg')
     Literal lss -> do
-      cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg `inExpr` (t0, e')
+      cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg `inExpr` ("Literal", t0, e')
       return (t, cg')
 
 -- Remove core ticks
 infer (Core.Tick _ e) = infer e
 
--- Maintain constraints but give trivial type (Zero - a subtype of everything) to expression - effectively ignore casts
+-- Maintain constraints but give trivial type (Dot - a sub/super-type of everything) to expression - effectively ignore casts
 -- GHC already requires the prog to well typed
--- This will only work for some applciation of cast a truly trivial type is necessary
 infer (Core.Cast e c) = do
   (t, cg) <- infer e
-  return (Zero, cg)
+  return (Dot, cg)
 
+-- Cannot infer a coercion expression.
+-- For most programs these will never occur outside casts.
 infer _ = error "Unimplemented"

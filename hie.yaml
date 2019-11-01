@@ -1,0 +1,6 @@
+cradle:
+  multi:
+    - path: "./src"
+      config: { cradle: {stack} }
+    - path: "./test"
+      config: { cradle: {stack} }

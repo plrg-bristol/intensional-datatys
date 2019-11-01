@@ -1,7 +1,7 @@
 {-# LANGUAGE PatternSynonyms, MultiParamTypeClasses, FlexibleInstances #-}
 
 module GenericConGraph (
-      SExpr (Var, Con, Sum, One, Zero)
+      SExpr (Var, Con, Sum, One, Zero, Dot)
     , Constructor (variance)
     , ConGraphGen (ConGraph, succs, preds, subs)
     , Rewrite (toNorm)
@@ -21,6 +21,7 @@ import Control.Monad
 import Control.Monad.Trans.Maybe
 import qualified Data.Map as M
 import qualified Data.List as L
+import Data.Bifunctor (second)
 import Debug.Trace
 
 -- Set expression with disjoint sum
@@ -103,6 +104,8 @@ insert t1 t2 cg = do
 
 -- Insert new constraint
 insertInner :: (Rewrite x c m, Monad m, Ord x, Constructor c, Eq c) => SExpr x c -> SExpr x c -> ConGraphGen x c -> MaybeT m (ConGraphGen x c)
+insertInner Dot _ cg = return cg
+insertInner _ Dot cg = return cg -- Ignore any constriants concerning Dot
 insertInner x y cg
   | x == y                          = return cg
 insertInner _ One cg                = return cg
@@ -210,11 +213,11 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
   cg1' <- M.foldrWithKey (\x se -> (>>= \cg -> substitute se cg x)) (return cg1) msb
 
   -- Insert edges from cg2 into cg1
-  cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert (Var k) v cg') cg vs)) (return cg1') s
+  cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (flip (insert (Var k))) cg vs)) (return cg1') s
   M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (return cg1'') p
   where
     subVar (Var x) = M.findWithDefault (Var x) x sb
-    subVar (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap subVar cargs)) cs
+    subVar (Sum cs) = Sum $ fmap (second (fmap subVar)) cs
     suBVar One = One
 
 -- Safely substitute variable (x) with expression (se)
@@ -231,7 +234,7 @@ substitute se ConGraph{succs = s, preds = p, subs = sb} x = do
   return cg''{ succs = M.delete x $ succs cg'', preds = M.delete x $ preds cg''}
   where
     sub (Var y) | x == y = se
-    sub (Sum cs) = Sum $ fmap (\(c, cargs) -> (c, fmap sub cargs)) cs
+    sub (Sum cs) = Sum $ fmap (second (fmap sub)) cs
     sub t = t
     p'  = fmap (L.nub . fmap sub) p
     s'  = fmap (L.nub . fmap sub) s

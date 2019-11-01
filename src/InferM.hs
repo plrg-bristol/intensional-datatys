@@ -59,6 +59,7 @@ instance Rewrite RVar UType InferM where
         refineCon (TData k, ts) = do
           args <- delta p d k
           return (TData k, upArrow x args)
+        refineCon t = return t
   toNorm t1 t2 = return [(t1, t2)]
 
 -- Handle constraint errors
@@ -81,12 +82,11 @@ safeVar v = do
   ctx <- ask
   case var ctx M.!? v of
     Just ts -> return ts
-    Nothing -> do
+    Nothing ->
       -- We can assume the variable is in scope as GHC hasn't emitted a warning
       -- Assume all externally defined terms are unrefined
       let t = Core.varType v
-      t' <- freshScheme $ toSortScheme t
-      return t'
+      in freshScheme $ toSortScheme t
 
 safeCon :: Core.DataCon -> InferM (Core.TyCon, [Sort])
 safeCon k = do

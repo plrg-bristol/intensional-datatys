@@ -49,7 +49,7 @@ data UType =
   | TLit Core.Literal -- Sums can contain literals
 
   | TApp Sort Sort    -- Unrefinable & externally defined
-  | TConApp Core.TyCon [Sort]
+  | TConApp Core.TyCon [Sort] -- Buggy pattern matching
 
 data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon | PArrow PType PType | PApp Sort Sort | PConApp Core.TyCon [Sort]
 type Type = SExpr RVar UType
@@ -127,7 +127,7 @@ instance Show RVar where
   show (RVar (x, p, d)) = "[" ++ show x ++ (if p then "+" else "-") ++ show d ++ "]"
 
 instance Core.Outputable Type where
-  ppr (V x p d) = text "[" <> ppr x <> if p then text "+" else text "-" <> ppr d <>  text "]"
+  ppr (V x p d) = text "[" <> ppr x <> (if p then text "+" else text "-") <> ppr d <>  text "]"
   ppr (t1 :=> t2) =  text "(" <> ppr t1 <>  text "->" <> (ppr t2) <>  text ")"
   ppr (K v ts) = ppr v <>  text "(" <> interpp'SP ts <>  text ")"
   ppr (Sum cs) = pprWithBars (\(c, cargs) -> ppr c <>  text "(" <> interpp'SP cargs <> text ")") cs
@@ -146,7 +146,7 @@ disp as xs cs t = "∀" ++ intercalate ", " (fmap show as) ++ ".∀" ++ intercal
     f (t1, t2) = show t1 ++ " < " ++ show t2
 
 instance Eq UType where
-  TVar x == TVar y = name x == name y
+  TVar x == TVar y = Core.getName x == Core.getName y
   TBase b == TBase b' = Core.getName b == Core.getName b'
   TData d == TData d' = Core.getName d == Core.getName d'
   TLit l == TLit l' = l == l'
@@ -156,12 +156,12 @@ instance Eq UType where
   _ == _ = False
 
 instance Eq Sort where
-  SVar x == SVar y = name x == name y
+  SVar x == SVar y = Core.getName x == Core.getName y
   SBase b == SBase b' = Core.getName b == Core.getName b'
   SData d == SData d' = Core.getName d == Core.getName d'
   SArrow s1 s2 == SArrow s1' s2' = s1 == s1' && s2 == s2'
   SApp s1 s2 == SApp s1' s2' = s1 == s1' && s2 == s2'
-  SConApp tc args == SConApp tc' args' = tc == tc' && args == args'
+  SConApp tc args == SConApp tc' args' = Core.getName tc == Core.getName tc' && args == args'
   _ == _ = False
 
 type ConGraph = ConGraphGen RVar UType
@@ -216,7 +216,7 @@ upArrow x = fmap upArrow'
     upArrow' (PArrow t1 t2)  = upArrow' t1 :=> upArrow' t2
     upArrow' (PVar a)        = Con (TVar a) []
     upArrow' (PBase b)       = Con (TBase b) []
-    upArrow' (PApp s1 s2)    = Con (TApp s1 s2) [] -- Unrefinable
+    upArrow' (PApp s1 s2)    = Con (TApp s1 s2) []     -- Unrefinable
     upArrow' (PConApp t args)= Con (TConApp t args) [] -- Unrefinable
 
 polarise :: Bool -> Sort -> PType

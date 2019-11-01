@@ -21,19 +21,23 @@ plugin = defaultPlugin { installCoreToDos = install }
 name = nameStableString . getName
 
 inferGuts :: ModGuts -> IO ModGuts
-inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs}= do
-    let env = Context{con = listToUFM (foldr buildContext [] tcs), var = M.empty}
-    let p = filter (all isOfMain . bindersOf) bs
-    pprTraceM "" (ppr p)
-    let ((ts, _), _, _) = runRWS (listen $ inferProg p) env 0
-    mapM_ (\(t, Forall as xs cs u) -> do
-      putStr (show t ++ "::")
-      putStrLn $ disp as xs cs u
-      putStrLn "") ts
-    return guts
+inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs, mg_module = m} =
+    if moduleNameString (moduleName m) `elem` ["Test"]
+      then do
+        let env = Context{con = listToUFM (foldr buildContext [] tcs), var = M.empty}
+        let p = filter (all isOfMain . bindersOf) bs
+        -- pprTraceM "" (ppr p)
+        let ((ts, _), _, _) = runRWS (listen $ inferProg p) env 0
+        mapM_ (\(t, Forall as xs cs u) -> do
+          putStr (show t ++ "::")
+          putStrLn $ disp as xs cs u
+          putStrLn "") ts
+        return guts
+      else
+        return guts
   where
-    -- Generalise this to check module name
-    isOfMain b = isPrefixOf "$main$Test$" (name b) && not ("$main$Test$$" `isPrefixOf` name b)
+    -- Generalise this to check module name and filter type/module constructors
+    isOfMain b = "$main$Test$" `isPrefixOf` name b
 
 -- Add tycon to underlying delta (polarisation is implicit)
 buildContext :: TyCon -> [(DataCon, (TyCon, [Sort]))] -> [(DataCon, (TyCon, [Sort]))]

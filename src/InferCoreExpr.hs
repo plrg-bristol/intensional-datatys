@@ -76,6 +76,9 @@ inferVar x ts e = do
         Nothing -> error "Variable has inconsistent constriants."
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
+infer e
+  | Core.exprIsBottom e && False = undefined -- If expr is bottom and data then give zero constraint
+
 infer e@(Core.Var x) =
   case Core.isDataConId_maybe x of
     Just k -> do

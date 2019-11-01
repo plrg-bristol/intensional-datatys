@@ -2,9 +2,9 @@ module Test where
 
 import Prelude hiding (Bool, True, False, not, List, foldr)
 
-data Tm = Var Int | Cst Int | App Tm Tm
+-- data Tm = Var Int | Cst Int | App Tm Tm
 
-data Bool = True | False
+-- data Bool = True | False
 
 data List = Empty | Cons Nat List
 
@@ -21,14 +21,14 @@ data Nat = Z | S Nat
 -- not :: Bool -> Bool
 -- not True = False
 -- not False = True
---
+
 -- isEven :: Nat -> Bool
 -- isEven Z = True
 -- isEven (S n) = isOdd n
 
-isOdd :: Nat -> Bool
+-- isOdd :: Nat -> Bool
 -- isOdd Z = False
-isOdd (S n) = isOdd n
+-- isOdd (S n) = isOdd n
 -- --
 -- -- myerror :: Bool
 -- -- myerror = error "Boo"
@@ -36,5 +36,7 @@ isOdd (S n) = isOdd n
 -- foldr :: (Nat -> b -> b) -> b -> List -> b
 -- foldr f x Empty = x
 -- foldr f x (Cons a as) = f a (foldr f x as)
---
--- rebuild (Cons a b) = rebuild b
+
+rebuild :: List -> a
+rebuild Empty = undefined
+rebuild (Cons a b) = rebuild b

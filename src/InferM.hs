@@ -128,7 +128,7 @@ quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as _ _ u) = do
   lcg <- saturate cg
 
   -- Check all the stems in the interface
-  let chkStems = all (`elem` stems u) . stems
+  let chkStems = const True -- all (`elem` stems u) . stems
 
   -- Restricted congraph with chkStems
   let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]

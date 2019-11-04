@@ -12,6 +12,7 @@ import Control.Monad.Trans.Maybe
 import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
+import qualified PrimOp as Prim
 import Kind
 
 import Debug.Trace
@@ -57,30 +58,39 @@ inferPoly x ts e =
       t  <- fresh $ SData d ts
       cg <- insert (K k ts args') t empty `inExpr` e
       return (foldr (:=>) t args', cg)
-    Nothing -> do
-       -- Infer fully instantiated polymorphic variable
-      (Forall as xs cs u) <- safeVar x
-      if length as /= length ts
-        then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
-        else do
-          -- Fresh refinement variables for local usage
-          ys  <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs
-          ts' <- mapM fresh ts
+    Nothing -> 
+      case Core.isPrimOpId_maybe x of
+        Just p -> do
+          -- Infer fully instaitated polymorphic primitive operator
+          let (as, args, rt, _, _) = Prim.primOpSig p
+          args' <- mapM fresh $ fmap (subSortVars as ts) $ fmap toSort args
+          t  <- fresh $ toSort rt
+          -- cg <- insert (K k ts args') t empty `inExpr` e
+          return (foldr (:=>) t args', empty)
+        Nothing ->  do
+          -- Infer fully instantiated polymorphic variable
+          (Forall as xs cs u) <- safeVar x
+          if length as /= length ts
+            then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
+            else do
+              -- Fresh refinement variables for local usage
+              ys  <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs
+              ts' <- mapM fresh ts
 
-          mcg <- runMaybeT $ fromList cs
-          case mcg of
-            Just cg -> do
-              -- Import x's constraints with local refinement variables
-              cg' <- foldM (\cg' (x, y) -> substitute y cg' x) (graphMap (subTypeVars as ts') cg) (zip xs ys) `inExpr` ("Sub", e)
+              mcg <- runMaybeT $ fromList cs
+              case mcg of
+                Just cg -> do
+                  -- Import x's constraints with local refinement variables
+                  cg' <- foldM (\cg' (x, y) -> substitute y cg' x) (graphMap (subTypeVars as ts') cg) (zip xs ys) `inExpr` ("Sub", e)
 
-              -- Substitute type/ variables 
-              let u' = sub xs ys $ subTypeVars as ts' u
-              v <- fresh $ toSort $ Core.exprType e
+                  -- Substitute type/ variables 
+                  let u' = sub xs ys $ subTypeVars as ts' u
+                  v <- fresh $ toSort $ Core.exprType e
 
-              cg'' <- insert u' v cg' `inExpr` ("Insert2", ts', v, e)
-              return (v, cg'')
+                  cg'' <- insert u' v cg' `inExpr` ("Insert2", u', v, e)
+                  return (v, cg'')
 
-            Nothing -> error "Variable has inconsistent constriants."
+                Nothing -> error "Variable has inconsistent constriants."
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e@(Core.Var x) =
@@ -126,7 +136,7 @@ infer e@(Core.App e1 e2) =
       case t1 of
         t3 :=> t4 -> do
           cg <- union c1 c2 `inExpr` ("Union", c1, c2)
-          cg' <- insert t2 t3 cg `inExpr` ("Insert3", t2, t3, cg)
+          cg' <- insert t2 t3 cg `inExpr` ("Insert3", t2, t3, e1)
           return (t4, cg')
 
 infer e'@(Core.Lam x e) =

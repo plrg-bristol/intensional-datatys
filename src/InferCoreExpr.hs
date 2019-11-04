@@ -51,23 +51,30 @@ inferProg p = do
 inferPoly :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)
 inferPoly x ts e =
   case Core.isDataConId_maybe x of
-    Just k -> do
-      -- Infer fully instantiated polymorphic constructor
-      (d, as, args) <- safeCon k
-      args' <- mapM fresh $ fmap (subSortVars as ts) args
-      t  <- fresh $ SData d ts
-      cg <- insert (K k ts args') t empty `inExpr` e
-      return (foldr (:=>) t args', cg)
+    Just k ->
+      if isPrim x
+        then do
+          -- Infer literal constructor
+          let (as, _, args, res) = Core.dataConSig k
+          let (b, _) = Core.splitTyConApp res
+          args' <- mapM (fresh . subSortVars as ts . toSort) args
+          return (foldr (:=>) (B b ts) args', empty)
+        else do
+          -- Infer fully instantiated polymorphic constructor
+          (d, as, args) <- safeCon k
+          args' <- mapM fresh $ fmap (subSortVars as ts) args
+          t  <- fresh $ SData d ts
+          cg <- insert (K k ts args') t empty `inExpr` e
+          return (foldr (:=>) t args', cg)
     Nothing -> 
       case Core.isPrimOpId_maybe x of
         Just p -> do
           -- Infer fully instaitated polymorphic primitive operator
           let (as, args, rt, _, _) = Prim.primOpSig p
           args' <- mapM fresh $ fmap (subSortVars as ts) $ fmap toSort args
-          t  <- fresh $ toSort rt
-          -- cg <- insert (K k ts args') t empty `inExpr` e
+          t  <- fresh $ subSortVars as ts $ toSort $ rt
           return (foldr (:=>) t args', empty)
-        Nothing ->  do
+        Nothing -> do
           -- Infer fully instantiated polymorphic variable
           (Forall as xs cs u) <- safeVar x
           if length as /= length ts
@@ -93,31 +100,7 @@ inferPoly x ts e =
                 Nothing -> error "Variable has inconsistent constriants."
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
-infer e@(Core.Var x) =
-  case Core.isDataConId_maybe x of
-    Just k ->
-      if isPrim k
-        then do
-          -- Infer literal constructor
-          let (_, _, args, res) = Core.dataConSig k
-          let (b, _) = Core.splitTyConApp res
-          args' <- mapM (fresh . toSort) args
-          return (foldr (:=>) (B b) args', empty)
-        else do
-          -- Infer monomorphic constructor
-          (d, as, args) <- safeCon k
-          if length as == 0
-            then do
-              ts <- mapM fresh args
-              t  <- fresh $ SData d []
-              cg <- insert (K k [] ts) t empty `inExpr` e
-              return (foldr (:=>) t ts, cg)
-            else
-              Core.pprPanic "Constructors must be fully instantiated!" (Core.ppr ()) -- fromPoly should catch this
-    Nothing -> do
-      -- Infer monomorphic variable
-      (t, cg) <- inferPoly x [] e
-      return (t, cg)
+infer e@(Core.Var x) = inferPoly x [] e
 
 infer l@(Core.Lit _) = do
   -- Infer literal expression

@@ -40,10 +40,10 @@ newtype RVar = RVar (Int, Bool, Core.TyCon, [Sort]) deriving Eq
 instance Ord RVar where
   RVar (x, _, _, _) <= RVar (x', _, _, _) = x <= x'
 
-data Sort = SVar Core.Var | SBase Core.TyCon | SData Core.TyCon [Sort] | SArrow Sort Sort {- | SApp Sort Sort | SConApp Core.TyCon [Sort] -} deriving Show
+data Sort = SVar Core.Var | SBase Core.TyCon [Sort] | SData Core.TyCon [Sort] | SArrow Sort Sort {- | SApp Sort Sort | SConApp Core.TyCon [Sort] -} deriving Show
 data UType = 
     TVar Core.Var 
-  | TBase Core.TyCon
+  | TBase Core.TyCon [Sort]
   | TData Core.DataCon [Sort]
   | TArrow 
   | TLit Core.Literal -- Sums can contain literals
@@ -53,7 +53,7 @@ data UType =
   | TConApp Core.TyCon [Sort] -- Buggy pattern matching 
   -}
 
-data PType = PVar Core.Var | PBase Core.TyCon | PData Bool Core.TyCon [Sort] | PArrow PType PType {- | PApp Sort Sort | PConApp Core.TyCon [Sort] -}
+data PType = PVar Core.Var | PBase Core.TyCon [Sort] | PData Bool Core.TyCon [Sort] | PArrow PType PType {- | PApp Sort Sort | PConApp Core.TyCon [Sort] -}
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type
 data SortScheme = SForall [Core.Var] Sort deriving Show
@@ -81,7 +81,7 @@ toSort (T.FunTy t1 t2) =
       s2 = toSort t2
   in SArrow s1 s2
 toSort (T.TyConApp t args) 
-  | isPrim t && length args == 0 = SBase t
+  | isPrim t = SBase t $ fmap toSort args
   | otherwise = SData t $ fmap toSort args
 
 toSort (T.AppTy t1 t2) = error "Unimplemented" -- From external (unrefined modules)
@@ -102,18 +102,18 @@ toSortScheme (T.ForAllTy b t) =
       a = Core.binderVar b
   in SForall (a:as) st
 toSortScheme (T.TyConApp t args)
-  | isPrim t && length args == 0 = SForall [] $ SBase t
+  | isPrim t = SForall [] $ SBase t $ fmap toSort args
   | otherwise = SForall [] $ SData t $ fmap toSort args
 toSortScheme _ = error "Core type is not a valid sort scheme."
 
 instance Core.Outputable UType where
   ppr (TVar v) = ppr v
-  ppr (TBase b) = ppr b
+  ppr (TBase b ss) = ppr b <> intercalate' "@" (fmap ppr ss)
   ppr (TData dc ss) = ppr dc <> intercalate' "@" (fmap ppr ss)
 
 instance Show UType where
   show (TVar v) = show v
-  show (TBase b) = show b
+  show (TBase b ss) = show b ++ intercalate "@" (fmap show ss)
   show (TData dc ss) = show dc ++ intercalate "@" (fmap show ss)
 
 instance Core.Outputable RVar where
@@ -135,7 +135,7 @@ instance Core.Outputable Type where
 
 instance Core.Outputable Sort where
   ppr (SVar a) = ppr a
-  ppr (SBase d) = ppr d
+  ppr (SBase d ss) = ppr d <> intercalate' "@" (fmap ppr ss)
   ppr (SData d ss) = ppr d <> intercalate' "@" (fmap ppr ss)
   ppr (SArrow s1 s2) = ppr s1 <> text "->" <> ppr s2
 
@@ -154,7 +154,7 @@ disp as xs cs t = "∀" ++ intercalate ", " (fmap show as) ++ ".∀" ++ intercal
 
 instance Eq UType where
   TVar x == TVar y = Core.getName x == Core.getName y
-  TBase b == TBase b' = Core.getName b == Core.getName b'
+  TBase b ss == TBase b' ss' = Core.getName b == Core.getName b' && ss == ss'
   TData d args == TData d' args' = Core.getName d == Core.getName d' && args == args'
   TLit l == TLit l' = l == l'
   TArrow == TArrow = True
@@ -162,7 +162,7 @@ instance Eq UType where
 
 instance Eq Sort where
   SVar x == SVar y = Core.getName x == Core.getName y
-  SBase b == SBase b' = Core.getName b == Core.getName b'
+  SBase b ss == SBase b' ss' = Core.getName b == Core.getName b' && ss == ss'
   SData d args == SData d' args' = Core.getName d == Core.getName d' && args == args'
   SArrow s1 s2 == SArrow s1' s2' = s1 == s1' && s2 == s2'
   _ == _ = False
@@ -204,8 +204,8 @@ pattern K v ss ts = Con (TData v ss) ts
 pattern V :: Int -> Bool -> Core.TyCon -> [Sort] -> Type
 pattern V x p d ss = Var (RVar (x, p, d, ss))
 
-pattern B :: Core.TyCon -> Type
-pattern B b = Con (TBase b) []
+pattern B :: Core.TyCon -> [Sort] -> Type
+pattern B b args = Con (TBase b args) []
 
 stems :: Type -> [Int]
 stems (V x _ _ _) = [x]
@@ -218,11 +218,11 @@ upArrow x = fmap upArrow'
     upArrow' (PData p d args) = Var $ RVar (x, p, d, args)
     upArrow' (PArrow t1 t2)  = upArrow' t1 :=> upArrow' t2
     upArrow' (PVar a)        = Con (TVar a) []
-    upArrow' (PBase b)        = Con (TBase b) []
+    upArrow' (PBase b ss)        = Con (TBase b ss) []
 
 polarise :: Bool -> Sort -> PType
 polarise p (SVar a) = PVar a
-polarise p (SBase b) = PBase b
+polarise p (SBase b ss) = PBase b ss
 polarise p (SData d args) = PData p d args
 polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
 
@@ -239,8 +239,8 @@ subSortVars :: [Core.Var] -> [Sort] -> Sort -> Sort
 subSortVars [] [] u = u
 subSortVars (a:as) (t:ts) (SVar a')
   | a == a' = t
-  | otherwise = SVar a'
-subSortVars as ts (SBase b) = SBase b
+  | otherwise = subSortVars as ts $ SVar a'
+subSortVars as ts (SBase b ss) = SBase b $ fmap (subSortVars as ts) ss
 subSortVars as ts (SData d ss) = SData d $ fmap (subSortVars as ts) ss
 subSortVars as ts (SArrow s1 s2) = SArrow (subSortVars as ts s1) (subSortVars as ts s2)
 
@@ -248,7 +248,7 @@ subSortVars as ts (SArrow s1 s2) = SArrow (subSortVars as ts s1) (subSortVars as
 broaden :: Type -> Sort
 broaden (V x p d ss) = SData d ss
 broaden (Con (TVar a) []) = SVar a
-broaden (B b) =  SBase b
+broaden (B b ss) =  SBase b ss
 broaden (t1 :=> t2) = SArrow (broaden t1) (broaden t2)
 broaden (K v ss ts) = error "" -- Constructors only as refinements of data types
 broaden (Con (TLit _) _) = error "" -- TLit only occurs as a result of case analysis
@@ -257,8 +257,10 @@ subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
 subTypeVars [] [] u = u
 subTypeVars (a:as) (t:ts) (Con (TVar a') [])
   | a == a' = t
-  | otherwise = Con (TVar a') []
-subTypeVars as ts b@(B _) = b
+  | otherwise = subTypeVars as ts $ Con (TVar a') []
+subTypeVars as ts (B b ss) = 
+  let ts'' = fmap broaden ts
+  in B b $ (fmap (subSortVars as ts'') ss)
 subTypeVars as ts (K v ss ts') =
   let ts'' = fmap broaden ts
   in K v (fmap (subSortVars as ts'') ss) (fmap (subTypeVars as ts) ts')

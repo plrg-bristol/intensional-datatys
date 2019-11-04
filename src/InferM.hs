@@ -111,7 +111,7 @@ fresh t = do
 -- A fresh refinement scheme for module/let bindings
 freshScheme :: SortScheme -> InferM TypeScheme
 freshScheme (SForall as (SVar a)) = return $ Forall as [] [] $ Con (TVar a) []
-freshScheme (SForall as (SBase b)) = return $ Forall as [] [] $ Con (TBase b) []
+freshScheme (SForall as (SBase b ss)) = return $ Forall as [] [] $ Con (TBase b ss) []
 freshScheme (SForall as s@(SData _ ss)) = do
   t <- fresh s
   case t of

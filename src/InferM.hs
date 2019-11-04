@@ -32,33 +32,33 @@ import Debug.Trace
 type InferM = RWS Context () Int
 
 data Context = Context {
-    con :: Core.UniqFM {- Core.DataCon -} (Core.TyCon, [Sort]), -- k -> (d, args)
+    con :: Core.UniqFM {- Core.DataCon -} (Core.TyCon, [Core.Var], [Sort]), -- k -> (d, args)
     var :: M.Map Core.Var TypeScheme
 }
 
 -- Last two constraint simplification rules
 instance Rewrite RVar UType InferM where
-  toNorm t1@(K k ts) t2@(V x p d) = do
-      args <- delta p d k
+  toNorm t1@(K k ss ts) t2@(V x p d ss') = do
+      args <- delta p d k ss
       let ts' = upArrow x args
       if ts' /= ts
         then do
-          c1 <- toNorm (K k ts') (V x p d)
-          c2 <- toNorm (K k ts) (K k ts')
+          c1 <- toNorm (K k ss ts') (V x p d ss')
+          c2 <- toNorm (K k ss ts) (K k ss ts')
           return (c1 ++ c2)
-        else return [(K k ts', V x p d), (K k ts, K k ts')]
-  toNorm t1@(V x p d) t2@(Sum cs) = do
+        else return [(K k ss ts', V x p d ss'), (K k ss ts, K k ss ts')]
+  toNorm t1@(V x p d ss) t2@(Sum cs) = do
       s <- mapM refineCon cs
       if cs /= s
         then do
           c1 <- toNorm (Sum s) (Sum cs)
-          c2 <- toNorm (V x p d) (Sum s)
+          c2 <- toNorm (V x p d ss) (Sum s)
           return (c1 ++ c2)
-        else return [(Sum s, Sum cs),(V x p d, Sum s)]
+        else return [(Sum s, Sum cs),(V x p d ss, Sum s)]
       where
-        refineCon (TData k, ts) = do
-          args <- delta p d k
-          return (TData k, upArrow x args)
+        refineCon (TData k ss, ts) = do
+          args <- delta p d k ss
+          return (TData k ss, upArrow x args)
         refineCon t = return t
   toNorm t1 t2 = return [(t1, t2)]
 
@@ -88,7 +88,7 @@ safeVar v = do
       let t = Core.varType v
       in freshScheme $ toSortScheme t
 
-safeCon :: Core.DataCon -> InferM (Core.TyCon, [Sort])
+safeCon :: Core.DataCon -> InferM (Core.TyCon, [Core.Var], [Sort])
 safeCon k = do
   ctx <- ask
   case Core.lookupUFM (con ctx) k of
@@ -97,8 +97,9 @@ safeCon k = do
       -- We can assume the cosntructor is in scope as GHC hasn't emitted a warning
       -- Assume all externally defined terms are unrefined
       let tc = Core.dataConTyCon k
+      let as = Core.dataConUnivTyVars k -- asume there are no existentially-quanitied type variables
       let args = toSort <$> Core.dataConOrigArgTys k
-      return (tc, args)
+      return (tc, as, args)
 
 -- A fresh refinement variable
 fresh :: Sort -> InferM Type
@@ -111,10 +112,10 @@ fresh t = do
 freshScheme :: SortScheme -> InferM TypeScheme
 freshScheme (SForall as (SVar a)) = return $ Forall as [] [] $ Con (TVar a) []
 freshScheme (SForall as (SBase b)) = return $ Forall as [] [] $ Con (TBase b) []
-freshScheme (SForall as s@(SData _)) = do
+freshScheme (SForall as s@(SData _ ss)) = do
   t <- fresh s
   case t of
-    V x p d -> return $ Forall as [RVar (x, p, d)] [] t
+    V x p d ss' | ss' == ss -> return $ Forall as [RVar (x, p, d, ss')] [] t -- Type arguments are perpendicular to refinement variables
     _ -> error "Fresh has gone wrong!"
 freshScheme (SForall as (SArrow s1 s2)) = do
   Forall l1 v1 _ t1 <- freshScheme (SForall [] s1)  -- Fresh schemes have multiple refinement variables
@@ -122,15 +123,16 @@ freshScheme (SForall as (SArrow s1 s2)) = do
   if length l1 + length l2 > 0
     then error "Rank 1 please."
     else return $ Forall as (v1 ++ v2) [] (t1 :=> t2)
-freshScheme (SForall as (SApp s1 s2)) = return $ Forall as [] [] (Con (TApp s1 s2) [])
-freshScheme (SForall as (SConApp tc args)) = return $ Forall as [] [] (Con (TConApp tc args) [])
+-- freshScheme (SForall as (SApp s1 s2)) = return $ Forall as [] [] (Con (TApp s1 s2) [])
+-- freshScheme (SForall as (SConApp tc args)) = return $ Forall as [] [] (Con (TConApp tc args) [])
 
--- Extract polarised constructor arguments from context
-delta :: Bool -> Core.TyCon -> Core.DataCon -> InferM [PType]
-delta p d k = do
-  (d', ts) <- safeCon k
+-- Extract polarised and instantiated constructor arguments from context
+delta :: Bool -> Core.TyCon -> Core.DataCon -> [Sort] -> InferM [PType]
+delta p d k ss = do
+  (d', as, ts) <- safeCon k
+  let ts' = fmap (subSortVars as ss) ts
   if d == d'
-    then return $ fmap (polarise p) ts
+    then return $ fmap (polarise p) ts'
     else Core.pprPanic "DataType doesn't contain constructor: " (Core.ppr (d, k))
 
 -- Add restricted constraints to an unquantifed type scheme

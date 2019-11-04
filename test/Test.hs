@@ -40,8 +40,8 @@ add = foldn S Z
 mul = add
 
 -- Polymorphism is dodgy!
--- myerror :: Bool
--- myerror = error "Boo"
+myerror :: Bool
+myerror = error "Boo"
 --
 -- foldr :: (a -> b -> b) -> b -> (List a) -> b
 -- foldr f x Empty = x

@@ -40,12 +40,13 @@ inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs, mg_module = m} =
     isOfMain b = "$main$Test$" `isPrefixOf` name b
 
 -- Add tycon to underlying delta (polarisation is implicit)
-buildContext :: TyCon -> [(DataCon, (TyCon, [Sort]))] -> [(DataCon, (TyCon, [Sort]))]
+buildContext :: TyCon -> [(DataCon, (TyCon, [Var], [Sort]))] -> [(DataCon, (TyCon, [Var], [Sort]))]
 buildContext t xs = xs' ++ xs
   where
     xs' = foldr go [] (tyConDataCons t)
 
-    go :: DataCon -> [(DataCon, (TyCon, [Sort]))] -> [(DataCon, (TyCon, [Sort]))]
-    go d ys = (d, (t, sorts)):ys
+    go :: DataCon -> [(DataCon, (TyCon, [Var], [Sort]))] -> [(DataCon, (TyCon, [Var], [Sort]))]
+    go d ys = (d, (t, as, sorts)):ys
       where
         sorts = toSort <$> dataConOrigArgTys d
+        as = dataConUnivTyVars d --Assume no existential vars

@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FlexibleContexts #-}
 
 module InferM
     (
@@ -10,6 +10,7 @@ module InferM
       insertVar,
       insertMany,
       safeCon,
+      closeScope,
       safeVar,
       fresh,
       freshScheme,
@@ -61,6 +62,10 @@ instance Rewrite RVar UType InferM where
           return (TData k ss, upArrow x args)
         refineCon t = return t
   toNorm t1 t2 = return [(t1, t2)]
+
+-- closeScope scope1 scope2 cg var | Core.pprPanic "Close scope: " (Core.ppr (scope1, scope2, cg, ctxStems var)) False = undefined
+closeScope scope1 scope2 cg var = purge (\(RVar (x, _, _, _)) -> scope2 > x && x > scope1 && (not (x `elem` ctxStems var))) cg
+ctxStems m = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ (concat $ concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) (M.elems m)
 
 -- Handle constraint errors
 inExpr :: Core.Outputable b => MaybeT InferM a -> b -> InferM a
@@ -149,4 +154,4 @@ quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as _ _ u) = do
    let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
 
    -- Only quantified by refinement variables that appear in the inferface
-   return $ Forall as [x | (Var x, _) <- ns, (_, Var x) <- ns] ns u
+   return $ Forall as (L.nub $ [x | (Var x, _) <- ns, (_, Var x) <- ns]) ns u

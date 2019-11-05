@@ -81,7 +81,7 @@ toSort (T.FunTy t1 t2) =
       s2 = toSort t2
   in SArrow s1 s2
 toSort (T.TyConApp t args) 
-  | isPrim t = SBase t $ fmap toSort args
+  -- | isPrim t = SBase t $ fmap toSort args
   | otherwise = SData t $ fmap toSort args
 
 toSort (T.AppTy t1 t2) = error "Unimplemented" -- From external (unrefined modules)
@@ -102,7 +102,7 @@ toSortScheme (T.ForAllTy b t) =
       a = Core.binderVar b
   in SForall (a:as) st
 toSortScheme (T.TyConApp t args)
-  | isPrim t = SForall [] $ SBase t $ fmap toSort args
+  -- | isPrim t = SForall [] $ SBase t $ fmap toSort args
   | otherwise = SForall [] $ SData t $ fmap toSort args
 toSortScheme _ = error "Core type is not a valid sort scheme."
 

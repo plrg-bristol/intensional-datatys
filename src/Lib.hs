@@ -26,7 +26,7 @@ inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs, mg_module = m} =
       then do
         let env = Context{con = listToUFM (foldr buildContext [] tcs), var = M.empty}
         let p = filter (all isOfMain . bindersOf) bs
-        pprTraceM "" (ppr p)
+        -- pprTraceM "" (ppr p)
         let ((ts, _), _, _) = runRWS (listen $ inferProg p) env 0
         mapM_ (\(t, Forall as xs cs u) -> do
           putStr (show t ++ "::")

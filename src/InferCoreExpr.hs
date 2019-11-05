@@ -49,30 +49,24 @@ inferProg p = do
   return $ concatMap (uncurry zip) z
 
 inferPoly :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)
-inferPoly x ts e =
-  case Core.isDataConId_maybe x of
-    Just k ->
-      if isPrim x
-        then do
-          -- Infer literal constructor
-          let (as, _, args, res) = Core.dataConSig k
-          let (b, _) = Core.splitTyConApp res
-          args' <- mapM (fresh . subSortVars as ts . toSort) args
-          return (foldr (:=>) (B b ts) args', empty)
-        else do
-          -- Infer fully instantiated polymorphic constructor
-          (d, as, args) <- safeCon k
-          args' <- mapM fresh $ fmap (subSortVars as ts) args
-          t  <- fresh $ SData d ts
-          cg <- insert (K k ts args') t empty `inExpr` e
-          return (foldr (:=>) t args', cg)
+inferPoly x ts e = do
+  scope1 <- get
+
+  (t, cg) <- case Core.isDataConId_maybe x of
+    Just k -> do
+      -- Infer fully instantiated polymorphic constructor
+      (d, as, args) <- safeCon k
+      args' <- mapM (fresh . subSortVars as ts) args
+      t  <- fresh $ SData d ts
+      cg <- insert (K k ts args') t empty `inExpr` ("asdas", e)
+      return (foldr (:=>) t args', cg)
     Nothing -> 
       case Core.isPrimOpId_maybe x of
         Just p -> do
           -- Infer fully instaitated polymorphic primitive operator
           let (as, args, rt, _, _) = Prim.primOpSig p
-          args' <- mapM fresh $ fmap (subSortVars as ts) $ fmap toSort args
-          t  <- fresh $ subSortVars as ts $ toSort $ rt
+          args' <- mapM (fresh . subSortVars as ts . toSort) args
+          t  <- fresh $ subSortVars as ts $ toSort rt
           return (foldr (:=>) t args', empty)
         Nothing -> do
           -- Infer fully instantiated polymorphic variable
@@ -98,6 +92,10 @@ inferPoly x ts e =
                   return (v, cg'')
 
                 Nothing -> error "Variable has inconsistent constriants."
+
+  ctx <- ask
+  scope2 <- get
+  return (t, closeScope scope1 scope2 cg (var ctx))
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e@(Core.Var x) = inferPoly x [] e
@@ -129,11 +127,18 @@ infer e'@(Core.Lam x e) =
       infer e
     else do
       -- Variable abstraction
+      scope1 <- get
+
       t1 <- fresh $ toSort $ Core.varType x
       (t2, cg) <- local (insertVar x $ Forall [] [] [] t1) (infer e)
-      return (t1 :=> t2, cg)
+
+      ctx <- ask
+      scope2 <- get
+      return (t1 :=> t2, closeScope scope1 scope2 cg (var ctx))
 
 infer e'@(Core.Let b e) = do
+  scope1 <- get
+
   -- Infer local module (i.e. let expression)
   let xs = Core.bindersOf b
   let rhss = Core.rhssOfBind b
@@ -145,29 +150,34 @@ infer e'@(Core.Let b e) = do
   (ts', cg) <- foldM (\(ts, cg) rhs -> do
     -- Infer each bind within the group, compiling constraints
     (t, cg') <- withBinds (infer rhs)
-    cg'' <- union cg cg' `inExpr` rhs
+    cg'' <- union cg cg' `inExpr` ("149", rhs)
     return (t:ts, cg'')
     ) ([], empty) rhss
 
   --  Insure fresh types are quantified by infered constraint (t' < t)
-  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts) `inExpr` e'
+  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts) `inExpr` ("154",e')
 
   -- Restrict constraints to the interface
   ts' <- mapM (quantifyWith cg') ts
 
   -- Infer in body
   (t, icg) <- local (insertMany xs ts') (infer e)
-  cg'' <- union cg' icg `inExpr` e'
-  return (t, cg'')
+  cg'' <- union cg' icg `inExpr` ("169", e')
+
+  ctx <- ask
+  scope2 <- get
+  return (t, closeScope scope1 scope2 cg'' (var ctx))
 
 infer e'@(Core.Case e b rt as) = do
+  scope1 <- get
+
   -- Infer case expession
   let es = toSort $ Core.exprType e
-  let mss = case es of {SData _ ss -> Just ss; _ -> Nothing}
+  let mss = case es of {SData _ ss -> Just ss; SBase _ ss -> Just ss; _ -> Nothing}
   et <- fresh $ es
   t  <- fresh $ toSort rt
   (t0, c0) <- infer e
-  c0' <- insert et t0 c0 `inExpr` e
+  c0' <- insert et t0 c0 `inExpr` ("171", e)
   (caseType, cg) <- local (insertVar b $ Forall [] [] [] et) $ foldM (\(caseType, cg) a ->
     case a of
       -- Infer constructor alternative
@@ -181,8 +191,8 @@ infer e'@(Core.Case e b rt as) = do
               else do
                 ts <- mapM (fresh . toSort . Core.varType) bs
                 (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] []) ts) (infer rhs)
-                cgi' <- insert ti' t cgi `inExpr` rhs
-                cg' <- union cg cgi' `inExpr` rhs
+                cgi' <- insert ti' t cgi `inExpr` ("185", ti', t, rhs)
+                cg' <- union cg cgi' `inExpr` ("186", rhs)
                 case caseType of
                   Empty     -> return (DataCon [(d, ss, ts)], cg')
                   DataCon s -> return (DataCon ((d, ss, ts):s), cg')
@@ -192,8 +202,8 @@ infer e'@(Core.Case e b rt as) = do
       -- Infer literal alternative
       (Core.LitAlt l, _, rhs) -> do
         (ti', cgi) <- infer rhs
-        cgi' <- insert ti' t cgi `inExpr` rhs
-        cg' <- union cg cgi' `inExpr` rhs
+        cgi' <- insert ti' t cgi `inExpr` ("196", rhs)
+        cg' <- union cg cgi' `inExpr` ("197", rhs)
         case caseType of
           Empty      -> return (Literal [l], cg')
           Literal s  -> return (Literal (l:s), cg')
@@ -207,21 +217,23 @@ infer e'@(Core.Case e b rt as) = do
             return (caseType, cg)
           else do
             (ti', cgi) <- infer rhs
-            cgi' <- insert ti' t cgi `inExpr` rhs
-            cg' <- union cg cgi' `inExpr` rhs
+            cgi' <- insert ti' t cgi `inExpr` ("211", rhs)
+            cg' <- union cg cgi' `inExpr` ("212", rhs)
             return (Default, cg')
     ) (Empty, c0') as
-
+  ctx <- ask
+  scope2 <- get
   -- Insure destructor is total, GHC will conservatively insert defaults
   case caseType of
-    Default -> return (t, cg)
+    Default -> return (t, closeScope scope1 scope2 cg (var ctx))
     DataCon dts -> do
       cg' <- insert t0 (Sum [(TData dc ss, ts) | (dc, ss, ts) <- dts]) cg `inExpr` ("DataCon", t0, dts, cg, e')
-      return (t, cg')
+      return (t, closeScope scope1 scope2 cg' (var ctx))
     Literal lss -> do
       cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg `inExpr` ("Literal", t0, e')
-      return (t, cg')
 
+      return (t, closeScope scope1 scope2 cg' (var ctx))
+    
 -- Remove core ticks
 infer (Core.Tick _ e) = infer e
 

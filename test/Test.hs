@@ -2,6 +2,10 @@ module Test where
 
 import Prelude hiding (Bool, True, False, not, List, foldr)
 
+-- -- import Utils.Containers.Internal.PtrEquality
+
+-- -- import qualified GHC.Exts as GHCExts
+
 data Tm = Var Int | Cst Int | App Tm Tm
 
 data Bool = True | False
@@ -15,7 +19,7 @@ data Nat = Z | S Nat
 myAddr :: Int -> [Int] -> [Int]
 myAddr = (:)
 
--- Polymorphism is dodgy!
+-- -- Polymorphism is dodgy!
 myerror :: Bool
 myerror = error "Boo"
 
@@ -53,3 +57,18 @@ foldr f x (Cons a as) = f a (foldr f x as)
 rebuild :: List' -> a
 rebuild (Cons' a b) = rebuild b
 
+test1 x xs = [a | a <- xs, a <= x]
+
+quicksort1 :: [Int] -> [Int]
+quicksort1 [] = []
+quicksort1 (x:xs) =
+  let comp1 = [a | a <- xs, a <= x]
+      comp2 = [a | a <- xs, a > x]
+  in
+  case comp1 of
+    c1'@(c1:cs1) -> 
+      case comp2 of
+        c2'@(c2:cs2) -> 
+          let smallerSorted = quicksort1 c1'
+              biggerSorted = quicksort1 c2'
+          in  smallerSorted ++ [x] ++ biggerSorted

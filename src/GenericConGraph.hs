@@ -8,6 +8,7 @@ module GenericConGraph (
     , empty
     , fromList
     , toList
+    , purge
     , saturate
     , insert
     , union
@@ -71,6 +72,31 @@ fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 -- Returns a list of constraints as internally represented
 toList :: ConGraphGen x c -> [(SExpr x c, SExpr x c)]
 toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
+
+-- Eagerly remove properly scoped intermediate nodes
+purge :: (Ord x, Constructor c, Eq c) => (x -> Bool) -> ConGraphGen x c -> ConGraphGen x c
+purge p' cg = foldr remove cg $ filter (\n -> all (\(n1, n2) -> notElem n [n1, n2] || (p n1 && p n2)) edges) $ filter p nodes
+  where
+    p n = case n of {Var v -> p' v; _ -> False}
+    nodes = concat [[n1, n2] | (n1, n2) <- toList cg]
+    edges = toList cg
+    remove n ConGraph{succs = s, preds = p, subs = sb} = ConGraph{succs = mapRemove n s, preds = mapRemove n p, subs = sb}
+
+-- Remove a nodes from the graph
+mapRemove :: (Eq x, Eq c) => SExpr x c -> M.Map x [SExpr x c] -> M.Map x [SExpr x c]
+mapRemove n m = M.filterWithKey (\k _ -> Var k /= n) $ fmap (filter (/= n)) m
+
+-- Does an element occur uniquely in the list
+isUnique :: Eq a => a -> [a] -> Bool
+isUnique a xs = case go Nothing a xs of {Just x -> x; Nothing -> False}
+    where go s _ [] = s
+          go s@Nothing x (z:zs)
+            | x == z = go (Just True) x zs
+            | otherwise = go s x zs
+          go s@(Just True) x (z:zs)
+            | x == z = Just False
+            | otherwise = go s x zs
+          go s@(Just False) _ _ = s
 
 -- The fixed point of normalisation and transitivity
 saturate :: (Eq c, Eq x, Monad m, Rewrite x c m) => ConGraphGen x c -> m [(SExpr x c, SExpr x c)]

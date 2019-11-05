@@ -40,7 +40,7 @@ inferProg p = do
     bcg <- foldM (\bcg' cg -> union bcg' cg `inExpr` ("Union", bcg', cg)) empty cgs
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
-    bcg' <- foldM (\bcg' (t', Forall as _ _ t) -> insert t' t bcg' `inExpr` ("Insert1", t', t, bcg')) bcg (zip ts' ts)
+    bcg' <- foldM (\bcg' (t', Forall as _ _ t) -> safeInsert t' t bcg') bcg (zip ts' ts)
 
     -- Restrict constraints to the interface
     ts'' <- mapM (quantifyWith bcg') ts
@@ -50,7 +50,7 @@ inferProg p = do
 
 inferPoly :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)
 inferPoly x ts e = do
-  scope1 <- get
+  scope <- get
 
   (t, cg) <- case Core.isDataConId_maybe x of
     Just k -> do
@@ -58,7 +58,7 @@ inferPoly x ts e = do
       (d, as, args) <- safeCon k
       args' <- mapM (fresh . subSortVars as ts) args
       t  <- fresh $ SData d ts
-      cg <- insert (K k ts args') t empty `inExpr` ("asdas", e)
+      cg <- safeInsertExpr (K k ts args') t empty e
       return (foldr (:=>) t args', cg)
     Nothing -> 
       case Core.isPrimOpId_maybe x of
@@ -84,18 +84,17 @@ inferPoly x ts e = do
                   -- Import x's constraints with local refinement variables
                   cg' <- foldM (\cg' (x, y) -> substitute y cg' x) (graphMap (subTypeVars as ts') cg) (zip xs ys) `inExpr` ("Sub", e)
 
-                  -- Substitute type/ variables 
+                  -- Substitute type/variables 
                   let u' = sub xs ys $ subTypeVars as ts' u
                   v <- fresh $ toSort $ Core.exprType e
 
-                  cg'' <- insert u' v cg' `inExpr` ("Insert2", u', v, e)
+                  cg'' <- safeInsertExpr u' v cg' e
                   return (v, cg'')
 
                 Nothing -> error "Variable has inconsistent constriants."
 
-  ctx <- ask
-  scope2 <- get
-  return (t, closeScope scope1 scope2 cg (var ctx))
+  cg' <- closeScope scope cg
+  return (t, cg')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e@(Core.Var x) = inferPoly x [] e
@@ -117,7 +116,7 @@ infer e@(Core.App e1 e2) =
       case t1 of
         t3 :=> t4 -> do
           cg <- union c1 c2 `inExpr` ("Union", c1, c2)
-          cg' <- insert t2 t3 cg `inExpr` ("Insert3", t2, t3, e1)
+          cg' <- safeInsertExpr t2 t3 cg e
           return (t4, cg')
 
 infer e'@(Core.Lam x e) =
@@ -127,17 +126,12 @@ infer e'@(Core.Lam x e) =
       infer e
     else do
       -- Variable abstraction
-      scope1 <- get
-
       t1 <- fresh $ toSort $ Core.varType x
       (t2, cg) <- local (insertVar x $ Forall [] [] [] t1) (infer e)
-
-      ctx <- ask
-      scope2 <- get
-      return (t1 :=> t2, closeScope scope1 scope2 cg (var ctx))
+      return (t1 :=> t2, cg)
 
 infer e'@(Core.Let b e) = do
-  scope1 <- get
+  scope <- get
 
   -- Infer local module (i.e. let expression)
   let xs = Core.bindersOf b
@@ -155,7 +149,7 @@ infer e'@(Core.Let b e) = do
     ) ([], empty) rhss
 
   --  Insure fresh types are quantified by infered constraint (t' < t)
-  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts) `inExpr` ("154",e')
+  cg' <- foldM (\cg (t', Forall as _ _ t) -> safeInsertExpr t' t cg e') cg (zip ts' ts)
 
   -- Restrict constraints to the interface
   ts' <- mapM (quantifyWith cg') ts
@@ -164,20 +158,19 @@ infer e'@(Core.Let b e) = do
   (t, icg) <- local (insertMany xs ts') (infer e)
   cg'' <- union cg' icg `inExpr` ("169", e')
 
-  ctx <- ask
-  scope2 <- get
-  return (t, closeScope scope1 scope2 cg'' (var ctx))
+  cg''' <- closeScope scope cg''
+  return (t, cg''')
 
 infer e'@(Core.Case e b rt as) = do
-  scope1 <- get
+  scope <- get
 
   -- Infer case expession
   let es = toSort $ Core.exprType e
   let mss = case es of {SData _ ss -> Just ss; SBase _ ss -> Just ss; _ -> Nothing}
-  et <- fresh $ es
+  et <- fresh es
   t  <- fresh $ toSort rt
   (t0, c0) <- infer e
-  c0' <- insert et t0 c0 `inExpr` ("171", e)
+  c0' <- safeInsertExpr et t0 c0 e
   (caseType, cg) <- local (insertVar b $ Forall [] [] [] et) $ foldM (\(caseType, cg) a ->
     case a of
       -- Infer constructor alternative
@@ -191,7 +184,7 @@ infer e'@(Core.Case e b rt as) = do
               else do
                 ts <- mapM (fresh . toSort . Core.varType) bs
                 (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] []) ts) (infer rhs)
-                cgi' <- insert ti' t cgi `inExpr` ("185", ti', t, rhs)
+                cgi' <- safeInsertExpr ti' t cgi rhs
                 cg' <- union cg cgi' `inExpr` ("186", rhs)
                 case caseType of
                   Empty     -> return (DataCon [(d, ss, ts)], cg')
@@ -202,7 +195,7 @@ infer e'@(Core.Case e b rt as) = do
       -- Infer literal alternative
       (Core.LitAlt l, _, rhs) -> do
         (ti', cgi) <- infer rhs
-        cgi' <- insert ti' t cgi `inExpr` ("196", rhs)
+        cgi' <- safeInsertExpr ti' t cgi rhs
         cg' <- union cg cgi' `inExpr` ("197", rhs)
         case caseType of
           Empty      -> return (Literal [l], cg')
@@ -217,22 +210,22 @@ infer e'@(Core.Case e b rt as) = do
             return (caseType, cg)
           else do
             (ti', cgi) <- infer rhs
-            cgi' <- insert ti' t cgi `inExpr` ("211", rhs)
+            cgi' <- safeInsertExpr ti' t cgi rhs
             cg' <- union cg cgi' `inExpr` ("212", rhs)
             return (Default, cg')
     ) (Empty, c0') as
-  ctx <- ask
-  scope2 <- get
   -- Insure destructor is total, GHC will conservatively insert defaults
-  case caseType of
-    Default -> return (t, closeScope scope1 scope2 cg (var ctx))
+  (t, cg) <- case caseType of
+    Default -> return (t, cg)
     DataCon dts -> do
-      cg' <- insert t0 (Sum [(TData dc ss, ts) | (dc, ss, ts) <- dts]) cg `inExpr` ("DataCon", t0, dts, cg, e')
-      return (t, closeScope scope1 scope2 cg' (var ctx))
+      cg' <- safeInsertExpr t0 (Sum [(TData dc ss, ts) | (dc, ss, ts) <- dts]) cg e'
+      return (t, cg')
     Literal lss -> do
-      cg' <- insert t0 (Sum [(TLit l, []) | l <- lss]) cg `inExpr` ("Literal", t0, e')
-
-      return (t, closeScope scope1 scope2 cg' (var ctx))
+      cg' <- safeInsertExpr t0 (Sum [(TLit l, []) | l <- lss]) cg e'
+      return (t, cg')
+  
+  cg' <- closeScope scope cg
+  return (t, cg')
     
 -- Remove core ticks
 infer (Core.Tick _ e) = infer e

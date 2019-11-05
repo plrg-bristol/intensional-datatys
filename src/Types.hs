@@ -2,9 +2,9 @@
 
 module Types
     (
-      Sort (SVar, SArrow, SData, SBase),
+      Sort (SVar, SArrow, SData, SBase, SApp),
       SortScheme (SForall),
-      UType (TVar, TData, TArrow, TBase, TLit),
+      UType (TVar, TData, TArrow, TBase, TLit, TApp),
       PType,
       RVar (RVar),
       Type,
@@ -40,16 +40,16 @@ newtype RVar = RVar (Int, Bool, Core.TyCon, [Sort]) deriving Eq
 instance Ord RVar where
   RVar (x, _, _, _) <= RVar (x', _, _, _) = x <= x'
 
-data Sort = SVar Core.Var | SBase Core.TyCon [Sort] | SData Core.TyCon [Sort] | SArrow Sort Sort {- | SApp Sort Sort | SConApp Core.TyCon [Sort] -} deriving Show
+data Sort = SVar Core.Var | SBase Core.TyCon [Sort] | SData Core.TyCon [Sort] | SArrow Sort Sort | SApp Sort Sort {- | SConApp Core.TyCon [Sort] -} deriving Show
 data UType = 
     TVar Core.Var 
   | TBase Core.TyCon [Sort]
   | TData Core.DataCon [Sort]
   | TArrow 
   | TLit Core.Literal -- Sums can contain literals
+  | TApp Sort Sort
 
   {-  
-  | TApp Sort Sort    -- Unrefinable & externally defined
   | TConApp Core.TyCon [Sort] -- Buggy pattern matching 
   -}
 
@@ -84,12 +84,12 @@ toSort (T.TyConApp t args)
   -- | isPrim t = SBase t $ fmap toSort args
   | otherwise = SData t $ fmap toSort args
 
-toSort (T.AppTy t1 t2) = error "Unimplemented" -- From external (unrefined modules)
-  -- let s1 = toSort t1
-  --     s2 = toSort t2
-  -- in SApp s1 s2
+toSort (T.AppTy t1 t2) = 
+  let s1 = toSort t1
+      s2 = toSort t2
+  in SApp s1 s2
 
-toSort _ =  error "Core type is not a valid sort." -- Lit, cast and coercion
+toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t)
 
 toSortScheme :: Core.Type -> SortScheme
 toSortScheme (T.TyVarTy v) = SForall [] (SVar v)
@@ -104,6 +104,7 @@ toSortScheme (T.ForAllTy b t) =
 toSortScheme (T.TyConApp t args)
   -- | isPrim t = SForall [] $ SBase t $ fmap toSort args
   | otherwise = SForall [] $ SData t $ fmap toSort args
+toSortScheme (T.AppTy t1 t2) = SForall [] $ SApp (toSort t1) (toSort t2)
 toSortScheme _ = error "Core type is not a valid sort scheme."
 
 instance Core.Outputable UType where
@@ -260,7 +261,7 @@ subTypeVars (a:as) (t:ts) (Con (TVar a') [])
   | otherwise = subTypeVars as ts $ Con (TVar a') []
 subTypeVars as ts (B b ss) = 
   let ts'' = fmap broaden ts
-  in B b $ (fmap (subSortVars as ts'') ss)
+  in B b (fmap (subSortVars as ts'') ss)
 subTypeVars as ts (K v ss ts') =
   let ts'' = fmap broaden ts
   in K v (fmap (subSortVars as ts'') ss) (fmap (subTypeVars as ts) ts')

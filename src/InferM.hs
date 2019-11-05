@@ -7,6 +7,8 @@ module InferM
       con,
       var,
       inExpr,
+      safeInsert,
+      safeInsertExpr,
       insertVar,
       insertMany,
       safeCon,
@@ -20,15 +22,21 @@ module InferM
 import Types
 import GenericConGraph
 
+import Prelude hiding ((<>))
 import Control.Monad.Except
 import Control.Monad.Trans.Maybe
-import Control.Monad.RWS hiding (Sum)
+import Control.Monad.RWS hiding (Sum, (<>))
 import qualified Data.Map as M
 import qualified Data.List as L
 
 import qualified GhcPlugins as Core
 
 import Debug.Trace
+
+text = Core.text
+(<>) = (Core.<>)
+ppr :: Core.Outputable a => a -> Core.SDoc
+ppr = Core.ppr
 
 type InferM = RWS Context () Int
 
@@ -38,6 +46,7 @@ data Context = Context {
 }
 
 -- Last two constraint simplification rules
+-- If sum total ... 
 instance Rewrite RVar UType InferM where
   toNorm t1@(K k ss ts) t2@(V x p d ss') = do
       args <- delta p d k ss
@@ -48,24 +57,64 @@ instance Rewrite RVar UType InferM where
           c2 <- toNorm (K k ss ts) (K k ss ts')
           return (c1 ++ c2)
         else return [(K k ss ts', V x p d ss'), (K k ss ts, K k ss ts')]
+
   toNorm t1@(V x p d ss) t2@(Sum cs) = do
-      s <- mapM refineCon cs
-      if cs /= s
-        then do
-          c1 <- toNorm (Sum s) (Sum cs)
-          c2 <- toNorm (V x p d ss) (Sum s)
-          return (c1 ++ c2)
-        else return [(Sum s, Sum cs),(V x p d ss, Sum s)]
-      where
-        refineCon (TData k ss, ts) = do
-          args <- delta p d k ss
-          return (TData k ss, upArrow x args)
-        refineCon t = return t
+    
+    let cons = Core.tyConDataCons d
+    if all (\c -> c `elem` [c' | (TData c' _, []) <- cs]) cons
+      then return [] -- Sum is total and so is a trivial constraint
+      else do
+
+        s <- mapM refineCon cs
+        if cs /= s
+          then do
+            c1 <- toNorm (Sum s) (Sum cs)
+            c2 <- toNorm (V x p d ss) (Sum s)
+            return (c1 ++ c2)
+          else return [(Sum s, Sum cs),(V x p d ss, Sum s)]
+        where
+          refineCon (TData k ss, ts) = do
+            args <- delta p d k ss
+            return (TData k ss, upArrow x args)
+          refineCon t = return t
+
   toNorm t1 t2 = return [(t1, t2)]
 
--- closeScope scope1 scope2 cg var | Core.pprPanic "Close scope: " (Core.ppr (scope1, scope2, cg, ctxStems var)) False = undefined
-closeScope scope1 scope2 cg var = purge (\(RVar (x, _, _, _)) -> scope2 > x && x > scope1 && (not (x `elem` ctxStems var))) cg
-ctxStems m = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ (concat $ concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) (M.elems m)
+-- Remove bounded nodes which are not in the environment
+closeScope :: Int -> ConGraph -> InferM ConGraph
+closeScope scope cg = do
+  ctx <- ask
+  let ctxStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) (M.elems $ var ctx)
+  return $ purge (\(RVar (x, _, _, _)) -> x > scope && (x `notElem` ctxStems)) cg
+
+-- Safely insert a constraint and pretty print error on failure
+safeInsert :: Type -> Type -> ConGraph -> InferM ConGraph
+safeInsert t1 t2 cg = do
+  mcg <- runMaybeT $ insert t1 t2 cg
+  case mcg of
+    Just cg' -> return cg'
+    Nothing  -> do
+      ctx <- ask
+      Core.pprPanic "Constraint conflict. " (pprConstraint t1 t2 <> pprRelevant t1 t2 cg ctx)
+  where
+    pprConstraint t1 t2 = Core.text "The constraint " <> ppr t1 <> text " <: " <> ppr t2 <> Core.text " cannot be met!\n"
+    pprRelevant t1 t2 cg ctx = text "Relevant binds include: " 
+
+-- Safely insert a constraint and pretty print error on failure
+safeInsertExpr :: Type -> Type -> ConGraph -> Core.Expr Core.Var -> InferM ConGraph
+safeInsertExpr t1 t2 cg e = do
+  mcg <- runMaybeT $ insert t1 t2 cg
+  case mcg of
+    Just cg' -> return cg'
+    Nothing  -> do
+      ctx <- ask
+      Core.pprPanic "Constraint conflict. " (Core.text "The constraint " <> pprConstraint t1 t2 <> Core.text " cannot be met!\n" <> arisingFrom e <> pprRelevantBinds t1 t2 cg (var ctx))
+  where
+    arisingFrom e = text "Arising from the expression: " <> ppr e
+    pprConstraint t1 t2 = ppr t1 <> text " <: " <> ppr t2
+    pprRelevantBinds t1 t2 cg var = text "Relevant binds include: " <> Core.interppSP (fmap (\(k, (Forall _ _ _ t)) -> (k, t)) $ M.toList $ M.filter p var)
+    p (Forall _ ns cs t) = (stems t1 ++ stems t2) `doesIntersect` ([j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t)
+    doesIntersect l1 l2 = any (`elem` l2) l1
 
 -- Handle constraint errors
 inExpr :: Core.Outputable b => MaybeT InferM a -> b -> InferM a
@@ -122,6 +171,7 @@ freshScheme (SForall as s@(SData _ ss)) = do
   case t of
     V x p d ss' | ss' == ss -> return $ Forall as [RVar (x, p, d, ss')] [] t -- Type arguments are perpendicular to refinement variables
     _ -> error "Fresh has gone wrong!"
+freshScheme (SForall as (SApp s1 s2)) = return $ Forall as [] [] $ Con (TApp s1 s2) []
 freshScheme (SForall as (SArrow s1 s2)) = do
   Forall l1 v1 _ t1 <- freshScheme (SForall [] s1)  -- Fresh schemes have multiple refinement variables
   Forall l2 v2 _ t2 <- freshScheme (SForall [] s2)

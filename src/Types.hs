@@ -29,6 +29,7 @@ import Prelude hiding ((<>))
 import Data.List
 import GenericConGraph
 import qualified GhcPlugins as Core
+import Kind
 import Debug.Trace
 import Data.Bifunctor (second)
 import qualified TyCoRep as T
@@ -48,12 +49,23 @@ data UType =
   | TData Core.DataCon [Sort]
   | TArrow 
   | TLit Core.Literal -- Sums can contain literals
-  | TApp Sort Sort
+  | TApp Type Sort
 
-data PType = PVar Core.Var | PBase Core.TyCon [Sort] | PData Bool Core.TyCon [Sort] | PArrow PType PType  | PApp Sort Sort
+data PType = PVar Core.Var | PBase Core.TyCon [Sort] | PData Bool Core.TyCon [Sort] | PArrow PType PType  | PApp PType Sort
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type
 data SortScheme = SForall [Core.Var] Sort deriving Show
+
+-- coreSort :: Sort -> Core.Type
+-- coreSort (SVar a) = Core.mkTyVar a (Core.exprType a)
+
+-- coreType :: Type -> Core.Type
+-- coreType (t1 :=> t2) = Core.mkFunTy (coreType t1) (coreType t2)
+-- coreType (V _ _ d ss) = Core.mkTyConApp d (coreSort <$> ss)
+-- coreType (B d ss) = Core.mkTyConApp d (coreSort <$> ss)
+-- coreType (K k ss _) = Core.mkTyConApp (Core.dataConTyCon k) (coreSort <$> ss)
+-- coreType (Con (TLit l) []) = Core.exprType (Core.Lit l)
+-- coreType (Con (TApp s1 s2) []) = error ""
 
 name :: Core.NamedThing a => a -> String
 name = Core.nameStableString . Core.getName
@@ -63,16 +75,14 @@ fromPolyVar (Core.Var i) = Just (i, [])
 fromPolyVar (Core.App e1 (Core.Type t)) = do
   (i, ts) <- fromPolyVar e1
   return (i, ts ++ [toSort t])
+fromPolyVar (Core.App e1 (Core.Var i)) | Core.isDictId i =  fromPolyVar e1 --For typeclass evidence
 fromPolyVar _ = Nothing
 
 toSort :: Core.Type -> Sort
 toSort (T.TyVarTy v) = SVar v
-toSort (T.FunTy t1 t2) =
-  let s1 = toSort t1
-      s2 = toSort t2
-  in SArrow s1 s2
+toSort (T.FunTy t1 t2) = let s1 = toSort t1; s2 = toSort t2 in SArrow s1 s2
 toSort (T.TyConApp t args) = SData t $ fmap toSort args
-toSort (T.AppTy t1 t2) = 
+toSort (T.AppTy t1 t2) =
   let s1 = toSort t1
       s2 = toSort t2
   in SApp s1 s2
@@ -80,22 +90,25 @@ toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t)
 
 toSortScheme :: Core.Type -> SortScheme
 toSortScheme (T.TyVarTy v) = SForall [] (SVar v)
-toSortScheme (T.FunTy t1 t2) =
-  let s1 = toSort t1
-      s2 = toSort t2
-  in SForall [] (SArrow s1 s2)
+toSortScheme (T.FunTy t1 t2)
+  | Core.isPredTy t1 = 
+    case t1 of
+      T.TyConApp _ args -> let as1 = []; SForall as2 s2 = toSortScheme t2 in SForall (as1++as2) s2
+  | otherwise = let s1 = toSort t1; SForall as s2 = toSortScheme t2 in SForall as (SArrow s1 s2)
 toSortScheme (T.ForAllTy b t) =
   let (SForall as st) = toSortScheme t
       a = Core.binderVar b
   in SForall (a:as) st
 toSortScheme (T.TyConApp t args) = SForall [] $ SData t $ fmap toSort args
 toSortScheme (T.AppTy t1 t2) = SForall [] $ SApp (toSort t1) (toSort t2)
-toSortScheme _ = error "Core type is not a valid sort scheme."
 
 instance Core.Outputable UType where
   ppr (TVar v) = ppr v
   ppr (TBase b ss) = ppr b <> intercalate' "@" (fmap ppr ss)
   ppr (TData dc ss) = ppr dc <> intercalate' "@" (fmap ppr ss)
+  ppr TArrow = text "->"
+  ppr (TLit l) = ppr l
+  ppr (TApp s1 s2) = text "App" <> ppr s1 <> text " " <> ppr s2
 
 instance Show UType where
   show (TVar v) = show v
@@ -144,6 +157,7 @@ instance Eq UType where
   TData d args == TData d' args' = Core.getName d == Core.getName d' && args == args'
   TLit l == TLit l' = l == l'
   TArrow == TArrow = True
+  TApp s1 s2 == TApp s1' s2' = s1 == s1' && s2 == s2'
   _ == _ = False
 
 instance Eq Sort where
@@ -151,6 +165,7 @@ instance Eq Sort where
   SBase b ss == SBase b' ss' = Core.getName b == Core.getName b' && ss == ss'
   SData d args == SData d' args' = Core.getName d == Core.getName d' && args == args'
   SArrow s1 s2 == SArrow s1' s2' = s1 == s1' && s2 == s2'
+  SApp s1 s2 == SApp s1' s2' = s1 == s1' && s2 == s2'
   _ == _ = False
 
 type ConGraph = ConGraphGen RVar UType
@@ -205,12 +220,14 @@ upArrow x = fmap upArrow'
     upArrow' (PArrow t1 t2)   = upArrow' t1 :=> upArrow' t2
     upArrow' (PVar a)         = Con (TVar a) []
     upArrow' (PBase b ss)     = Con (TBase b ss) []
+    upArrow' (PApp s1 s2)     = Con (TApp (upArrow' s1) s2) []
 
 polarise :: Bool -> Sort -> PType
 polarise p (SVar a) = PVar a
 polarise p (SBase b ss) = PBase b ss
 polarise p (SData d args) = PData p d args
 polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
+polarise p (SApp s1 s2) = PApp (polarise p s1) s2
 
 -- Find a better way to perform these substituions a "type" typeclass
 sub :: [RVar] -> [Type] -> Type -> Type
@@ -229,6 +246,7 @@ subSortVars (a:as) (t:ts) (SVar a')
 subSortVars as ts (SBase b ss) = SBase b $ fmap (subSortVars as ts) ss
 subSortVars as ts (SData d ss) = SData d $ fmap (subSortVars as ts) ss
 subSortVars as ts (SArrow s1 s2) = SArrow (subSortVars as ts s1) (subSortVars as ts s2)
+subSortVars as ts (SApp s1 s2) = SApp (subSortVars as ts s1) (subSortVars as ts s2)
 
 -- If the type is a lifted sort return the sort, otherwise fail i.e. has the type undergone some refinement
 broaden :: Type -> Sort
@@ -238,6 +256,7 @@ broaden (B b ss) =  SBase b ss
 broaden (t1 :=> t2) = SArrow (broaden t1) (broaden t2)
 broaden (K v ss ts) = error "" -- Constructors only as refinements of data types
 broaden (Con (TLit _) _) = error "" -- TLit only occurs as a result of case analysis
+broaden (Con (TApp t s) []) = SApp (broaden t) s
 
 subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
 subTypeVars [] [] u = u
@@ -255,6 +274,13 @@ subTypeVars as ts (V x p d ss) =
   in V x p d (fmap (subSortVars as ts'') ss)
 subTypeVars as ts (t1 :=> t2) = subTypeVars as ts t1 :=> subTypeVars as ts t2
 subTypeVars as ts  l@(Con (TLit _) []) = l
+subTypeVars as ts (Con (TApp t1 t2) []) =
+  let ts' = fmap broaden ts
+  in case subTypeVars as ts t1 of
+    V x p d ss -> V x p d [subSortVars as ts' t2] -- Core.pprPanic "We ahve made a V" (Core.ppr (x, p, d, ss, as, ts))
+    -- K v ss ts' -> Core.pprPanic "We have made an K" (Core.ppr (t1, t2, v, ss, as, ts'))
+    _          -> Con (TApp (subTypeVars as ts t1) (subSortVars as ts' t2)) []
+
 subTypeVars as ts (Sum cs) = Sum $ fmap (\(c, args) -> (c, fmap (subTypeVars as ts) args)) cs
 
 subConGraphTypeVars :: [Core.Var] -> [Type] -> ConGraph -> ConGraph

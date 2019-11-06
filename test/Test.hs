@@ -1,9 +1,9 @@
 module Test where
 
--- import Prelude hiding (Bool, True, False, not, List, foldr)
--- -- import Utils.Containers.Internal.PtrEquality
+-- import Prelude hiding (Bool, True, False, not)
+-- import Utils.Containers.Internal.PtrEquality
 
--- -- import qualified GHC.Exts as GHCExts
+-- import qualified GHC.Exts as GHCExts
 
 -- data Tm = Var Int | Cst Int | App Tm Tm
 
@@ -35,8 +35,8 @@ module Test where
 -- not True = False
 -- not False = True
 
--- filterLength3 :: [[a]] -> [[a]]
--- filterLength3 = foldr (\x rs -> if (length x) == 3 then  x : rs else rs) [] 
+filterLength3 :: Foldable t => [t a] -> [t a]
+filterLength3 = foldr (\x rs -> if (length x) == 3 then  x : rs else rs) [] 
 
 -- isEven :: Nat -> Bool
 -- isEven Z = True
@@ -53,9 +53,9 @@ module Test where
 -- add = foldn S Z
 -- mul = add
 
--- foldr :: (a -> b -> b) -> b -> (List a) -> b
--- foldr f x Empty = x
--- foldr f x (Cons a as) = f a (foldr f x as)
+-- foldr' :: (a -> b -> b) -> b -> (List a) -> b
+-- foldr' f x Empty = x
+-- foldr' f x (Cons a as) = f a (foldr' f x as)
 
 -- rebuild :: List' -> a
 -- rebuild (Cons' a b) = rebuild b
@@ -76,9 +76,9 @@ module Test where
 --               biggerSorted = quicksort1 c2'
 --           in  smallerSorted ++ [x] ++ biggerSorted
 
-test = head' []
+-- test = head' []
 
-head' (x:xs) = x
+-- head' (x:xs) = x
 
--- liftA2 :: (Applicative f, Functor f) => (a -> b -> c) -> f a -> f b -> f c
--- liftA2 f x = (<*>) (fmap f x)
+liftA2 :: (Applicative f, Functor f) => (a -> b -> c) -> f a -> f b -> f c
+liftA2 f x = (<*>) (fmap f x)

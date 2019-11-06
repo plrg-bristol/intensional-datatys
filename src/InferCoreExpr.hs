@@ -11,7 +11,7 @@ import GenericConGraph
 
 import Control.Monad.RWS hiding (Sum)
 import Control.Monad.Trans.Maybe
-import Control.Arrow ((***), first)
+import Control.Arrow
 import Data.List hiding (union)
 import Data.Maybe
 import qualified Data.Map as M
@@ -30,6 +30,7 @@ freeVars (Core.Var i) = [i]
 freeVars (Core.Lit l) = []
 freeVars (Core.App e1 e2) = freeVars e1 ++ freeVars e2
 freeVars (Core.Lam x e) = freeVars e \\ [x]
+freeVars (Core.Let b e) = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) \\ Core.bindersOf b
 freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae \\ bs | (_, bs, ae) <- as] \\ [x])
 freeVars (Core.Tick _ e) = freeVars e
 freeVars (Core.Type t) = []
@@ -40,13 +41,13 @@ instance Eq Core.CoreBind where
 
 -- Topological sort dependancies
 toposort :: [(Core.CoreBind, [Core.CoreBind])] -> [Core.CoreBind]
-toposort xs = foldl makePrecede [] [([x], y \\ [x]) | (x, y) <- xs]
+toposort xs = foldl f [] [(x, y \\ [x]) | (x, y) <- xs]
   where
-    makePrecede ts ([x], xs) =
-      nub $
+    f :: [Core.CoreBind] -> (Core.CoreBind, [Core.CoreBind]) -> [Core.CoreBind]
+    f ts (x, xs) = nub $
       case elemIndex x ts of
         Just i -> uncurry (++) $ first (++ xs) $ splitAt i ts
-        _ -> ts ++ xs ++ [x]
+        _      -> ts ++ xs ++ [x]
 
 groupify :: [Core.Var] -> Core.CoreProgram -> [Core.CoreBind]
 groupify xs p = mapMaybe f xs
@@ -58,6 +59,7 @@ groupify xs p = mapMaybe f xs
 inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
 inferProg p = do
 
+  -- Reorder program with dependancies
   let defs = Core.bindersOfBinds p
   let deps = [(b, groupify ((concatMap freeVars . Core.rhssOfBind) b \\ Core.bindersOf b) p) | b <- p]
   let p' = toposort deps
@@ -125,7 +127,7 @@ inferPoly x ts e = do
                   let xs' = fmap (\(RVar (x, p, d, ss)) -> RVar (x, p, d, subSortVars as (broaden <$> ts') <$> ss)) xs
                   ys      <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs'
                   let u'  = subTypeVars as ts' $ sub xs' ys u
-
+                  
                   -- Import variables constraints at type
                   cg' <- foldM (\cg' (x, y) -> substitute y cg' x) cg' (zip xs' ys) `inExpr` ("Sub", e)
 
@@ -162,7 +164,7 @@ infer e@(Core.App e1 e2) =
           return (t4, cg')
 
 infer e'@(Core.Lam x e) =
-  if isLiftedTypeKind $ Core.varType x
+  if isLiftedTypeKind (Core.varType x) || Core.isDictId x
     then
       -- Type abstraction
       infer e

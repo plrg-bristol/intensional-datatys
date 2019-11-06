@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 module InferCoreExpr
     (
       inferProg
@@ -9,6 +11,9 @@ import GenericConGraph
 
 import Control.Monad.RWS hiding (Sum)
 import Control.Monad.Trans.Maybe
+import Control.Arrow ((***), first)
+import Data.List hiding (union)
+import Data.Maybe
 import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
@@ -19,13 +24,49 @@ import Debug.Trace
 
 data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Sort], [Type])] | Empty
 
+-- List all free variables of an expression
+freeVars :: Core.Expr Core.Var -> [Core.Var]
+freeVars (Core.Var i) = [i]
+freeVars (Core.Lit l) = []
+freeVars (Core.App e1 e2) = freeVars e1 ++ freeVars e2
+freeVars (Core.Lam x e) = freeVars e \\ [x]
+freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae \\ bs | (_, bs, ae) <- as] \\ [x])
+freeVars (Core.Tick _ e) = freeVars e
+freeVars (Core.Type t) = []
+freeVars (Core.Coercion c) = []
+
+instance Eq Core.CoreBind where
+  b == b' = Core.bindersOf b == Core.bindersOf b'
+
+-- Topological sort dependancies
+toposort :: [(Core.CoreBind, [Core.CoreBind])] -> [Core.CoreBind]
+toposort xs = foldl makePrecede [] [([x], y \\ [x]) | (x, y) <- xs]
+  where
+    makePrecede ts ([x], xs) =
+      nub $
+      case elemIndex x ts of
+        Just i -> uncurry (++) $ first (++ xs) $ splitAt i ts
+        _ -> ts ++ xs ++ [x]
+
+groupify :: [Core.Var] -> Core.CoreProgram -> [Core.CoreBind]
+groupify xs p = mapMaybe f xs
+  where
+    f :: Core.Var -> Maybe Core.CoreBind
+    f x = case [b | b <- p, x `elem` Core.bindersOf b] of {(h:_) -> Just h; _ -> Nothing}
+
 -- Infer program
 inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
 inferProg p = do
+
+  let defs = Core.bindersOfBinds p
+  let deps = [(b, groupify ((concatMap freeVars . Core.rhssOfBind) b \\ Core.bindersOf b) p) | b <- p]
+  let p' = toposort deps
+
   -- Mut rec groups
   z <- foldr (\b r -> do
     let xs = Core.bindersOf b
     let rhss = Core.rhssOfBind b
+
     ts <- mapM (freshScheme . toSortScheme .Core.exprType) rhss
     let withBinds = local (insertMany xs ts)
 
@@ -46,7 +87,7 @@ inferProg p = do
     -- Add infered typescheme to the environment
     r' <- local (insertMany xs ts'') r
     return $ (xs, ts''):r'
-    ) (return []) p
+    ) (return []) p'
   return $ concatMap (uncurry zip) z
 
 inferPoly :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)

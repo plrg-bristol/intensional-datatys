@@ -76,9 +76,9 @@ module Test where
 --               biggerSorted = quicksort1 c2'
 --           in  smallerSorted ++ [x] ++ biggerSorted
 
-head' (x:xs) = x
-
 test = head' []
+
+head' (x:xs) = x
 
 -- liftA2 :: (Applicative f, Functor f) => (a -> b -> c) -> f a -> f b -> f c
 -- liftA2 f x = (<*>) (fmap f x)

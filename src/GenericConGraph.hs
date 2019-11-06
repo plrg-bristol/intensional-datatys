@@ -150,7 +150,7 @@ insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
             then return cg
             else do
               cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s} 
-              -- TODO: intersect/union sums
+              -- TODO: intersect sums
               case predChain cg' x sy [] of
                 Just vs -> foldM (substitute sy) cg' vs
                 _ -> return cg'
@@ -167,7 +167,7 @@ insertPred sx y cg@ConGraph{preds = p, subs = sb} =
             then return cg
             else do
               cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p}
-              -- TODO: intersect/union sums
+              -- TODO: union sums
               case succChain cg' sx y [] of
                 Just vs -> foldM (substitute sx) cg' vs
                 _ -> return cg'

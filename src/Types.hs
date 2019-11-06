@@ -15,12 +15,13 @@ module Types
       polarise,
       subTypeVars,
       subSortVars,
+      subConGraphTypeVars,
+      broaden,
       sub,
       stems,
       toSort,
       toSortScheme,
       fromPolyVar,
-      isPrim,
       disp
     ) where
 
@@ -40,7 +41,7 @@ newtype RVar = RVar (Int, Bool, Core.TyCon, [Sort]) deriving Eq
 instance Ord RVar where
   RVar (x, _, _, _) <= RVar (x', _, _, _) = x <= x'
 
-data Sort = SVar Core.Var | SBase Core.TyCon [Sort] | SData Core.TyCon [Sort] | SArrow Sort Sort | SApp Sort Sort {- | SConApp Core.TyCon [Sort] -} deriving Show
+data Sort = SVar Core.Var | SBase Core.TyCon [Sort] | SData Core.TyCon [Sort] | SArrow Sort Sort | SApp Sort Sort deriving Show
 data UType = 
     TVar Core.Var 
   | TBase Core.TyCon [Sort]
@@ -49,20 +50,10 @@ data UType =
   | TLit Core.Literal -- Sums can contain literals
   | TApp Sort Sort
 
-  {-  
-  | TConApp Core.TyCon [Sort] -- Buggy pattern matching 
-  -}
-
-data PType = PVar Core.Var | PBase Core.TyCon [Sort] | PData Bool Core.TyCon [Sort] | PArrow PType PType {- | PApp Sort Sort | PConApp Core.TyCon [Sort] -}
+data PType = PVar Core.Var | PBase Core.TyCon [Sort] | PData Bool Core.TyCon [Sort] | PArrow PType PType  | PApp Sort Sort
 type Type = SExpr RVar UType
 data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type
 data SortScheme = SForall [Core.Var] Sort deriving Show
-
-isPrim :: Core.NamedThing t => t -> Bool
-isPrim t = isPrefixOf "$ghc-prim$" $ name t
-
-isConstructor :: Core.Var -> Maybe Core.DataCon
-isConstructor = Core.isDataConId_maybe
 
 name :: Core.NamedThing a => a -> String
 name = Core.nameStableString . Core.getName
@@ -80,15 +71,11 @@ toSort (T.FunTy t1 t2) =
   let s1 = toSort t1
       s2 = toSort t2
   in SArrow s1 s2
-toSort (T.TyConApp t args) 
-  -- | isPrim t = SBase t $ fmap toSort args
-  | otherwise = SData t $ fmap toSort args
-
+toSort (T.TyConApp t args) = SData t $ fmap toSort args
 toSort (T.AppTy t1 t2) = 
   let s1 = toSort t1
       s2 = toSort t2
   in SApp s1 s2
-
 toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t)
 
 toSortScheme :: Core.Type -> SortScheme
@@ -101,9 +88,7 @@ toSortScheme (T.ForAllTy b t) =
   let (SForall as st) = toSortScheme t
       a = Core.binderVar b
   in SForall (a:as) st
-toSortScheme (T.TyConApp t args)
-  -- | isPrim t = SForall [] $ SBase t $ fmap toSort args
-  | otherwise = SForall [] $ SData t $ fmap toSort args
+toSortScheme (T.TyConApp t args) = SForall [] $ SData t $ fmap toSort args
 toSortScheme (T.AppTy t1 t2) = SForall [] $ SApp (toSort t1) (toSort t2)
 toSortScheme _ = error "Core type is not a valid sort scheme."
 
@@ -217,9 +202,9 @@ upArrow :: Int -> [PType] -> [Type]
 upArrow x = fmap upArrow'
   where
     upArrow' (PData p d args) = Var $ RVar (x, p, d, args)
-    upArrow' (PArrow t1 t2)  = upArrow' t1 :=> upArrow' t2
-    upArrow' (PVar a)        = Con (TVar a) []
-    upArrow' (PBase b ss)        = Con (TBase b ss) []
+    upArrow' (PArrow t1 t2)   = upArrow' t1 :=> upArrow' t2
+    upArrow' (PVar a)         = Con (TVar a) []
+    upArrow' (PBase b ss)     = Con (TBase b ss) []
 
 polarise :: Bool -> Sort -> PType
 polarise p (SVar a) = PVar a
@@ -271,6 +256,14 @@ subTypeVars as ts (V x p d ss) =
 subTypeVars as ts (t1 :=> t2) = subTypeVars as ts t1 :=> subTypeVars as ts t2
 subTypeVars as ts  l@(Con (TLit _) []) = l
 subTypeVars as ts (Sum cs) = Sum $ fmap (\(c, args) -> (c, fmap (subTypeVars as ts) args)) cs
+
+subConGraphTypeVars :: [Core.Var] -> [Type] -> ConGraph -> ConGraph
+subConGraphTypeVars as ts ConGraph{succs = s, preds = p, subs = sb} = ConGraph{succs = s', preds = p', subs = sb'}
+  where
+    ts' = fmap broaden ts
+    s' = M.mapKeys (\(RVar (x, p, d, ss)) -> RVar (x, p, d, fmap (subSortVars as ts') ss)) $ fmap (fmap $ subTypeVars as ts) s
+    p' = M.mapKeys (\(RVar (x, p, d, ss)) -> RVar (x, p, d, fmap (subSortVars as ts') ss)) $ fmap (fmap $ subTypeVars as ts) p
+    sb' = M.mapKeys (\(RVar (x, p, d, ss)) -> RVar (x, p, d, fmap (subSortVars as ts') ss)) $ fmap (subTypeVars as ts) sb
 
 -- subTypeVars as ts (Con (TApp s1 s2) []) = 
 --   let ss = map broaden ts 

@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FlexibleContexts #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, TypeSynonymInstances, FlexibleContexts #-}
 
 module InferM
     (
@@ -41,12 +41,11 @@ ppr = Core.ppr
 type InferM = RWS Context () Int
 
 data Context = Context {
-    con :: Core.UniqFM {- Core.DataCon -} (Core.TyCon, [Core.Var], [Sort]), -- k -> (d, args)
+    con :: Core.UniqFM {- Core.DataCon -} (Core.TyCon, [Core.Var], [Sort]), -- k -> (d, as, args)
     var :: M.Map Core.Var TypeScheme
 }
 
 -- Last two constraint simplification rules
--- If sum total ... 
 instance Rewrite RVar UType InferM where
   toNorm t1@(K k ss ts) t2@(V x p d ss') = do
       args <- delta p d k ss
@@ -108,10 +107,11 @@ safeInsertExpr t1 t2 cg e = do
     Just cg' -> return cg'
     Nothing  -> do
       ctx <- ask
-      Core.pprPanic "Constraint conflict. " (Core.text "The constraint " <> pprConstraint t1 t2 <> Core.text " cannot be met!\n" <> arisingFrom e <> pprRelevantBinds t1 t2 cg (var ctx))
+      Core.pprPanic "Constraint conflict. " (Core.text "The constraint " <> pprConstraint t1 t2 <> Core.text " cannot be met!\n" <> arisingFrom e <> pprRelevantBinds t1 t2 cg (var ctx) <> pprRelevantConstraints t1 t2 cg)
   where
-    arisingFrom e = text "Arising from the expression: " <> ppr e
+    arisingFrom e = text "\nArising from the expression: " <> ppr e <> text "\n"
     pprConstraint t1 t2 = ppr t1 <> text " <: " <> ppr t2
+    pprRelevantConstraints t1 t2 cg = text "\nRelevant constraints include: " <> Core.interppSP (toList cg)
     pprRelevantBinds t1 t2 cg var = text "Relevant binds include: " <> Core.interppSP (fmap (\(k, (Forall _ _ _ t)) -> (k, t)) $ M.toList $ M.filter p var)
     p (Forall _ ns cs t) = (stems t1 ++ stems t2) `doesIntersect` ([j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t)
     doesIntersect l1 l2 = any (`elem` l2) l1
@@ -124,13 +124,16 @@ inExpr ma e = do
     Just a -> return a
     Nothing  -> Core.pprPanic "Constraint conflict arrising from: " (Core.ppr e)
 
+-- Insert a variable into the context
 insertVar :: Core.Var -> TypeScheme -> Context ->  Context
 insertVar x f ctx = ctx{var = M.insert x f $ var ctx}
 
-insertMany :: [Core.Var] -> [TypeScheme] -> Context -> Context
+-- Insert many variable into the context
+insertMany :: [Core.Var] -> [TypeScheme] -> Context ->  Context
 insertMany [] [] ctx = ctx
-insertMany (x:xs) (t:ts) ctx = insertVar x t (insertMany xs ts ctx)
+insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 
+-- Extract a variable from (local/global) context
 safeVar :: Core.Var -> InferM TypeScheme
 safeVar v = do
   ctx <- ask
@@ -142,6 +145,7 @@ safeVar v = do
       let t = Core.varType v
       in freshScheme $ toSortScheme t
 
+-- Extract a constructor from (local/global) context
 safeCon :: Core.DataCon -> InferM (Core.TyCon, [Core.Var], [Sort])
 safeCon k = do
   ctx <- ask
@@ -178,8 +182,6 @@ freshScheme (SForall as (SArrow s1 s2)) = do
   if length l1 + length l2 > 0
     then error "Rank 1 please."
     else return $ Forall as (v1 ++ v2) [] (t1 :=> t2)
--- freshScheme (SForall as (SApp s1 s2)) = return $ Forall as [] [] (Con (TApp s1 s2) [])
--- freshScheme (SForall as (SConApp tc args)) = return $ Forall as [] [] (Con (TConApp tc args) [])
 
 -- Extract polarised and instantiated constructor arguments from context
 delta :: Bool -> Core.TyCon -> Core.DataCon -> [Sort] -> InferM [PType]
@@ -191,17 +193,18 @@ delta p d k ss = do
     else Core.pprPanic "DataType doesn't contain constructor: " (Core.ppr (d, k))
 
 -- Add restricted constraints to an unquantifed type scheme
+quantifyWith :: ConGraph -> [TypeScheme] -> InferM [TypeScheme]
+quantifyWith cg@ConGraph{succs = s, preds = p} ts = do
+  -- Take the full transitive closure of the graph using rewriting rules
+  lcg <- saturate cg
 
-quantifyWith :: ConGraph -> TypeScheme -> InferM TypeScheme
-quantifyWith cg@ConGraph{succs = s, preds = p} t@(Forall as _ _ u) = do
-   -- Take the full transitive closure of the graph using rewriting rules
-   lcg <- saturate cg
+  -- Check all the stems in the interface
+  let chkStems = all (\s -> any (\(Forall _ _ _ u) -> s `elem` stems u) ts) . stems
 
-   -- Check all the stems in the interface
-   let chkStems = all (`elem` stems u) . stems
+  -- Restricted congraph with chkStems
+  let edges = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
 
-   -- Restricted congraph with chkStems
-   let ns = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
+  -- Only quantified by refinement variables that appear in the inferface
+  let nodes = L.nub $ ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges])
 
-   -- Only quantified by refinement variables that appear in the inferface
-   return $ Forall as (L.nub $ [x | (Var x, _) <- ns, (_, Var x) <- ns]) ns u
+  return $ cg `seq` [Forall as nodes edges u | Forall as _ _ u <- ts]

@@ -31,9 +31,9 @@ module Test where
 --   Cst j -> Cst j
 --   App y z -> App (subst g y) (subst g y)
 
-not :: Bool -> Bool
-not True = False
-not False = True
+-- not :: Bool -> Bool
+-- not True = False
+-- not False = True
 
 -- filterLength3 :: [[a]] -> [[a]]
 -- filterLength3 = foldr (\x rs -> if (length x) == 3 then  x : rs else rs) [] 
@@ -44,7 +44,7 @@ not False = True
 
 -- isOdd :: Nat -> Bool
 -- isOdd Z = False
--- isOdd (S n) = isOdd n
+-- isOdd (S n) = isEven n
 
 -- foldn :: (a -> a) -> a -> Nat -> a
 -- foldn s z Z = z
@@ -76,7 +76,9 @@ not False = True
 --               biggerSorted = quicksort1 c2'
 --           in  smallerSorted ++ [x] ++ biggerSorted
 
-head (x:xs) = x
+head' (x:xs) = x
+
+test = head' []
 
 -- liftA2 :: (Applicative f, Functor f) => (a -> b -> c) -> f a -> f b -> f c
 -- liftA2 f x = (<*>) (fmap f x)

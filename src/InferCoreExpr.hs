@@ -7,7 +7,7 @@ module InferCoreExpr
 
 import Types
 import InferM
-import GenericConGraph
+import ConGraph
 
 import Control.Monad.RWS hiding (Sum)
 import Control.Monad.Trans.Maybe
@@ -15,6 +15,7 @@ import Control.Arrow
 import Data.List hiding (union)
 import Data.Maybe
 import qualified Data.Map as M
+import qualified Data.List as L
 
 import qualified GhcPlugins as Core
 import qualified TyCoRep as T
@@ -23,22 +24,17 @@ import Kind
 
 import Debug.Trace
 
-data CaseAlt = Default | Literal [Core.Literal] | DataCon [(Core.DataCon, [Sort], [Type])] | Empty
+-- The type of a case expression
+data CaseAlt = Default | Literal | DataCon [(Core.DataCon, [Sort], [Type])] | Empty
 
--- List all free variables of an expression
-freeVars :: Core.Expr Core.Var -> [Core.Var]
-freeVars (Core.Var i) = [i]
-freeVars (Core.Lit l) = []
-freeVars (Core.App e1 e2) = freeVars e1 ++ freeVars e2
-freeVars (Core.Lam x e) = freeVars e \\ [x]
-freeVars (Core.Let b e) = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) \\ Core.bindersOf b
-freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae \\ bs | (_, bs, ae) <- as] \\ [x])
-freeVars (Core.Tick _ e) = freeVars e
-freeVars (Core.Type t) = []
-freeVars (Core.Coercion c) = []
-
-instance Eq Core.CoreBind where
-  b == b' = Core.bindersOf b == Core.bindersOf b'
+-- Process a core type/evidence application
+fromPolyVar :: Core.CoreExpr -> Maybe (Core.Var, [Sort])
+fromPolyVar (Core.Var i) = Just (i, [])
+fromPolyVar (Core.App e1 (Core.Type t)) = do
+  (i, ts) <- fromPolyVar e1
+  return (i, ts ++ [toSort t])
+fromPolyVar (Core.App e1 (Core.Var i)) | Core.isDictId i =  fromPolyVar e1 --For typeclass evidence
+fromPolyVar _ = Nothing
 
 -- Topological sort dependancies
 toposort :: [(Core.CoreBind, [Core.CoreBind])] -> [Core.CoreBind]
@@ -50,11 +46,47 @@ toposort xs = foldl f [] [(x, y \\ [x]) | (x, y) <- xs]
         Just i -> uncurry (++) $ first (++ xs) $ splitAt i ts
         _      -> ts ++ xs ++ [x]
 
+-- List all free variables of an expression
+freeVars :: Core.Expr Core.Var -> [Core.Var]
+freeVars (Core.Var i) = [i]
+freeVars (Core.Lit l) = []
+freeVars (Core.App e1 e2) = freeVars e1 ++ freeVars e2
+freeVars (Core.Lam x e) = freeVars e \\ [x]
+freeVars (Core.Let b e) = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) \\ Core.bindersOf b
+freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae \\ bs | (_, bs, ae) <- as] \\ [x])
+freeVars (Core.Cast e _) = freeVars e
+freeVars (Core.Tick _ e) = freeVars e
+freeVars (Core.Type t) = []
+freeVars (Core.Coercion c) = []
+
+-- Used to compare groups
+instance Eq Core.CoreBind where
+  b == b' = Core.bindersOf b == Core.bindersOf b'
+
+-- Find the group which the variables are contained in
 groupify :: [Core.Var] -> Core.CoreProgram -> [Core.CoreBind]
 groupify xs p = mapMaybe f xs
   where
     f :: Core.Var -> Maybe Core.CoreBind
     f x = case [b | b <- p, x `elem` Core.bindersOf b] of {(h:_) -> Just h; _ -> Nothing}
+
+
+-- Add restricted constraints to an unquantifed type scheme
+quantifyWith :: ConGraph -> [TypeScheme] -> InferM [TypeScheme]
+quantifyWith cg@ConGraph{succs = s, preds = p} ts = do
+  -- Take the full transitive closure of the graph using rewriting rules
+  lcg <- saturate cg
+
+  -- Check all the stems in the interface
+  let chkStems = all (\s -> any (\(Forall _ _ _ u) -> s `elem` stems u) ts) . stems
+
+  -- Restricted congraph with chkStems
+  let edges = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
+
+  -- Only quantified by refinement variables that appear in the inferface
+  let nodes = L.nub $ ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ concat [vars u | Forall _ _ _ u <- ts])
+
+  return $ [Forall as nodes edges u | Forall as _ _ u <- ts]
 
 -- Infer program
 inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
@@ -101,18 +133,20 @@ inferPoly x ts e = do
     Just k -> do
       -- Infer fully instantiated polymorphic constructor
       (d, as, args) <- safeCon k
-      args' <- mapM (fresh . subSortVars as ts) args
+      args' <- mapM (fresh . subTypeVars as ts) args
       t  <- fresh $ SData d ts
-      cg <- safeInsertExpr (K k ts args') t empty e
+      cg <- safeInsertExpr (Con k ts args') t empty e
       return (foldr (:=>) t args', cg)
+
     Nothing ->
       case Core.isPrimOpId_maybe x of
         Just p -> do
           -- Infer fully instaitated polymorphic primitive operator
           let (as, args, rt, _, _) = Prim.primOpSig p
-          args' <- mapM (fresh . subSortVars as ts . toSort) args
-          t  <- fresh $ subSortVars as ts $ toSort rt
+          args' <- mapM (fresh . subTypeVars as ts . toSort) args
+          t  <- fresh $ subTypeVars as ts $ toSort rt
           return (foldr (:=>) t args', empty)
+
         Nothing -> do
           -- Infer fully instantiated polymorphic variable
           (Forall as xs cs u) <- safeVar x
@@ -124,13 +158,13 @@ inferPoly x ts e = do
                 Just cg -> do
                   -- Instantiate typescheme
                   ts' <- mapM fresh ts
-                  let cg' = subConGraphTypeVars as ts' cg
-                  let xs' = fmap (\(RVar (x, p, d, ss)) -> RVar (x, p, d, subSortVars as (broaden <$> ts') <$> ss)) xs
+                  let cg' = subTypeVars as ts' cg
+                  let xs' = fmap (\(RVar (x, p, d, ss)) -> RVar (x, p, d, subTypeVars as (broaden <$> ts') <$> ss)) xs
                   ys      <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs'
-                  let u'  = subTypeVars as ts' $ sub xs' ys u
+                  let u'  = subTypeVars as ts' $ subRefinementVars xs' ys u
                   
                   -- Import variables constraints at type
-                  cg' <- foldM (\cg' (x, y) -> substitute y cg' x) cg' (zip xs' ys) `inExpr` ("Sub", e)
+                  cg' <- foldM (\cg' (x, y) -> substitute x y cg') cg' (zip xs' ys) `inExpr` ("Sub", e)
 
                   v <- fresh $ toSort $ Core.exprType e
                   cg'' <- safeInsertExpr u' v cg' e
@@ -202,35 +236,40 @@ infer e'@(Core.Let b e) = do
   -- Restrict constraints to the interface
   ts' <- quantifyWith cg' ts
 
-  -- Infer in body
+  -- Infer in body with infered typescheme to the environment
   (t, icg) <- local (insertMany xs ts') (infer e)
   cg'' <- union cg' icg `inExpr` ("169", e')
 
   cg''' <- closeScope scope cg''
   return (t, cg''')
 
+  -- Infer case expession
 infer e'@(Core.Case e b rt as) = do
   scope <- get
 
-  -- Infer case expession
-  let es = toSort $ Core.exprType e
-  let mss = case es of {SData _ ss -> Just ss; SBase _ ss -> Just ss; _ -> Nothing}
-  et <- fresh es
+  -- Fresh return type
   t  <- fresh $ toSort rt
+
+  -- Infer expression to pattern match on
+  let es = toSort $ Core.exprType e
+  let mss = case es of {SData _ ss -> Just ss; _ -> Nothing}
+  et <- fresh es
   (t0, c0) <- infer e
   c0' <- safeInsertExpr et t0 c0 e
+
   (caseType, cg) <- local (insertVar b $ Forall [] [] [] et) $ foldM (\(caseType, cg) a ->
     case a of
       -- Infer constructor alternative
       (Core.DataAlt d, bs, rhs) ->
         case mss of
           Just ss ->
-            if Core.exprIsBottom rhs
-              then
-                -- Pass information to user about error
-                return (caseType, cg)
+            if Core.exprIsBottom rhs -- If rhs is bottom it is not a valid case
+              then return (caseType, cg)
               else do
+                -- Add variables introduced by the pattern
                 ts <- mapM (fresh . toSort . Core.varType) bs
+
+                -- Ensure return type is valid
                 (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] []) ts) (infer rhs)
                 cgi' <- safeInsertExpr ti' t cgi rhs
                 cg' <- union cg cgi' `inExpr` ("186", rhs)
@@ -242,21 +281,21 @@ infer e'@(Core.Case e b rt as) = do
 
       -- Infer literal alternative
       (Core.LitAlt l, _, rhs) -> do
+        -- Ensure return type is valid
         (ti', cgi) <- infer rhs
         cgi' <- safeInsertExpr ti' t cgi rhs
         cg' <- union cg cgi' `inExpr` ("197", rhs)
         case caseType of
-          Empty      -> return (Literal [l], cg')
-          Literal s  -> return (Literal (l:s), cg')
-          Default    -> return (Default, cg')
+          Empty   -> return (Literal, cg')
+          Literal -> return (Literal, cg')
+          Default -> return (Default, cg')
 
       -- Infer default alternative
       (Core.DEFAULT, _, rhs) ->
-        if Core.exprIsBottom rhs
-          then
-            -- Pass information to user about error
-            return (caseType, cg)
+        if Core.exprIsBottom rhs -- If rhs is bottom it is not a valid case
+          then return (caseType, cg)
           else do
+            -- Ensure return type is valid
             (ti', cgi) <- infer rhs
             cgi' <- safeInsertExpr ti' t cgi rhs
             cg' <- union cg cgi' `inExpr` ("212", rhs)
@@ -265,9 +304,9 @@ infer e'@(Core.Case e b rt as) = do
 
   -- Insure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
-    Default -> return cg
-    DataCon dts -> safeInsertExpr t0 (Sum [(TData dc ss, ts) | (dc, ss, ts) <- dts]) cg e'
-    Literal lss -> safeInsertExpr t0 (Sum [(TLit l, []) | l <- lss]) cg e'
+    Default     -> return cg
+    DataCon dts -> safeInsertExpr t0 (Sum [(dc, ss, ts) | (dc, ss, ts) <- dts]) cg e'
+    Literal     -> Core.pprPanic "Literal cases require default!" (Core.ppr ())
 
   cg' <- closeScope scope cg
   return (t, cg')

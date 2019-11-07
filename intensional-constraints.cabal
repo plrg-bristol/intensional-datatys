@@ -27,9 +27,9 @@ source-repository head
 
 library
   exposed-modules:
-      GenericConGraph
       Types
       InferM
+      ConGraph
       InferCoreExpr
       Lib
   other-modules:

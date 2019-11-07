@@ -35,8 +35,8 @@ module Test where
 -- not True = False
 -- not False = True
 
-filterLength3 :: Foldable t => [t a] -> [t a]
-filterLength3 = foldr (\x rs -> if (length x) == 3 then  x : rs else rs) [] 
+-- filterLength3 :: Foldable t => [t a] -> [t a]
+-- filterLength3 = foldr (\x rs -> if (length x) == 3 then  x : rs else rs) [] 
 
 -- isEven :: Nat -> Bool
 -- isEven Z = True

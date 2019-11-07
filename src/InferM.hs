@@ -224,6 +224,6 @@ quantifyWith cg@ConGraph{succs = s, preds = p} ts = do
   let edges = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
 
   -- Only quantified by refinement variables that appear in the inferface
-  let nodes = L.nub $ ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges])
+  let nodes = L.nub $ ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ concat [vars u | Forall _ _ _ u <- ts])
 
   return $ cg `seq` [Forall as nodes edges u | Forall as _ _ u <- ts]

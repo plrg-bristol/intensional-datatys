@@ -19,6 +19,7 @@ module Types
       broaden,
       sub,
       stems,
+      vars,
       toSort,
       toSortScheme,
       fromPolyVar,
@@ -80,7 +81,10 @@ fromPolyVar _ = Nothing
 
 toSort :: Core.Type -> Sort
 toSort (T.TyVarTy v) = SVar v
-toSort (T.FunTy t1 t2) = let s1 = toSort t1; s2 = toSort t2 in SArrow s1 s2
+toSort (T.FunTy t1 t2) = 
+  let s1 = toSort t1
+      s2 = toSort t2
+  in SArrow s1 s2
 toSort (T.TyConApp t args) = SData t $ fmap toSort args
 toSort (T.AppTy t1 t2) =
   let s1 = toSort t1
@@ -93,7 +97,7 @@ toSortScheme (T.TyVarTy v) = SForall [] (SVar v)
 toSortScheme (T.FunTy t1 t2)
   | Core.isPredTy t1 = 
     case t1 of
-      T.TyConApp _ args -> let as1 = []; SForall as2 s2 = toSortScheme t2 in SForall (as1++as2) s2
+      T.TyConApp _ _ -> toSortScheme t2
   | otherwise = let s1 = toSort t1; SForall as s2 = toSortScheme t2 in SForall as (SArrow s1 s2)
 toSortScheme (T.ForAllTy b t) =
   let (SForall as st) = toSortScheme t
@@ -108,12 +112,13 @@ instance Core.Outputable UType where
   ppr (TData dc ss) = ppr dc <> intercalate' "@" (fmap ppr ss)
   ppr TArrow = text "->"
   ppr (TLit l) = ppr l
-  ppr (TApp s1 s2) = text "App" <> ppr s1 <> text " " <> ppr s2
+  ppr (TApp s1 s2) = ppr s1 <> text " $ " <> ppr s2
 
 instance Show UType where
   show (TVar v) = show v
   show (TBase b ss) = show b ++ intercalate "@" (fmap show ss)
   show (TData dc ss) = show dc ++ intercalate "@" (fmap show ss)
+  show (TApp t1 t2) = show t1 ++ " $ " ++ show t2
 
 instance Core.Outputable RVar where
   ppr (RVar (x, p, d, ss)) = text "[" <> ppr x <> (if p then text"+" else text "-") <> ppr d <> intercalate' "@" (fmap ppr ss) <> text "]"
@@ -213,6 +218,11 @@ stems (V x _ _ _) = [x]
 stems (Sum cs) = concatMap (\(_, cargs) -> concatMap stems cargs) cs
 stems _ = []
 
+vars :: Type -> [RVar]
+vars (Var v) = [v]
+vars (Sum cs) = concatMap (\(_, cargs) -> concatMap vars cargs) cs
+vars _ = []
+
 upArrow :: Int -> [PType] -> [Type]
 upArrow x = fmap upArrow'
   where
@@ -258,6 +268,12 @@ broaden (K v ss ts) = error "" -- Constructors only as refinements of data types
 broaden (Con (TLit _) _) = error "" -- TLit only occurs as a result of case analysis
 broaden (Con (TApp t s) []) = SApp (broaden t) s
 
+applySort :: Type -> Sort -> Type
+applySort (V x p d ss) s = V x p d (ss ++ [s])
+applySort (B b ss) s = B b (ss ++ [s])
+applySort (K v ss ts) s = K v (ss ++ [s]) ts
+applySort t s = Con (TApp t s) []
+
 subTypeVars :: [Core.Var] -> [Type] -> Type -> Type
 subTypeVars [] [] u = u
 subTypeVars (a:as) (t:ts) (Con (TVar a') [])
@@ -274,12 +290,12 @@ subTypeVars as ts (V x p d ss) =
   in V x p d (fmap (subSortVars as ts'') ss)
 subTypeVars as ts (t1 :=> t2) = subTypeVars as ts t1 :=> subTypeVars as ts t2
 subTypeVars as ts  l@(Con (TLit _) []) = l
-subTypeVars as ts (Con (TApp t1 t2) []) =
-  let ts' = fmap broaden ts
-  in case subTypeVars as ts t1 of
-    V x p d ss -> V x p d [subSortVars as ts' t2] -- Core.pprPanic "We ahve made a V" (Core.ppr (x, p, d, ss, as, ts))
-    -- K v ss ts' -> Core.pprPanic "We have made an K" (Core.ppr (t1, t2, v, ss, as, ts'))
-    _          -> Con (TApp (subTypeVars as ts t1) (subSortVars as ts' t2)) []
+subTypeVars as ts (Con (TApp t1 t2) []) = 
+  let ts' = broaden <$> ts
+  in subTypeVars as ts t1 `applySort` subSortVars as ts' t2
+    -- V x p d ss -> V x p d [subSortVars as ts' t2] -- Core.pprPanic "We ahve made a V" (Core.ppr (x, p, d, ss, as, ts))
+    -- -- K v ss ts' -> Core.pprPanic "We have made an K" (Core.ppr (t1, t2, v, ss, as, ts'))
+    -- _          -> Con (TApp (subTypeVars as ts t1) (subSortVars as ts' t2)) []
 
 subTypeVars as ts (Sum cs) = Sum $ fmap (\(c, args) -> (c, fmap (subTypeVars as ts) args)) cs
 

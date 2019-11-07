@@ -17,6 +17,7 @@ import Data.Maybe
 import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
+import qualified TyCoRep as T
 import qualified PrimOp as Prim
 import Kind
 
@@ -164,7 +165,7 @@ infer e@(Core.App e1 e2) =
           return (t4, cg')
 
 infer e'@(Core.Lam x e) =
-  if isLiftedTypeKind (Core.varType x) || Core.isDictId x
+  if isKind (Core.varType x) || Core.isDictId x
     then
       -- Type abstraction
       infer e
@@ -173,6 +174,9 @@ infer e'@(Core.Lam x e) =
       t1 <- fresh $ toSort $ Core.varType x
       (t2, cg) <- local (insertVar x $ Forall [] [] [] t1) (infer e)
       return (t1 :=> t2, cg)
+  where
+    isKind (T.FunTy t1 t2) = isLiftedTypeKind t2
+    isKind t = isLiftedTypeKind t
 
 infer e'@(Core.Let b e) = do
   scope <- get

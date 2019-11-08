@@ -2,18 +2,12 @@ module Lib
     ( plugin
     ) where
 
-import Control.Monad.RWS hiding (Sum, Alt)
+import Control.Monad.RWS
 
-import Data.List
-import qualified Data.Map as M hiding (partition, filter, drop, foldr)
-
-import Outputable
-import DynFlags
-import Pretty
+import qualified Data.Map as M
 
 import Types
 import InferM
-import ConGraph
 import PrettyPrint
 import InferCoreExpr
 

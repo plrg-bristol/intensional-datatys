@@ -1,14 +1,14 @@
 module Test where
 
-import Prelude hiding (Bool, True, False, not)
+-- import Prelude hiding (Bool, True, False, not)
 
 data Tm = Var Int | Cst Int | App Tm Tm
 
-data Bool = True | False
+-- data Bool = True | False
 
 data List a = Empty | Cons a (List a)
 
-data List' = Empty' | Cons' Nat List'
+type List' = List Nat -- = Empty' | Cons' Nat List'
 
 data Nat = Z | S Nat
 
@@ -53,7 +53,7 @@ foldr' f x Empty = x
 foldr' f x (Cons a as) = f a (foldr' f x as)
 
 rebuild :: List' -> a
-rebuild (Cons' a b) = rebuild b
+rebuild (Cons a b) = rebuild b
 
 test1 x xs = [a | a <- xs, a <= x]
 
@@ -62,18 +62,13 @@ quicksort1 [] = []
 quicksort1 (x:xs) =
   let comp1 = [a | a <- xs, a <= x]
       comp2 = [a | a <- xs, a > x]
-  in
-  case comp1 of
-    c1'@(c1:cs1) -> 
-      case comp2 of
-        c2'@(c2:cs2) -> 
-          let smallerSorted = quicksort1 c1'
-              biggerSorted = quicksort1 c2'
-          in  smallerSorted ++ [x] ++ biggerSorted
+      smallerSorted = quicksort1 comp1
+      biggerSorted = quicksort1 comp2
+  in smallerSorted ++ [x] ++ biggerSorted
 
 liftA2 :: (Applicative f, Functor f) => (a -> b -> c) -> f a -> f b -> f c
 liftA2 f x = (<*>) (fmap f x)
 
-test = head' []
+-- test = head' []
 
 head' (x:xs) = x

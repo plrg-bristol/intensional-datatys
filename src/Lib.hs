@@ -3,13 +3,18 @@ module Lib
     ) where
 
 import Types
-import GenericConGraph
 import InferM
+import ConGraph
+import PrettyPrint
 import InferCoreExpr
 
 import Control.Monad.RWS hiding (Sum, Alt)
 import qualified Data.Map as M hiding (partition, filter, drop, foldr)
 import Data.List
+
+import Outputable
+import DynFlags
+import Pretty
 
 import GhcPlugins
 
@@ -18,28 +23,17 @@ plugin = defaultPlugin { installCoreToDos = install }
   where
     install _ todo = return ([ CoreDoStrictness, CoreDoPluginPass "Constraint Inference" (liftIO. inferGuts)] ++ todo)
 
-name = nameStableString . getName
-
 inferGuts :: ModGuts -> IO ModGuts
-inferGuts guts@ModGuts{mg_binds = bs, mg_tcs = tcs, mg_module = m} =
-    if moduleNameString (moduleName m) `elem` ["Test"]
-      then do
-        let env = Context{con = listToUFM (foldr buildContext [] tcs), var = M.empty}
-        let p = filter (all isOfMain . bindersOf) bs
-        -- pprTraceM "" (ppr p)
-        let ((ts, _), _, _) = runRWS (listen $ inferProg p) env 0
-        mapM_ (\(t, Forall as xs cs u) -> do
-          putStr (show t ++ "::")
-          putStrLn $ disp as xs cs u
-          putStrLn "") ts
-        return guts
-      else
-        return guts
-  where
-    -- Generalise this to check module name and filter type/module constructors
-    isOfMain b = "$main$Test$" `isPrefixOf` name b
+inferGuts guts@ModGuts{mg_binds = p, mg_tcs = tcs, mg_module = m} = do
+  let env = Context{con = listToUFM (foldr buildContext [] tcs), var = M.empty}
+  -- pprTraceM "" (ppr p)
+  let ((ts, _), _, _) = runRWS (listen $ inferProg p) env 0
+  putStrLn ""
+  putStrLn $ showSDocUnsafe $ format ts
+  putStrLn ""
+  return guts
 
--- Add tycon to underlying delta (polarisation is implicit)
+-- Add type constructor to underlying delta (polarisation is implicit)
 buildContext :: TyCon -> [(DataCon, (TyCon, [Var], [Sort]))] -> [(DataCon, (TyCon, [Var], [Sort]))]
 buildContext t xs = xs' ++ xs
   where

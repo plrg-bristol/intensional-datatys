@@ -1,5 +1,6 @@
 module InferM (
   InferM,
+  Context (Context, var, con),
   safeVar,
   safeCon,
   delta,
@@ -18,8 +19,10 @@ import qualified GhcPlugins as Core
 
 import Types
 
+-- The inference monad; a reader (i.e. local) context and a state (i.e. global) counter for taking fresh variables
 type InferM = RWS Context () Int
 
+-- The variables (gamma) and constructors (delta) in scope
 data Context = Context {
   var :: M.Map Core.Var TypeScheme,
   con :: Core.UniqFM {- Core.DataCon -} (Core.TyCon, [Core.Var], [Sort]) -- k -> (d, as, args)

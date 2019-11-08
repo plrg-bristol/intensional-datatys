@@ -1,11 +1,13 @@
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE PatternSynonyms, MultiParamTypeClasses #-}
 
 module Types (
   Sort (SVar, SBase, SData, SArrow, SApp),
   RVar (RVar),
-  Type (Var, V, Con, TVar, Base, App, (:=>), Sum, Dot),
+  Type (Var, V, Sum, Con, Dot, TVar, Base, (:=>), App),
   SortScheme (SForall),
   TypeScheme (Forall),
+  vars,
+  stems,
 
   toSort,
   toSortScheme,
@@ -16,7 +18,7 @@ module Types (
 
   TypeVars (subTypeVar),
   subTypeVars,
-  broaden
+  subRefinementVars
 ) where
 
 import qualified GhcPlugins as Core
@@ -63,6 +65,17 @@ data SortScheme = SForall [Core.Var] Sort
 -- Refinement quantified sort scheme
 data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type
 
+-- The refinement variables present in a type
+vars :: Type -> [RVar]
+vars (Var v)     = [v]
+vars (Sum cs)    = [v | (_, _, args) <- cs, a <- args, v <- vars a]
+vars (t1 :=> t2) = vars t1 ++ vars t2
+vars (App t s)   = vars t
+vars _           = []
+
+-- The stems of refinement variables present in a type
+stems :: Type -> [Int]
+stems t = [x | RVar (x, _, _, _) <- vars t]
 
 
 
@@ -127,35 +140,15 @@ upArrow x (PApp s1 s2)   = App (upArrow x s1) s2
 
 
 -- Substitute type variables into a type-like structure
-class TypeVars a where
-  subTypeVar :: Core.Var -> a -> a -> a
+class TypeVars a t where
+  subTypeVar :: Core.Var -> t -> a -> a
 
--- Substitute many variables
-subTypeVars :: TypeVars a => [Core.Var] -> [a] -> a -> a
+-- Substitute many type variables
+subTypeVars :: TypeVars a t => [Core.Var] -> [t] -> a -> a
 subTypeVars [] [] = id
 subTypeVars (a:as) (t:ts) = subTypeVar a t . subTypeVars as ts
 
-instance TypeVars Sort where
-  subTypeVar a t (SVar a')
-    | a == a'   = t
-    | otherwise = SVar a'
-  subTypeVar a t (SBase b as)   = SBase b (subTypeVar a t <$> as)
-  subTypeVar a t (SData d as)   = SData d (subTypeVar a t <$> as)
-  subTypeVar a t (SArrow s1 s2) = SArrow (subTypeVar a t s1) (subTypeVar a t s2)
-  subTypeVar a t (SApp s1 s2)   = SApp (subTypeVar a t s1) (subTypeVar a t s2)
-
-instance TypeVars Type where
-  subTypeVar a t (V x p d as) = V x p d (subTypeVar a (broaden t) <$> as)
-  subTypeVar a t (Sum s)      = Sum $ fmap (\(d, as, ts) -> (d, subTypeVar a (broaden t) <$> as, subTypeVar a t <$> ts)) s
-  subTypeVar _ _ Dot          = Dot
-  subTypeVar a t (TVar a')
-    | a == a'   = t
-    | otherwise = TVar a'
-  subTypeVar a t (Base b as)  = Base b (subTypeVar a (broaden t) <$> as)
-  subTypeVar a t (t1 :=> t2)  = subTypeVar a t t1 :=> subTypeVar a t t2
-  subTypeVar a t (App t1 s2)  = subTypeVar a t t1 `applySort` subTypeVar a (broaden t) s2
-
--- Derefine a type to a sort
+-- De-refine a type to a sort
 broaden :: Type -> Sort
 broaden (V _ _ d as)          = SData d as
 broaden (Sum ((d, as, ts):_)) = SData (Core.dataConTyCon d) as -- Sum must be homogeneous
@@ -169,4 +162,41 @@ applySort :: Type -> Sort -> Type
 applySort (V x p d as) a    = V x p d (as ++ [a])
 applySort (Base b as) a     = Base b (as ++ [a])
 applySort (Con k as args) a = Con k (as ++ [a]) args
-applySort t a               = App t a
+applySort t a               = App t a -- Nonreducible
+
+instance TypeVars Sort Sort where
+  subTypeVar a t (SVar a')
+    | a == a'   = t
+    | otherwise = SVar a'
+  subTypeVar a t (SBase b as)   = SBase b (subTypeVar a t <$> as)
+  subTypeVar a t (SData d as)   = SData d (subTypeVar a t <$> as)
+  subTypeVar a t (SArrow s1 s2) = SArrow (subTypeVar a t s1) (subTypeVar a t s2)
+  subTypeVar a t (SApp s1 s2)   = SApp (subTypeVar a t s1) (subTypeVar a t s2)
+
+instance TypeVars Type Type where
+  subTypeVar a t (V x p d as) = V x p d (subTypeVar a t <$> as)
+  subTypeVar a t (Sum s)      = Sum $ fmap (\(d, as, ts) -> (d, subTypeVar a t <$> as, subTypeVar a t <$> ts)) s
+  subTypeVar _ _ Dot          = Dot
+  subTypeVar a t (TVar a')
+    | a == a'   = t
+    | otherwise = TVar a'
+  subTypeVar a t (Base b as)  = Base b (subTypeVar a t <$> as)
+  subTypeVar a t (t1 :=> t2)  = subTypeVar a t t1 :=> subTypeVar a t t2
+  subTypeVar a t (App t1 s2)  = subTypeVar a t t1 `applySort` subTypeVar a t s2
+
+instance TypeVars Sort Type where
+  subTypeVar a t = subTypeVar a (broaden t)
+
+-- Substitute refinement variables into a type
+subRefinementVar :: RVar -> Type -> Type -> Type
+subRefinementVar x y (Var x')
+  | x == x' = y
+subRefinementVar x y (Sum s) = Sum $ fmap (\(d, as, ts) -> (d, as, subRefinementVar x y <$> ts)) s
+subRefinementVar a t (t1 :=> t2) = subRefinementVar a t t1 :=> subRefinementVar a t t2
+subRefinementVar a t (App t1 s2) = App (subRefinementVar a t t1) s2 -- If refinement variables can induce type level reduction we lose orthogonality (and maybe soundness?)
+subRefinementVar _ _ t = t
+
+-- Substitute many refinement variables
+subRefinementVars :: [RVar] -> [Type] -> Type -> Type
+subRefinementVars [] [] = id
+subRefinementVars (a:as) (t:ts) = subRefinementVar a t . subRefinementVars as ts

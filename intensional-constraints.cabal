@@ -30,6 +30,7 @@ library
       Types
       InferM
       ConGraph
+      PrettyPrint
       InferCoreExpr
       Lib
   other-modules:

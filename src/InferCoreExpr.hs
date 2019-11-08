@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleInstances, BangPatterns #-}
 
 module InferCoreExpr
     (
@@ -12,7 +12,6 @@ import ConGraph
 import Control.Monad.RWS hiding (Sum)
 import Control.Monad.Trans.Maybe
 import Control.Arrow
-import Data.List hiding (union)
 import Data.Maybe
 import qualified Data.Map as M
 import qualified Data.List as L
@@ -33,16 +32,16 @@ fromPolyVar (Core.Var i) = Just (i, [])
 fromPolyVar (Core.App e1 (Core.Type t)) = do
   (i, ts) <- fromPolyVar e1
   return (i, ts ++ [toSort t])
-fromPolyVar (Core.App e1 (Core.Var i)) | Core.isDictId i =  fromPolyVar e1 --For typeclass evidence
+fromPolyVar (Core.App e1 e2) | Core.isPredTy (Core.exprType e2) = fromPolyVar e1 --For typeclass evidence
 fromPolyVar _ = Nothing
 
 -- Topological sort dependancies
 toposort :: [(Core.CoreBind, [Core.CoreBind])] -> [Core.CoreBind]
-toposort xs = foldl f [] [(x, y \\ [x]) | (x, y) <- xs]
+toposort xs = foldl f [] [(x, y L.\\ [x]) | (x, y) <- xs]
   where
     f :: [Core.CoreBind] -> (Core.CoreBind, [Core.CoreBind]) -> [Core.CoreBind]
-    f ts (x, xs) = nub $
-      case elemIndex x ts of
+    f ts (x, xs) = L.nub $
+      case L.elemIndex x ts of
         Just i -> uncurry (++) $ first (++ xs) $ splitAt i ts
         _      -> ts ++ xs ++ [x]
 
@@ -51,9 +50,9 @@ freeVars :: Core.Expr Core.Var -> [Core.Var]
 freeVars (Core.Var i) = [i]
 freeVars (Core.Lit l) = []
 freeVars (Core.App e1 e2) = freeVars e1 ++ freeVars e2
-freeVars (Core.Lam x e) = freeVars e \\ [x]
-freeVars (Core.Let b e) = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) \\ Core.bindersOf b
-freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae \\ bs | (_, bs, ae) <- as] \\ [x])
+freeVars (Core.Lam x e) = freeVars e L.\\ [x]
+freeVars (Core.Let b e) = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) L.\\ Core.bindersOf b
+freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae L.\\ bs | (_, bs, ae) <- as] L.\\ [x])
 freeVars (Core.Cast e _) = freeVars e
 freeVars (Core.Tick _ e) = freeVars e
 freeVars (Core.Type t) = []
@@ -81,10 +80,10 @@ quantifyWith cg@ConGraph{succs = s, preds = p} ts = do
   let chkStems = all (\s -> any (\(Forall _ _ _ u) -> s `elem` stems u) ts) . stems
 
   -- Restricted congraph with chkStems
-  let edges = L.nub $ [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
+  let edges = L.nub [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
 
   -- Only quantified by refinement variables that appear in the inferface
-  let nodes = L.nub $ ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ concat [vars u | Forall _ _ _ u <- ts])
+  let nodes = L.nub ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ concat [vars u | Forall _ _ _ u <- ts])
 
   return $ [Forall as nodes edges u | Forall as _ _ u <- ts]
 
@@ -94,7 +93,7 @@ inferProg p = do
 
   -- Reorder program with dependancies
   let defs = Core.bindersOfBinds p
-  let deps = [(b, groupify ((concatMap freeVars . Core.rhssOfBind) b \\ Core.bindersOf b) p) | b <- p]
+  let deps = [(b, groupify ((concatMap freeVars . Core.rhssOfBind) b L.\\ Core.bindersOf b) p) | b <- p]
   let p' = toposort deps
 
   -- Mut rec groups
@@ -110,12 +109,13 @@ inferProg p = do
     let (ts', cgs) = unzip binds
 
     -- Combine constraint graphs of group
-    bcg <- foldM (\bcg' cg -> union bcg' cg `inExpr` ("Union", bcg', cg)) empty cgs
+    bcg <- foldM union empty cgs
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
     -- Type/refinement variables bound in match those bound in t'
-    bcg' <- foldM (\bcg' (t', Forall _ _ _ t) -> safeInsert t' t bcg') bcg (zip ts' ts)
 
+    bcg' <- foldM (\bcg' (t', Forall _ _ _ t) -> insert t' t bcg') bcg (zip ts' ts)
+    
     -- Restrict constraints to the interface
     ts'' <- quantifyWith bcg' ts
 
@@ -135,7 +135,7 @@ inferPoly x ts e = do
       (d, as, args) <- safeCon k
       args' <- mapM (fresh . subTypeVars as ts) args
       t  <- fresh $ SData d ts
-      cg <- safeInsertExpr (Con k ts args') t empty e
+      cg <- insert (Con k ts args') t empty
       return (foldr (:=>) t args', cg)
 
     Nothing ->
@@ -150,27 +150,23 @@ inferPoly x ts e = do
         Nothing -> do
           -- Infer fully instantiated polymorphic variable
           (Forall as xs cs u) <- safeVar x
+          cg <- fromList cs
           if length as /= length ts
             then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
             else do
-              mcg <- runMaybeT $ fromList cs
-              case mcg of
-                Just cg -> do
-                  -- Instantiate typescheme
-                  ts' <- mapM fresh ts
-                  let cg' = subTypeVars as ts' cg
-                  let xs' = fmap (\(RVar (x, p, d, ss)) -> RVar (x, p, d, subTypeVars as (broaden <$> ts') <$> ss)) xs
-                  ys      <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs'
-                  let u'  = subTypeVars as ts' $ subRefinementVars xs' ys u
-                  
-                  -- Import variables constraints at type
-                  cg' <- foldM (\cg' (x, y) -> substitute x y cg') cg' (zip xs' ys) `inExpr` ("Sub", e)
+              -- Instantiate typescheme
+              ts' <- mapM fresh ts
+              let cg' = subTypeVars as ts' cg
+              let xs' = fmap (\(RVar (x, p, d, ss)) -> RVar (x, p, d, subTypeVars as ts <$> ss)) xs
+              ys      <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs'
+              let u'  = subTypeVars as ts' $ subRefinementVars xs' ys u
+              
+              -- Import variables constraints at type
+              cg'' <- foldM (\cg' (x, y) -> substitute x y cg') cg' (zip xs' ys)
 
-                  v <- fresh $ toSort $ Core.exprType e
-                  cg'' <- safeInsertExpr u' v cg' e
-                  return (v, cg'')
-
-                Nothing -> error "Variable has inconsistent constriants."
+              v <- fresh $ toSort $ Core.exprType e
+              cg''' <- insert u' v cg''
+              return (v, cg''')
 
   cg' <- closeScope scope cg
   return (t, cg')
@@ -194,9 +190,10 @@ infer e@(Core.App e1 e2) =
       (t2, c2) <- infer e2
       case t1 of
         t3 :=> t4 -> do
-          cg <- union c1 c2 `inExpr` ("Union", c1, c2)
-          cg' <- safeInsertExpr t2 t3 cg e
+          cg <- union c1 c2
+          cg' <- insert t2 t3 cg
           return (t4, cg')
+        _ ->  Core.pprPanic "case" (Core.ppr e1)
 
 infer e'@(Core.Lam x e) =
   if isKind (Core.varType x) || Core.isDictId x
@@ -208,9 +205,9 @@ infer e'@(Core.Lam x e) =
       t1 <- fresh $ toSort $ Core.varType x
       (t2, cg) <- local (insertVar x $ Forall [] [] [] t1) (infer e)
       return (t1 :=> t2, cg)
-  where
-    isKind (T.FunTy t1 t2) = isLiftedTypeKind t2
-    isKind t = isLiftedTypeKind t
+    where
+      isKind (T.FunTy t1 t2) = isLiftedTypeKind t2
+      isKind t = isLiftedTypeKind t || Core.isPredTy t
 
 infer e'@(Core.Let b e) = do
   scope <- get
@@ -226,19 +223,19 @@ infer e'@(Core.Let b e) = do
   (ts', cg) <- foldM (\(ts, cg) rhs -> do
     -- Infer each bind within the group, compiling constraints
     (t, cg') <- withBinds (infer rhs)
-    cg'' <- union cg cg' `inExpr` ("149", rhs)
+    cg'' <- union cg cg'
     return (t:ts, cg'')
     ) ([], empty) rhss
 
   --  Insure fresh types are quantified by infered constraint (t' < t)
-  cg' <- foldM (\cg (t', Forall as _ _ t) -> safeInsertExpr t' t cg e') cg (zip ts' ts)
+  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
 
   -- Restrict constraints to the interface
   ts' <- quantifyWith cg' ts
 
   -- Infer in body with infered typescheme to the environment
   (t, icg) <- local (insertMany xs ts') (infer e)
-  cg'' <- union cg' icg `inExpr` ("169", e')
+  cg'' <- union cg' icg
 
   cg''' <- closeScope scope cg''
   return (t, cg''')
@@ -255,7 +252,7 @@ infer e'@(Core.Case e b rt as) = do
   let mss = case es of {SData _ ss -> Just ss; _ -> Nothing}
   et <- fresh es
   (t0, c0) <- infer e
-  c0' <- safeInsertExpr et t0 c0 e
+  c0' <- insert et t0 c0
 
   (caseType, cg) <- local (insertVar b $ Forall [] [] [] et) $ foldM (\(caseType, cg) a ->
     case a of
@@ -271,8 +268,8 @@ infer e'@(Core.Case e b rt as) = do
 
                 -- Ensure return type is valid
                 (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] []) ts) (infer rhs)
-                cgi' <- safeInsertExpr ti' t cgi rhs
-                cg' <- union cg cgi' `inExpr` ("186", rhs)
+                cgi' <- insert ti' t cgi
+                cg' <- union cg cgi'
                 case caseType of
                   Empty     -> return (DataCon [(d, ss, ts)], cg')
                   DataCon s -> return (DataCon ((d, ss, ts):s), cg')
@@ -283,8 +280,8 @@ infer e'@(Core.Case e b rt as) = do
       (Core.LitAlt l, _, rhs) -> do
         -- Ensure return type is valid
         (ti', cgi) <- infer rhs
-        cgi' <- safeInsertExpr ti' t cgi rhs
-        cg' <- union cg cgi' `inExpr` ("197", rhs)
+        cgi' <- insert ti' t cgi
+        cg' <- union cg cgi'
         case caseType of
           Empty   -> return (Literal, cg')
           Literal -> return (Literal, cg')
@@ -297,15 +294,15 @@ infer e'@(Core.Case e b rt as) = do
           else do
             -- Ensure return type is valid
             (ti', cgi) <- infer rhs
-            cgi' <- safeInsertExpr ti' t cgi rhs
-            cg' <- union cg cgi' `inExpr` ("212", rhs)
+            cgi' <- insert ti' t cgi
+            cg' <- union cg cgi'
             return (Default, cg')
     ) (Empty, c0') as
 
   -- Insure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
     Default     -> return cg
-    DataCon dts -> safeInsertExpr t0 (Sum [(dc, ss, ts) | (dc, ss, ts) <- dts]) cg e'
+    DataCon dts -> insert t0 (Sum [(dc, ss, ts) | (dc, ss, ts) <- dts]) cg
     Literal     -> Core.pprPanic "Literal cases require default!" (Core.ppr ())
 
   cg' <- closeScope scope cg

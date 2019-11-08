@@ -1,21 +1,24 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
+
 module ConGraph (
       ConGraph (ConGraph, succs, preds, subs)
     , empty
     , fromList
     , toList
+
+    , insert
+    , substitute
+    , union
+
     , closeScope
     , saturate
-    , insert
-    , union
-    , substitute
-    , graphMap
-    -- , leastSolution
      ) where
 
 import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.RWS hiding (Sum)
 
+import Data.Maybe
 import qualified Data.Map as M
 import qualified Data.List as L
 import Data.Bifunctor (second)
@@ -23,6 +26,7 @@ import Data.Bifunctor (second)
 import qualified GhcPlugins as Core
 
 import Types
+import PrettyPrint
 import InferM
 
 -- Constraint graph
@@ -40,46 +44,24 @@ empty = ConGraph { succs = M.empty, preds = M.empty, subs = M.empty }
 fromList :: [(Type, Type)] -> InferM ConGraph
 fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 
--- Returns a list of constraints as internally represented
+-- Returns a list of constraints as internally represented (incomplete)
 toList :: ConGraph -> [(Type, Type)]
-toList ConGraph{succs = s, preds = p} = [(Var k, v) |(k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) |(k, vs) <- M.toList p, v <- vs]
+toList ConGraph{succs = s, preds = p} = [(Var k, v) | (k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) | (k, vs) <- M.toList p, v <- vs]
 
--- Early remove properly scoped bounded (intermediate) nodes that are not associated with the environment's stems (optimisation)
-closeScope :: Int -> [Int] -> ConGraph -> ConGraph
-closeScope scope envStems cg = foldr remove cg $ filter (\n -> all (\(n1, n2) -> notElem n [n1, n2] || (p n1 && p n2)) edges) $ filter p nodes
-  where
-    p (V x _ _ _) =  x > scope && (x `notElem` envStems)
-    p _           = False 
-    nodes = concat [[n1, n2] | (n1, n2) <- toList cg]
-    edges = toList cg
-    remove n ConGraph{succs = s, preds = p, subs = sb} = ConGraph{succs = mapRemove n s, preds = mapRemove n p, subs = sb}
-    mapRemove n m = M.filterWithKey (\k _ -> Var k /= n) (filter (/= n) <$> m)
+instance TypeVars ConGraph Type where
+  subTypeVar v t cg@ConGraph{succs = s, preds = p, subs = sb} =
+    ConGraph {
+      succs = M.mapKeys varMap $ fmap (subTypeVar v t) <$> s,
+      preds = M.mapKeys varMap $ fmap (subTypeVar v t) <$> p,
+      subs  = M.mapKeys varMap (subTypeVar v t <$> sb)
+    }
+    where
+      varMap (RVar (x, p, d, as)) = RVar (x, p, d, subTypeVar v t <$> as)
 
--- The fixed point of normalisation and transitivity
-saturate :: ConGraph -> InferM [(Type, Type)]
-saturate = saturate' . toList
-  where
-    saturate' cs = do
-      delta <- concatMapM (\(a, b) -> concatMapM (\(b', c) -> if b == b' then toNorm a c else return []) cs) cs
-      let cs' = L.nub (cs ++ delta)
-      if cs == cs'
-        then return cs
-        else saturate' cs'
 
-    concatMapM op = foldr f (return [])
-      where
-        f x xs = do x <- op x; if null x then xs else do xs <- xs; return $ x++xs
 
--- Apply function to set expressions without effecting variables
-graphMap :: (Type -> Type) -> ConGraph -> ConGraph
-graphMap f cg@ConGraph{succs = s, preds = p, subs = sb} =
-  ConGraph {
-    succs = fmap f <$> s,
-    preds = fmap f <$> p,
-    subs = f <$> sb
-  }
 
--- Normalise the constraints by applying recursive simplifications (the last 2 rules)
+-- Normalise the constraints by applying recursive simplifications
 toNorm :: Type -> Type -> InferM [(Type, Type)]
 toNorm t1@(Con k as ts) t2@(V x p d as') = do
   args <- delta p d k as
@@ -92,21 +74,17 @@ toNorm t1@(Con k as ts) t2@(V x p d as') = do
     else return [(Con k as ts', V x p d as'), (Con k as ts, Con k as ts')]
 
 toNorm t1@(V x p d as) t2@(Sum cs) = do
-  let cons = Core.tyConDataCons d
-  if all (\c -> c `elem` [c' | (c', _, []) <- cs]) cons
-    then return [] -- Sum is total and so is a trivial constraint
-    else do
-      s <- mapM refineCon cs
-      if cs /= s
-        then do
-          c1 <- toNorm (Sum s) (Sum cs)
-          c2 <- toNorm (V x p d as) (Sum s)
-          return (c1 ++ c2)
-        else return [(Sum s, Sum cs),(V x p d as, Sum s)]
-      where
-        refineCon (k, as, ts) = do
-          args <- delta p d k as
-          return (k, as, upArrow x <$> args)
+  cs' <- mapM refineCon cs
+  if cs' /= cs
+    then do
+      c1 <- toNorm (Sum cs') (Sum cs)
+      c2 <- toNorm (V x p d as) (Sum cs')
+      return (c1 ++ c2)
+    else return [(Sum cs', Sum cs), (V x p d as, Sum cs)]
+  where
+    refineCon (k, as, ts) = do
+      args <- delta p d k as
+      return (k, as, upArrow x <$> args)
 
 toNorm t1 t2 = return [(t1, t2)]
 
@@ -128,22 +106,24 @@ insertInner (t1 :=> t2) (t1' :=> t2') cg = do
   insert t2 t2' cg'
 
 insertInner cx@(Con c as cargs) dy@(Con d as' dargs) cg
-  | c == d && as == as'        = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
-  | otherwise                  = Core.pprPanic "Constructor mismatch" (Core.ppr (cx, dy))
+  | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
+  | otherwise                    = Core.pprPanic "Constructor mismatch" (Core.ppr (c, d))
 
 
 insertInner cx@(Con c as cargs) (Sum ((d, as', dargs):ds)) cg
-  | c == d && as == as'        = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
-  | otherwise                  = insert cx (Sum ds) cg
+  | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
+  | otherwise                    = insert cx (Sum ds) cg
 
 insertInner vx@(Var x) vy@(Var y) cg
-  | x > y                      = insertSucc x vy cg
-  | otherwise                  = insertPred vx y cg
+  | x > y                        = insertSucc x vy cg
+  | otherwise                    = insertPred vx y cg
 
 insertInner (Var x) c@(Sum _) cg = insertSucc x c cg
 insertInner c@Con{} (Var y) cg   = insertPred c y cg
 
 insertInner (Sum cs) t cg = foldM (\cg (c, as, cargs) -> insert (Con c as cargs) t cg) cg cs
+
+insertInner t1 t2 cg = Core.pprPanic "Error!" (Core.ppr (t1, t2))
 
 insertSucc :: RVar -> Type -> ConGraph -> InferM ConGraph
 insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
@@ -225,27 +205,11 @@ succChain cg f t m = do
       guard $ f == f'
       return m'
 
--- Union of constraint graphs
-union :: ConGraph -> ConGraph -> InferM ConGraph
-union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
-  -- Combine equivalence classes using left representation
-  let msb  = M.union sb (subVar <$> sb')
-
-  -- Update cg1 with new equivalences
-  cg1' <- M.foldrWithKey (\x se -> (>>= \cg -> substitute x se cg)) (return cg1) msb
-
-  -- Insert edges from cg2 into cg1
-  cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (flip (insert (Var k))) cg vs)) (return cg1') s
-  M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (return cg1'') p
-  where
-    subVar (Var x) = M.findWithDefault (Var x) x sb
-    subVar (Sum cs) = Sum (second (fmap subVar) <$> cs)
-
 -- Safely substitute variable with an expression
 substitute :: RVar -> Type -> ConGraph -> InferM ConGraph
 substitute x se ConGraph{succs = s, preds = p, subs = sb} = do
   -- Necessary to recalculate preds and succs as se might not be a Var.
-  -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications.
+  -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications anyway.
   cg' <- case p' M.!? x of
     Just ps -> foldM (\cg pi -> insert pi se cg) cg ps
     Nothing -> return cg
@@ -256,7 +220,99 @@ substitute x se ConGraph{succs = s, preds = p, subs = sb} = do
   where
     sub (Var y) | x == y = se
     sub (Sum cs) = Sum $ fmap (second (fmap sub)) cs
+    sub (t1 :=> t2) = (sub t1) :=> (sub t2)
     sub t = t
     p'  = fmap (L.nub . fmap sub) p
     s'  = fmap (L.nub . fmap sub) s
     cg = ConGraph { succs = s', preds = p', subs = M.insert x se $ fmap sub sb }
+
+-- Union of constraint graphs
+union :: ConGraph -> ConGraph -> InferM ConGraph
+union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
+  -- Combine equivalence classes using left representation
+  let msb  = M.union sb (subVar <$> sb')
+
+  -- Update cg1 with new equivalences
+  cg1' <- M.foldrWithKey (\x se -> (>>= substitute x se)) (return cg1) msb
+
+  -- Insert edges from cg2 into cg1
+  cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (flip (insert (Var k))) cg vs)) (return cg1') s
+  M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (return cg1'') p
+
+  where
+    subVar (Var x)     = M.findWithDefault (Var x) x sb
+    subVar (Sum cs)    = Sum (second (fmap subVar) <$> cs)
+    subVar (t1 :=> t2) = (subVar t1) :=> (subVar t2)
+    subVar (App t1 s2) = App (subVar t1) s2 -- If refinement variables can induce type level reduction we lose orthogonality (and maybe soundness?)
+    subVar t           = t
+
+
+
+    
+
+
+-- Eagerly remove properly scoped bounded (intermediate) nodes that are not associated with the environment's stems (optimisation)
+-- Unsound
+closeScope :: Int -> ConGraph -> InferM ConGraph
+closeScope scope cg = do
+  -- Construct a list of stems currently in the environment (used in closeScope)
+  ctx <- ask
+  let varTypes = M.elems $ var ctx
+  let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
+  
+  -- Predicate variables that have gone out of scope and cannot be accessed by the environment
+  let p v = case v of {(V x _ _ _) ->  x > scope && (x `notElem` envStems); _ -> False}
+
+  -- Only include nodes which are safe to remove
+  edges      <- saturate cg
+  let nodes  = filter p $ concat [[n1, n2] | (n1, n2) <- edges]
+  let chains = [n | (n, Removable) <- markRemovable p nodes edges [(n, Unseen) | n <- nodes]]
+
+  -- Filter
+  return $ foldr remove cg chains
+
+  where
+    markRemovable :: (Type -> Bool) -> [Type] -> [(Type, Type)] -> [(Type, Removable)] -> [(Type, Removable)]
+    markRemovable p ns [] mr            = mr
+    markRemovable p ns ((n1, n2):es) mr = do
+      (n, r) <- mr
+      if n == n1
+        then if not (p n2)
+          then return $ case r of
+            Unseen    -> (n, Removable)
+            Removable -> (n, EncounteredTwice)
+            EncounteredTwice -> (n, EncounteredTwice)          
+          else
+            return (n, Removable)
+        else if n == n2
+          then if not (p n1) 
+            then return $ case r of
+              Unseen    -> (n, Removable)
+              Removable -> (n, EncounteredTwice)
+              EncounteredTwice -> (n, EncounteredTwice)          
+            else
+              return (n, Removable)
+          else return (n, r)
+
+    remove n ConGraph{succs = s, preds = p, subs = sb} = ConGraph{succs = mapRemove n s, preds = mapRemove n p, subs = sb}
+    mapRemove n m = M.filterWithKey (\k _ -> Var k /= n) (filter (/= n) <$> m)
+
+data Removable = Unseen | Removable | EncounteredTwice
+
+-- The fixed point of normalisation and transitivity
+saturate :: ConGraph -> InferM [(Type, Type)]
+saturate = saturate' . toList
+  where
+    saturate' cs = do
+      -- Normalise all transitive edges in cs
+      delta <- concatMapM (\(a, b) -> concatMapM (\(b', c) -> if b == b' then toNorm a c else return []) cs) cs
+      let cs' = L.nub (cs ++ delta)
+
+      -- Untill a fixed point is reached
+      if cs == cs'
+        then return cs
+        else saturate' cs'
+    
+    concatMapM op = foldr f (return [])
+      where
+        f x xs = do x <- op x; if null x then xs else do xs <- xs; return $ x++xs

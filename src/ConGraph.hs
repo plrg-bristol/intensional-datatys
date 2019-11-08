@@ -15,19 +15,17 @@ module ConGraph (
      ) where
 
 import Control.Applicative hiding (empty)
-import Control.Monad
 import Control.Monad.RWS hiding (Sum)
 
-import Data.Maybe
+import Data.Bifunctor (second)
 import qualified Data.Map as M
 import qualified Data.List as L
-import Data.Bifunctor (second)
 
 import qualified GhcPlugins as Core
 
 import Types
-import PrettyPrint
 import InferM
+import PrettyPrint
 
 -- Constraint graph
 data ConGraph = ConGraph {
@@ -248,11 +246,9 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 
 
 
-    
 
 
 -- Eagerly remove properly scoped bounded (intermediate) nodes that are not associated with the environment's stems (optimisation)
--- Unsound
 closeScope :: Int -> ConGraph -> InferM ConGraph
 closeScope scope cg = do
   -- Construct a list of stems currently in the environment (used in closeScope)
@@ -263,41 +259,17 @@ closeScope scope cg = do
   -- Predicate variables that have gone out of scope and cannot be accessed by the environment
   let p v = case v of {(V x _ _ _) ->  x > scope && (x `notElem` envStems); _ -> False}
 
-  -- Only include nodes which are safe to remove
-  edges      <- saturate cg
-  let nodes  = filter p $ concat [[n1, n2] | (n1, n2) <- edges]
-  let chains = [n | (n, Removable) <- markRemovable p nodes edges [(n, Unseen) | n <- nodes]]
+  -- Saturate graph to preserve soundness
+  edges         <- saturate cg
+  let nodes     = filter p $ concat [[n1, n2] | (n1, n2) <- edges]
+  let removeable = [] --fmap fst $ filter (\(n, r) -> r == Removable) $ foldr (markRemovable p nodes) [(n, Unseen) | n <- nodes] edges
 
-  -- Filter
-  return $ foldr remove cg chains
+  -- Filter intermediate nodes
+  return $ foldr remove cg removeable
 
   where
-    markRemovable :: (Type -> Bool) -> [Type] -> [(Type, Type)] -> [(Type, Removable)] -> [(Type, Removable)]
-    markRemovable p ns [] mr            = mr
-    markRemovable p ns ((n1, n2):es) mr = do
-      (n, r) <- mr
-      if n == n1
-        then if not (p n2)
-          then return $ case r of
-            Unseen    -> (n, Removable)
-            Removable -> (n, EncounteredTwice)
-            EncounteredTwice -> (n, EncounteredTwice)          
-          else
-            return (n, Removable)
-        else if n == n2
-          then if not (p n1) 
-            then return $ case r of
-              Unseen    -> (n, Removable)
-              Removable -> (n, EncounteredTwice)
-              EncounteredTwice -> (n, EncounteredTwice)          
-            else
-              return (n, Removable)
-          else return (n, r)
-
     remove n ConGraph{succs = s, preds = p, subs = sb} = ConGraph{succs = mapRemove n s, preds = mapRemove n p, subs = sb}
     mapRemove n m = M.filterWithKey (\k _ -> Var k /= n) (filter (/= n) <$> m)
-
-data Removable = Unseen | Removable | EncounteredTwice
 
 -- The fixed point of normalisation and transitivity
 saturate :: ConGraph -> InferM [(Type, Type)]

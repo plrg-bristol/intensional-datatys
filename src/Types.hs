@@ -104,7 +104,7 @@ toSortScheme (T.ForAllTy b t) =
       a = Core.binderVar b
   in SForall (a:as) st
 toSortScheme (T.FunTy t1@(T.TyConApp _ _) t2)
-  | Core.isPredTy t1 = toSortScheme t2 -- Ignore evidence of typeclasses
+  | Core.isPredTy t1 = toSortScheme t2 -- Ignore evidence of typeclasses and implicit parameters
 toSortScheme (T.FunTy t1 t2) = let s1 = toSort t1; SForall as s2 = toSortScheme t2 in SForall as (SArrow s1 s2)
 
 

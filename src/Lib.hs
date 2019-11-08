@@ -2,19 +2,20 @@ module Lib
     ( plugin
     ) where
 
+import Control.Monad.RWS hiding (Sum, Alt)
+
+import Data.List
+import qualified Data.Map as M hiding (partition, filter, drop, foldr)
+
+import Outputable
+import DynFlags
+import Pretty
+
 import Types
 import InferM
 import ConGraph
 import PrettyPrint
 import InferCoreExpr
-
-import Control.Monad.RWS hiding (Sum, Alt)
-import qualified Data.Map as M hiding (partition, filter, drop, foldr)
-import Data.List
-
-import Outputable
-import DynFlags
-import Pretty
 
 import GhcPlugins
 

@@ -5,6 +5,7 @@ module Lib
 import Control.Monad.RWS
 
 import qualified Data.Map as M
+-- import Data.Serialize
 
 import Types
 import InferM
@@ -20,22 +21,13 @@ plugin = defaultPlugin { installCoreToDos = install }
 
 inferGuts :: ModGuts -> IO ModGuts
 inferGuts guts@ModGuts{mg_binds = p, mg_tcs = tcs, mg_module = m} = do
-  let env = Context{con = listToUFM (foldr buildContext [] tcs), var = M.empty}
+  let env = Context{var = M.empty}
   -- pprTraceM "" (ppr p)
-  let ((ts, _), _, _) = runRWS (listen $ inferProg p) env 0
-  putStrLn ""
-  putStrLn $ showSDocUnsafe $ format ts
-  putStrLn ""
+  let (tss, _) = runInferM (inferProg p) env 0
+  mapM_ (\(v, ts) -> do
+    putStrLn ""
+    putStrLn $ showSDocUnsafe $ format v ts
+    putStrLn ""
+    ) tss
+  -- let ser = encode tss
   return guts
-
--- Add type constructor to underlying delta (polarisation is implicit)
-buildContext :: TyCon -> [(DataCon, (TyCon, [Var], [Sort]))] -> [(DataCon, (TyCon, [Var], [Sort]))]
-buildContext t xs = xs' ++ xs
-  where
-    xs' = foldr go [] (tyConDataCons t)
-
-    go :: DataCon -> [(DataCon, (TyCon, [Var], [Sort]))] -> [(DataCon, (TyCon, [Var], [Sort]))]
-    go d ys = (d, (t, as, sorts)):ys
-      where
-        sorts = toSort <$> dataConOrigArgTys d
-        as = dataConUnivTyVars d --Assume no existential vars

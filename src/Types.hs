@@ -18,8 +18,12 @@ module Types (
 
   TypeVars (subTypeVar),
   subTypeVars,
-  subRefinementVars
+  subRefinementVar,
+  subRefinementVars,
+  subRefinementMap
 ) where
+
+import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
 import qualified TyCoRep as T
@@ -80,6 +84,7 @@ stems t = [x | RVar (x, _, _, _) <- vars t]
 
 
 
+
 -- Convert a core type into a sort
 toSort :: Core.Type -> Sort
 toSort (T.TyVarTy v)   = SVar v
@@ -87,7 +92,7 @@ toSort (T.AppTy t1 t2) =
   let s1 = toSort t1
       s2 = toSort t2
   in SApp s1 s2
-toSort (T.TyConApp t args) = SData t $ fmap toSort args
+toSort (T.TyConApp t args) = SData t (toSort <$> args)
 toSort (T.FunTy t1 t2) = 
   let s1 = toSort t1
       s2 = toSort t2
@@ -98,7 +103,7 @@ toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Forall
 toSortScheme :: Core.Type -> SortScheme
 toSortScheme (T.TyVarTy v)       = SForall [] (SVar v)
 toSortScheme (T.AppTy t1 t2)     = SForall [] $ SApp (toSort t1) (toSort t2)
-toSortScheme (T.TyConApp t args) = SForall [] $ SData t $ fmap toSort args
+toSortScheme (T.TyConApp t args) = SForall [] $ SData t (toSort <$> args)
 toSortScheme (T.ForAllTy b t) =
   let (SForall as st) = toSortScheme t
       a = Core.binderVar b
@@ -191,12 +196,19 @@ instance TypeVars Sort Type where
 subRefinementVar :: RVar -> Type -> Type -> Type
 subRefinementVar x y (Var x')
   | x == x' = y
-subRefinementVar x y (Sum s) = Sum $ fmap (\(d, as, ts) -> (d, as, subRefinementVar x y <$> ts)) s
-subRefinementVar a t (t1 :=> t2) = subRefinementVar a t t1 :=> subRefinementVar a t t2
-subRefinementVar a t (App t1 s2) = App (subRefinementVar a t t1) s2 -- If refinement variables can induce type level reduction we lose orthogonality (and maybe soundness?)
+subRefinementVar x y (Sum s)     = Sum $ fmap (\(d, as, ts) -> (d, as, subRefinementVar x y <$> ts)) s
+subRefinementVar x y (t1 :=> t2) = (subRefinementVar x y t1) :=> (subRefinementVar x y t2)
+subRefinementVar x y (App t1 s2) = App (subRefinementVar x y t1) s2 -- If refinement variables can induce type level reduction we lose orthogonality (and maybe soundness?)
 subRefinementVar _ _ t = t
 
 -- Substitute many refinement variables
 subRefinementVars :: [RVar] -> [Type] -> Type -> Type
 subRefinementVars [] [] = id
 subRefinementVars (a:as) (t:ts) = subRefinementVar a t . subRefinementVars as ts
+
+-- Substitute refinement variables from a map
+subRefinementMap :: M.Map RVar Type -> Type -> Type
+subRefinementMap m = subRefinementVars as ts
+  where
+    as = M.keys m
+    ts = M.elems m

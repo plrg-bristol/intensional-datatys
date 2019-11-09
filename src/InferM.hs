@@ -1,6 +1,10 @@
+{-#  LANGUAGE MultiParamTypeClasses #-}
+
 module InferM (
   InferM,
-  Context (Context, var, con),
+  runInferM,
+  
+  Context (Context, var),
   safeVar,
   safeCon,
   delta,
@@ -12,7 +16,9 @@ module InferM (
 ) where
 
 import Control.Monad.RWS
+import Control.Monad.Trans.Cont
 
+import Data.Functor.Identity
 import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
@@ -20,12 +26,29 @@ import qualified GhcPlugins as Core
 import Types
 
 -- The inference monad; a reader (i.e. local) context and a state (i.e. global) counter for taking fresh variables
-type InferM = RWS Context () Int
+newtype InferM a = InferM {runInferM :: Context -> Int -> (a, Int)}
 
--- The variables (gamma) and constructors (delta) in scope
-data Context = Context {
-  var :: M.Map Core.Var TypeScheme,
-  con :: Core.UniqFM {- Core.DataCon -} (Core.TyCon, [Core.Var], [Sort]) -- k -> (d, as, args)
+instance Functor InferM where
+  fmap f (InferM m) = InferM $ \ctx i -> let (a, i') = m ctx i in (f a, i')
+
+instance Applicative InferM where
+  pure a                  = InferM $ \ctx i -> (a, i)
+  InferM mf <*> InferM ma = InferM $ \ctx i -> let (f, i') = mf ctx i; (a, i'') = ma ctx i' in (f a, i'')
+
+instance Monad InferM where
+  return a = InferM $ \ctx i -> (a, i)
+  (InferM m) >>= k  = InferM $ \ctx i -> let (a, i') = m ctx i in runInferM (k a) ctx i'
+
+instance MonadState Int InferM where
+  state f = InferM $ \_ i -> f i 
+
+instance MonadReader Context InferM where
+  ask                = InferM $ \ctx i -> (ctx, i)
+  local f (InferM m) = InferM $ \ctx i -> let ctx' = f ctx in m ctx' i
+
+-- The variables in scope and their type
+newtype Context = Context {
+  var :: M.Map Core.Var TypeScheme
 }
 
 -- Extract a variable from (local/global) context
@@ -43,23 +66,17 @@ safeVar v = do
 -- Extract a constructor from (local/global) context
 safeCon :: Core.DataCon -> InferM (Core.TyCon, [Core.Var], [Sort])
 safeCon k = do
-  ctx <- ask
-  case Core.lookupUFM (con ctx) k of
-    Just tcArgs -> return tcArgs
-    Nothing   -> do
-      -- We can assume the constructor is in scope as GHC hasn't emitted a warning
-      -- Assume all externally defined terms are unrefined and have no existentially-quanitied type variables
-      let tc   = Core.dataConTyCon k
-      let as   = Core.dataConUnivTyVars k
-      let args = toSort <$> Core.dataConOrigArgTys k
-      return (tc, as, args)
+  let tc   = Core.dataConTyCon k
+  let as   = Core.dataConUnivAndExTyVars k
+  let args = toSort <$> Core.dataConOrigArgTys k -- Ignore evidence
+  return (tc, as, args)
 
 -- Extract polarised and instantiated constructor arguments from context
 delta :: Bool -> Core.TyCon -> Core.DataCon -> [Sort] -> InferM [PType]
 delta p d k ss = do
   (d', as, ts) <- safeCon k
-  let ts' = fmap (subTypeVars as ss) ts
-  return $ fmap (polarise p) ts'
+  let ts' = subTypeVars as ss <$> ts
+  return (polarise p <$> ts')
 
 -- Insert a variable into the context
 insertVar :: Core.Var -> TypeScheme -> Context ->  Context

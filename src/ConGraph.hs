@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE MultiParamTypeClasses, BangPatterns #-}
 
 module ConGraph (
       ConGraph (ConGraph, succs, preds, subs)
@@ -55,6 +55,7 @@ instance TypeVars ConGraph Type where
     }
     where
       varMap (RVar (x, p, d, as)) = RVar (x, p, d, subTypeVar v t <$> as)
+
 
 
 
@@ -207,7 +208,7 @@ succChain cg f t m = do
 substitute :: RVar -> Type -> ConGraph -> InferM ConGraph
 substitute x se ConGraph{succs = s, preds = p, subs = sb} = do
   -- Necessary to recalculate preds and succs as se might not be a Var.
-  -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications anyway.
+  -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications anyway
   cg' <- case p' M.!? x of
     Just ps -> foldM (\cg pi -> insert pi se cg) cg ps
     Nothing -> return cg
@@ -216,19 +217,15 @@ substitute x se ConGraph{succs = s, preds = p, subs = sb} = do
     Nothing -> return cg'
   return cg''{ succs = M.delete x $ succs cg'', preds = M.delete x $ preds cg''}
   where
-    sub (Var y) | x == y = se
-    sub (Sum cs) = Sum $ fmap (second (fmap sub)) cs
-    sub (t1 :=> t2) = (sub t1) :=> (sub t2)
-    sub t = t
-    p'  = fmap (L.nub . fmap sub) p
-    s'  = fmap (L.nub . fmap sub) s
-    cg = ConGraph { succs = s', preds = p', subs = M.insert x se $ fmap sub sb }
+    p'  = fmap (fmap $ subRefinementVar x se) p
+    s'  = fmap (fmap $ subRefinementVar x se) s
+    cg = ConGraph { succs = s', preds = p', subs = M.insert x se (subRefinementVar x se <$> sb) }
 
 -- Union of constraint graphs
 union :: ConGraph -> ConGraph -> InferM ConGraph
 union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
   -- Combine equivalence classes using left representation
-  let msb  = M.union sb (subVar <$> sb')
+  let msb  = M.union sb (subRefinementMap sb <$> sb')
 
   -- Update cg1 with new equivalences
   cg1' <- M.foldrWithKey (\x se -> (>>= substitute x se)) (return cg1) msb
@@ -237,54 +234,63 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
   cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (flip (insert (Var k))) cg vs)) (return cg1') s
   M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (return cg1'') p
 
-  where
-    subVar (Var x)     = M.findWithDefault (Var x) x sb
-    subVar (Sum cs)    = Sum (second (fmap subVar) <$> cs)
-    subVar (t1 :=> t2) = (subVar t1) :=> (subVar t2)
-    subVar (App t1 s2) = App (subVar t1) s2 -- If refinement variables can induce type level reduction we lose orthogonality (and maybe soundness?)
-    subVar t           = t
 
 
 
-
-
+  
 -- Eagerly remove properly scoped bounded (intermediate) nodes that are not associated with the environment's stems (optimisation)
 closeScope :: Int -> ConGraph -> InferM ConGraph
-closeScope scope cg = do
-  -- Construct a list of stems currently in the environment (used in closeScope)
-  ctx <- ask
-  let varTypes = M.elems $ var ctx
-  let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
+closeScope _ cg = return cg
+-- closeScope scope cg@ConGraph{subs = sb} = do
+--   -- Construct a list of stems currently in the environment (used in closeScope)
+--   ctx <- ask
+--   let varTypes = M.elems $ var ctx
+--   let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
   
-  -- Predicate variables that have gone out of scope and cannot be accessed by the environment
-  let p v = case v of {(V x _ _ _) ->  x > scope && (x `notElem` envStems); _ -> False}
+--   -- Predicate variables that have gone out of scope and cannot be accessed by the environment
+--   let p v = case v of {(V x _ _ _) ->  x > scope && (x `notElem` envStems); _ -> False}
 
-  -- Saturate graph to preserve soundness
-  edges         <- saturate cg
-  let nodes     = filter p $ concat [[n1, n2] | (n1, n2) <- edges]
-  let removeable = [] --fmap fst $ filter (\(n, r) -> r == Removable) $ foldr (markRemovable p nodes) [(n, Unseen) | n <- nodes] edges
+--   edges <- saturate cg
+--   let nodes = L.nub $ ([n | (n, _) <- edges] ++ [n | (_, n) <- edges])
 
-  -- Filter intermediate nodes
-  return $ foldr remove cg removeable
+--   let succs n = [m | (n', m) <- edges, n == n']
+--   let preds n = [m | (m, n') <- edges, n == n']
 
-  where
-    remove n ConGraph{succs = s, preds = p, subs = sb} = ConGraph{succs = mapRemove n s, preds = mapRemove n p, subs = sb}
-    mapRemove n m = M.filterWithKey (\k _ -> Var k /= n) (filter (/= n) <$> m)
+--   let isLower n m1 = all (\m -> m == m1 || (m, m1) `elem` edges) (preds n)
+--   let isUpper n m2 = all (\m -> m == m2 || (m2, m) `elem` edges) (succs n)
+
+--   let removeable = [n | n <- nodes, p n, all (isLower n) (succs n), all (isUpper n) (preds n)]
+
+--   cg' <- fromList edges
+--   cg'' <- ConGraph{succs = M.empty, preds = M.empty, subs = sb} `union` cg'
+--   remove cg'' removeable
+
+  -- where
+  --   remove cg [] = return cg
+  --   remove cg (x:xs)
+  --     | cg == remove' x cg = remove cg xs
+  --     | otherwise          = closeScope scope $ remove' x cg
+
+  --   remove' n ConGraph{succs = s, preds = p, subs = sb} = ConGraph{succs = mapRemove n s, preds = mapRemove n p, subs = sb}
+  --   mapRemove n m = M.filterWithKey (\k _ -> Var k /= n) (filter (/= n) <$> m)
 
 -- The fixed point of normalisation and transitivity
 saturate :: ConGraph -> InferM [(Type, Type)]
-saturate = saturate' . toList
+saturate cg@ConGraph{subs = sb} = saturate' $ toList cg
   where
     saturate' cs = do
       -- Normalise all transitive edges in cs
       delta <- concatMapM (\(a, b) -> concatMapM (\(b', c) -> if b == b' then toNorm a c else return []) cs) cs
-      let cs' = L.nub (cs ++ delta)
+      let delta' = [(subRefinementMap sb d1, subRefinementMap sb d2) | (d1, d2) <- delta]
 
-      -- Untill a fixed point is reached
+      -- Add new edges
+      let cs' = L.nub (cs ++ delta')
+
+      -- Until a fixed point is reached
       if cs == cs'
         then return cs
         else saturate' cs'
     
-    concatMapM op = foldr f (return [])
+    concatMapM op = foldr go $ return []
       where
-        f x xs = do x <- op x; if null x then xs else do xs <- xs; return $ x++xs
+        go x xs = do x <- op x; if null x then xs else do xs <- xs; return $ x++xs

@@ -38,5 +38,5 @@ instance Outputable TypeScheme where
       header = (if null as then empty else forAllLit <> space <> interppSP as <> dot <> space) <> (if null xs then empty else forAllLit <> space <> interppSP xs <> dot <> space) <> ppr t
       body   = vcat (ppr <$> cs)
 
-format :: [(Core.Var, TypeScheme)] -> SDoc
-format = vcat . fmap (\(v, ts) -> ppr v <> space <> dcolon <> ppr ts <> char '\n')
+format :: Core.Var -> TypeScheme -> SDoc
+format v ts = ppr v <> space <> dcolon <> ppr ts

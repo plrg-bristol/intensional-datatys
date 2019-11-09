@@ -237,42 +237,21 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 
 
 
-  
+
 -- Eagerly remove properly scoped bounded (intermediate) nodes that are not associated with the environment's stems (optimisation)
 closeScope :: Int -> ConGraph -> InferM ConGraph
-closeScope _ cg = return cg
--- closeScope scope cg@ConGraph{subs = sb} = do
---   -- Construct a list of stems currently in the environment (used in closeScope)
---   ctx <- ask
---   let varTypes = M.elems $ var ctx
---   let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
+closeScope scope cg@ConGraph{subs = sb} = do
+  ctx <- ask
+  let varTypes = M.elems $ var ctx
+  let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
   
---   -- Predicate variables that have gone out of scope and cannot be accessed by the environment
---   let p v = case v of {(V x _ _ _) ->  x > scope && (x `notElem` envStems); _ -> False}
+  -- Filter irrelevant variable, i.e. those that have gone out of scope and cannot be accessed by the environment
+  let p v = case v of {(V x _ _ _) ->  x <= scope || (x `elem` envStems); _ -> True}
 
---   edges <- saturate cg
---   let nodes = L.nub $ ([n | (n, _) <- edges] ++ [n | (_, n) <- edges])
-
---   let succs n = [m | (n', m) <- edges, n == n']
---   let preds n = [m | (m, n') <- edges, n == n']
-
---   let isLower n m1 = all (\m -> m == m1 || (m, m1) `elem` edges) (preds n)
---   let isUpper n m2 = all (\m -> m == m2 || (m2, m) `elem` edges) (succs n)
-
---   let removeable = [n | n <- nodes, p n, all (isLower n) (succs n), all (isUpper n) (preds n)]
-
---   cg' <- fromList edges
---   cg'' <- ConGraph{succs = M.empty, preds = M.empty, subs = sb} `union` cg'
---   remove cg'' removeable
-
-  -- where
-  --   remove cg [] = return cg
-  --   remove cg (x:xs)
-  --     | cg == remove' x cg = remove cg xs
-  --     | otherwise          = closeScope scope $ remove' x cg
-
-  --   remove' n ConGraph{succs = s, preds = p, subs = sb} = ConGraph{succs = mapRemove n s, preds = mapRemove n p, subs = sb}
-  --   mapRemove n m = M.filterWithKey (\k _ -> Var k /= n) (filter (/= n) <$> m)
+  cs <- saturate cg
+  fromListWith $ [(n1, n2) | (n1, n2) <- cs, p n1 || p n2]
+  where
+    fromListWith = foldM (\cg (t1, t2) -> insert t1 t2 cg) ConGraph{succs = M.empty, preds = M.empty, subs = sb}
 
 -- The fixed point of normalisation and transitivity
 saturate :: ConGraph -> InferM [(Type, Type)]

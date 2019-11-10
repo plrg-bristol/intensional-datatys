@@ -1,4 +1,4 @@
-{-# LANGUAGE DefaultSignatures, DeriveGeneric, PatternSynonyms, MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances, DefaultSignatures, DeriveGeneric, PatternSynonyms, MultiParamTypeClasses #-}
 
 module Types (
   Sort (SVar, SBase, SData, SArrow, SApp),
@@ -6,6 +6,7 @@ module Types (
   Type (Var, V, Sum, Con, Dot, TVar, Base, (:=>), App),
   SortScheme (SForall),
   TypeScheme (Forall),
+  cons,
   vars,
   stems,
 
@@ -51,7 +52,7 @@ instance Ord RVar where
 -- Inference types
 data Type = 
     Var RVar
-  | Sum [(Core.DataCon, [Sort], [Type])]
+  | Sum (Core.Expr Core.Var) [(Core.DataCon, [Sort], [Type])]
   | Dot -- For coercions
 
   | TVar Core.Var
@@ -61,9 +62,13 @@ data Type =
   deriving (Eq, Generic)
 -- instance Serialize Type
 
+-- Equality of sums does not depend on their expression of origin
+instance Eq (Core.Expr Core.Var) where
+  e1 == e2 = True
+
 -- Singleton sum constructor
-pattern Con :: Core.DataCon -> [Sort] -> [Type] -> Type
-pattern Con k as args = Sum [(k, as, args)]
+pattern Con :: Core.Expr Core.Var -> Core.DataCon -> [Sort] -> [Type] -> Type
+pattern Con e k as args = Sum e [(k, as, args)]
 
 -- Refinement variable pattern
 pattern V :: Int -> Bool -> Core.TyCon -> [Sort] -> Type
@@ -75,10 +80,14 @@ data SortScheme = SForall [Core.Var] Sort
 data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type deriving Generic
 -- instance Serialize TypeScheme
 
+-- The constructors present in a sum
+cons :: [(Core.DataCon, [Sort], [Type])] -> [Core.DataCon]
+cons cs = [d | (d, _ ,_ ) <- cs]
+
 -- The refinement variables present in a type
 vars :: Type -> [RVar]
 vars (Var v)     = [v]
-vars (Sum cs)    = [v | (_, _, args) <- cs, a <- args, v <- vars a]
+vars (Sum e cs)  = [v | (_, _, args) <- cs, a <- args, v <- vars a]
 vars (t1 :=> t2) = vars t1 ++ vars t2
 vars (App t s)   = vars t
 vars _           = []
@@ -161,19 +170,19 @@ subTypeVars (a:as) (t:ts) = subTypeVar a t . subTypeVars as ts
 
 -- De-refine a type to a sort
 broaden :: Type -> Sort
-broaden (V _ _ d as)          = SData d as
-broaden (Sum ((d, as, ts):_)) = SData (Core.dataConTyCon d) as -- Sum must be homogeneous
-broaden (TVar a)              = SVar a
-broaden (Base b as)           = SBase b as
-broaden (t1 :=> t2)           = SArrow (broaden t1) (broaden t2)
-broaden (App t1 s2)           = SApp (broaden t1) s2
+broaden (V _ _ d as)            = SData d as
+broaden (Sum _ ((d, as, ts):_)) = SData (Core.dataConTyCon d) as -- Sum must be homogeneous
+broaden (TVar a)                = SVar a
+broaden (Base b as)             = SBase b as
+broaden (t1 :=> t2)             = SArrow (broaden t1) (broaden t2)
+broaden (App t1 s2)             = SApp (broaden t1) s2
 
 -- Collapse an application type if possible after a substitution has occured
 applySort :: Type -> Sort -> Type
-applySort (V x p d as) a    = V x p d (as ++ [a])
-applySort (Base b as) a     = Base b (as ++ [a])
-applySort (Con k as args) a = Con k (as ++ [a]) args
-applySort t a               = App t a -- Nonreducible
+applySort (V x p d as) a      = V x p d (as ++ [a])
+applySort (Base b as) a       = Base b (as ++ [a])
+applySort (Con e k as args) a = Con e k (as ++ [a]) args
+applySort t a                 = App t a -- Nonreducible
 
 instance TypeVars Sort Sort where
   {-# SPECIALIZE instance TypeVars Sort Sort #-}
@@ -188,7 +197,7 @@ instance TypeVars Sort Sort where
 instance TypeVars Type Type where
   {-# SPECIALIZE instance TypeVars Type Type #-}
   subTypeVar a t (V x p d as) = V x p d (subTypeVar a t <$> as)
-  subTypeVar a t (Sum s)      = Sum $ fmap (\(d, as, ts) -> (d, subTypeVar a t <$> as, subTypeVar a t <$> ts)) s
+  subTypeVar a t (Sum e s)    = Sum e $ fmap (\(d, as, ts) -> (d, subTypeVar a t <$> as, subTypeVar a t <$> ts)) s
   subTypeVar _ _ Dot          = Dot
   subTypeVar a t (TVar a')
     | a == a'   = t
@@ -205,7 +214,7 @@ instance TypeVars Sort Type where
 subRefinementVar :: RVar -> Type -> Type -> Type
 subRefinementVar x y (Var x')
   | x == x' = y
-subRefinementVar x y (Sum s)     = Sum $ fmap (\(d, as, ts) -> (d, as, subRefinementVar x y <$> ts)) s
+subRefinementVar x y (Sum e s)   = Sum e $ fmap (\(d, as, ts) -> (d, as, subRefinementVar x y <$> ts)) s
 subRefinementVar x y (t1 :=> t2) = (subRefinementVar x y t1) :=> (subRefinementVar x y t2)
 subRefinementVar x y (App t1 s2) = App (subRefinementVar x y t1) s2 -- If refinement variables can induce type level reduction we lose orthogonality (and maybe soundness?)
 subRefinementVar _ _ t = t

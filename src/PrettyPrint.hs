@@ -23,14 +23,14 @@ instance Outputable RVar where
   ppr (RVar (x, p, d, as)) = braces (ppr x <> (if p then char '+' else char '-') <> ppr (SData d as))
 
 instance Outputable Type where
-  ppr (Var r)       = ppr r
-  ppr (Con d as ts) = ppr d <> fsep (punctuate (char '@') (ppr <$> as)) <> fsep (ppr <$> ts)
-  ppr (Sum c)       = char 'Σ' <> brackets (pprWithBars id [ppr d <> fsep (punctuate (char '@') (ppr <$> as)) <> fsep (ppr <$> ts)| (d, as, ts) <- c])
-  ppr Dot           = empty
-  ppr (TVar v)      = ppr v
-  ppr (Base b as)   = ppr (SBase b as)
-  ppr (t1 :=> t2)   = ppr t1 <> space <> arrow <> space <> ppr t2
-  ppr (App t1 s2)   = ppr t1 <> char '@' <> ppr s2
+  ppr (Var r)         = ppr r
+  ppr (Con _ d as ts) = ppr d <> fsep (punctuate (char '@') (ppr <$> as)) <> fsep (ppr <$> ts)
+  ppr (Sum _ c)       = char 'Σ' <> brackets (pprWithBars id [ppr d <> fsep (punctuate (char '@') (ppr <$> as)) <> fsep (ppr <$> ts)| (d, as, ts) <- c])
+  ppr Dot             = empty
+  ppr (TVar v)        = ppr v
+  ppr (Base b as)     = ppr (SBase b as)
+  ppr (t1 :=> t2)     = ppr t1 <> space <> arrow <> space <> ppr t2
+  ppr (App t1 s2)     = ppr t1 <> char '@' <> ppr s2
 
 instance Outputable TypeScheme where
   ppr (Forall as xs cs t) = hang header 3 (hang (keyword $ text "where") 3 body)

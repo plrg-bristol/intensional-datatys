@@ -105,11 +105,11 @@ inferProg p = do
     let (ts', cgs) = unzip binds
 
     -- Combine constraint graphs
-    bcg <- foldM union empty cgs
+    bcg <- foldM (\cg' (rhs, cg) -> union cg cg' rhs) empty $ zip rhss cgs 
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
     -- Type/refinement variables bound in match those bound in t'
-    bcg' <- foldM (\bcg' (t', Forall _ _ _ t) -> insert t' t bcg') bcg (zip ts' ts)
+    bcg' <- foldM (\bcg' (rhs, t', Forall _ _ _ t) -> insert t' t bcg' rhs) bcg (zip3 rhss ts' ts)
     
     -- Restrict constraints to the interface
     ts'' <- quantifyWith bcg' ts
@@ -135,7 +135,7 @@ inferVar x ts e = do
       (d, as, args) <- safeCon k
       args' <- mapM (fresh . subTypeVars as ts) args
       t  <- fresh $ SData d ts
-      cg <- insert (Con k ts args') t empty
+      cg <- insert (Con e k ts args') t empty e
       return (foldr (:=>) t args', cg)
 
     Nothing ->
@@ -150,7 +150,7 @@ inferVar x ts e = do
         Nothing -> do
           -- Infer fully instantiated polymorphic variable
           (Forall as xs cs u) <- safeVar x
-          cg <- fromList cs
+          cg <- fromList cs e
           if length as /= length ts
             then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
             else do
@@ -162,13 +162,13 @@ inferVar x ts e = do
               let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
               
               -- Import variables constraints at type
-              cg'' <- foldM (\cg' (x, y) -> substitute x y cg') cg' (zip xs' ys)
+              cg'' <- foldM (\cg' (x, y) -> substitute x y cg' e) cg' (zip xs' ys)
 
               v <- fresh $ toSort $ Core.exprType e
-              cg''' <- insert u' v cg''
+              cg''' <- insert u' v cg'' e
               return (v, cg''')
 
-  cg' <- closeScope scope cg
+  cg' <- closeScope scope cg e
   return (t, cg')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
@@ -190,8 +190,8 @@ infer e@(Core.App e1 e2) =
       (t2, c2) <- infer e2
       case t1 of
         t3 :=> t4 -> do
-          cg  <- union c1 c2
-          cg' <- insert t2 t3 cg
+          cg  <- union c1 c2 e
+          cg' <- insert t2 t3 cg e
           return (t4, cg')
   where
     -- Process a core type/evidence application
@@ -233,21 +233,21 @@ infer e'@(Core.Let b e) = do
   (ts', cg) <- foldM (\(ts, cg) rhs -> do
     -- Infer each bind within the group, compiling constraints
     (t, cg') <- withBinds (infer rhs)
-    cg''     <- union cg cg'
+    cg''     <- union cg cg' rhs
     return (t:ts, cg'')
     ) ([], empty) rhss
 
   --  Insure fresh types are quantified by infered constraint (t' < t)
-  cg' <- foldM (\cg (t', Forall as _ _ t) -> insert t' t cg) cg (zip ts' ts)
+  cg' <- foldM (\cg (rhs, t', Forall as _ _ t) -> insert t' t cg rhs) cg (zip3 rhss ts' ts)
 
   -- Restrict constraints to the interface
   ts' <- quantifyWith cg' ts
 
   -- Infer in body with infered typescheme to the environment
   (t, icg) <- local (insertMany xs ts') (infer e)
-  cg''     <- union cg' icg
+  cg''     <- union cg' icg e'
 
-  cg''' <- closeScope scope cg''
+  cg''' <- closeScope scope cg'' e'
   return (t, cg''')
 
   -- Infer case expession
@@ -261,7 +261,7 @@ infer e'@(Core.Case e b rt as) = do
   let es = toSort $ Core.exprType e
   et <- fresh es
   (t0, c0) <- infer e
-  c0' <- insert et t0 c0
+  c0' <- insert et t0 c0 e'
 
   (caseType, cg) <- local (insertVar b $ Forall [] [] [] et) $ foldM (\(caseType, cg) (a, bs, rhs) ->
     if Core.exprIsBottom rhs
@@ -272,8 +272,8 @@ infer e'@(Core.Case e b rt as) = do
 
         -- Ensure return type is valid
         (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] []) ts) (infer rhs)
-        cgi'       <- insert ti' t cgi
-        cg'        <- union cg cgi'
+        cgi'       <- insert ti' t cgi e
+        cg'        <- union cg cgi' e'
 
         -- Track the occurance of a constructors/default case
         caseType' <- case a of
@@ -288,9 +288,9 @@ infer e'@(Core.Case e b rt as) = do
   -- Insure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
     Nothing  -> return cg -- Literal cases must have a default
-    Just dts -> insert t0 (Sum [(dc, ss, ts) | (dc, ss, ts) <- dts]) cg
+    Just dts -> insert t0 (Sum e' [(dc, ss, ts) | (dc, ss, ts) <- dts]) cg e'
 
-  cg' <- closeScope scope cg
+  cg' <- closeScope scope cg e'
   return (t, cg')
 
 -- Remove core ticks

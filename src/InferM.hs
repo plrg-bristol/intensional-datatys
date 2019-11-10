@@ -2,6 +2,8 @@
 
 module InferM (
   InferM,
+  InferME,
+  inExpr,
   
   Context (Context, var),
   safeVar,
@@ -24,7 +26,14 @@ import qualified GhcPlugins as Core
 import Types
 
 -- The inference monad; a reader (i.e. local) context and a state (i.e. global) counter for taking fresh variables
-type InferM a = RWS Context () Int a
+type InferM = RWS Context () Int
+
+-- Used to track the expression in which errors arrise
+type InferME = RWS (Core.Expr Core.Var, Context) () Int
+
+-- Attach an expression to an erroneous computation
+inExpr :: InferME a -> Core.Expr Core.Var -> InferM a
+inExpr ma e = withRWST (\ctx i -> ((e, ctx), i)) ma
   
 -- The variables in scope and their type
 newtype Context = Context {
@@ -44,19 +53,19 @@ safeVar v = do
       in freshScheme $ toSortScheme t
 
 -- Extract a constructor from (local/global) context
-safeCon :: Core.DataCon -> InferM (Core.TyCon, [Core.Var], [Sort])
-safeCon k = do
+safeCon :: Core.DataCon -> (Core.TyCon, [Core.Var], [Sort])
+safeCon k = 
   let tc   = Core.dataConTyCon k
-  let as   = Core.dataConUnivAndExTyVars k
-  let args = toSort <$> Core.dataConOrigArgTys k -- Ignore evidence
-  return (tc, as, args)
+      as   = Core.dataConUnivAndExTyVars k
+      args = toSort <$> Core.dataConOrigArgTys k -- Ignore evidence
+  in (tc, as, args)
 
 -- Extract polarised and instantiated constructor arguments from context
-delta :: Bool -> Core.TyCon -> Core.DataCon -> [Sort] -> InferM [PType]
-delta p d k ss = do
-  (d', as, ts) <- safeCon k
-  let ts' = subTypeVars as ss <$> ts
-  return (polarise p <$> ts')
+delta :: Bool -> Core.TyCon -> Core.DataCon -> [Sort] -> [PType]
+delta p d k ss = 
+  let (d', as, ts) = safeCon k
+      ts' = subTypeVars as ss <$> ts
+  in (polarise p <$> ts')
 
 -- Insert a variable into the context
 insertVar :: Core.Var -> TypeScheme -> Context ->  Context

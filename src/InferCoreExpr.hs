@@ -5,16 +5,16 @@ module InferCoreExpr
       inferProg
     ) where
 
-import Control.Monad.RWS hiding (Sum)
 import Control.Arrow
+import Control.Monad.RWS hiding (Sum)
 
 import Data.Maybe
 import qualified Data.List as L
 
 import qualified GhcPlugins as Core
+import qualified PrimOp as Prim
 import qualified TyCoRep as Tcr
 import qualified TyCon as Tc
-import qualified PrimOp as Prim
 import Kind
 
 import Types

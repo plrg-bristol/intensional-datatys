@@ -47,6 +47,7 @@ toList :: ConGraph -> [(Type, Type)]
 toList ConGraph{succs = s, preds = p} = [(Var k, v) | (k, vs) <- M.toList s, v <- vs] ++ [(v, Var k) | (k, vs) <- M.toList p, v <- vs]
 
 instance TypeVars ConGraph Type where
+  {-# SPECIALIZE instance TypeVars ConGraph Type #-}
   subTypeVar v t cg@ConGraph{succs = s, preds = p, subs = sb} =
     ConGraph {
       succs = M.mapKeys varMap $ fmap (subTypeVar v t) <$> s,
@@ -141,7 +142,7 @@ insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
                 _ -> return cg'
         _ -> closeSucc x sy cg{succs = M.insert x [sy] s}
 
-insertPred:: Type -> RVar -> ConGraph -> InferM ConGraph
+insertPred :: Type -> RVar -> ConGraph -> InferM ConGraph
 insertPred sx y cg@ConGraph{preds = p, subs = sb} =
   case sb M.!? y of
     Just z    -> insert sx z cg
@@ -240,6 +241,7 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 
 -- Eagerly remove properly scoped bounded (intermediate) nodes that are not associated with the environment's stems (optimisation)
 closeScope :: Int -> ConGraph -> InferM ConGraph
+{-# INLINE closeScope #-}
 closeScope scope cg@ConGraph{subs = sb} = do
   ctx <- ask
   let varTypes = M.elems $ var ctx
@@ -255,6 +257,7 @@ closeScope scope cg@ConGraph{subs = sb} = do
 
 -- The fixed point of normalisation and transitivity
 saturate :: ConGraph -> InferM [(Type, Type)]
+{-# INLINE saturate #-}
 saturate cg@ConGraph{subs = sb} = saturate' $ toList cg
   where
     saturate' cs = do

@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternSynonyms, MultiParamTypeClasses #-}
+{-# LANGUAGE DefaultSignatures, DeriveGeneric, PatternSynonyms, MultiParamTypeClasses #-}
 
 module Types (
   Sort (SVar, SBase, SData, SArrow, SApp),
@@ -23,6 +23,9 @@ module Types (
   subRefinementMap
 ) where
 
+import GHC.Generics
+
+-- import Data.Serialize
 import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
@@ -35,11 +38,12 @@ data Sort =
   | SData Core.TyCon [Sort] 
   | SArrow Sort Sort 
   | SApp Sort Sort 
-  deriving Eq
+  deriving (Eq, Generic)
+-- instance Serialize Sort
 
 -- Refinement variables
-newtype RVar = RVar (Int, Bool, Core.TyCon, [Sort]) 
-  deriving Eq
+newtype RVar = RVar (Int, Bool, Core.TyCon, [Sort]) deriving (Eq, Generic)
+-- instance Serialize RVar
 
 instance Ord RVar where
   RVar (x, _, _, _) <= RVar (x', _, _, _) = x <= x'
@@ -54,7 +58,8 @@ data Type =
   | Base Core.TyCon [Sort]
   | Type :=> Type
   | App Type Sort
-  deriving Eq
+  deriving (Eq, Generic)
+-- instance Serialize Type
 
 -- Singleton sum constructor
 pattern Con :: Core.DataCon -> [Sort] -> [Type] -> Type
@@ -67,7 +72,8 @@ pattern V x p d as = Var (RVar (x, p, d, as))
 data SortScheme = SForall [Core.Var] Sort
 
 -- Refinement quantified sort scheme
-data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type
+data TypeScheme = Forall [Core.Var] [RVar] [(Type, Type)] Type deriving Generic
+-- instance Serialize TypeScheme
 
 -- The refinement variables present in a type
 vars :: Type -> [RVar]
@@ -170,6 +176,7 @@ applySort (Con k as args) a = Con k (as ++ [a]) args
 applySort t a               = App t a -- Nonreducible
 
 instance TypeVars Sort Sort where
+  {-# SPECIALIZE instance TypeVars Sort Sort #-}
   subTypeVar a t (SVar a')
     | a == a'   = t
     | otherwise = SVar a'
@@ -179,6 +186,7 @@ instance TypeVars Sort Sort where
   subTypeVar a t (SApp s1 s2)   = SApp (subTypeVar a t s1) (subTypeVar a t s2)
 
 instance TypeVars Type Type where
+  {-# SPECIALIZE instance TypeVars Type Type #-}
   subTypeVar a t (V x p d as) = V x p d (subTypeVar a t <$> as)
   subTypeVar a t (Sum s)      = Sum $ fmap (\(d, as, ts) -> (d, subTypeVar a t <$> as, subTypeVar a t <$> ts)) s
   subTypeVar _ _ Dot          = Dot
@@ -190,6 +198,7 @@ instance TypeVars Type Type where
   subTypeVar a t (App t1 s2)  = subTypeVar a t t1 `applySort` subTypeVar a t s2
 
 instance TypeVars Sort Type where
+  {-# SPECIALIZE instance TypeVars Sort Type #-}
   subTypeVar a t = subTypeVar a (broaden t)
 
 -- Substitute refinement variables into a type

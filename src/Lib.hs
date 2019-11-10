@@ -23,7 +23,7 @@ inferGuts :: ModGuts -> IO ModGuts
 inferGuts guts@ModGuts{mg_binds = p, mg_tcs = tcs, mg_module = m} = do
   let env = Context{var = M.empty}
   -- pprTraceM "" (ppr p)
-  let (tss, _) = runInferM (inferProg p) env 0
+  let (tss, _, _) = runRWS (inferProg p) env 0
   mapM_ (\(v, ts) -> do
     putStrLn ""
     putStrLn $ showSDocUnsafe $ format v ts

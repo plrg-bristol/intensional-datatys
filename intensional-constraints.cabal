@@ -37,13 +37,13 @@ library
       Paths_intensional_constraints
   hs-source-dirs:
       src
-  ghc-options: -O2
+  ghc-options: -O2 -fwarn-missing-signatures
   build-depends:
       base >=4.7
     , containers
-    , ghc
     , mtl
-    , transformers
+    , ghc
+    , cereal
   default-language: Haskell2010
 
 test-suite intensional-constraints-test

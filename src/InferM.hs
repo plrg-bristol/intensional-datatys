@@ -2,7 +2,6 @@
 
 module InferM (
   InferM,
-  runInferM,
   
   Context (Context, var),
   safeVar,
@@ -16,7 +15,6 @@ module InferM (
 ) where
 
 import Control.Monad.RWS
-import Control.Monad.Trans.Cont
 
 import Data.Functor.Identity
 import qualified Data.Map as M
@@ -26,26 +24,8 @@ import qualified GhcPlugins as Core
 import Types
 
 -- The inference monad; a reader (i.e. local) context and a state (i.e. global) counter for taking fresh variables
-newtype InferM a = InferM {runInferM :: Context -> Int -> (a, Int)}
-
-instance Functor InferM where
-  fmap f (InferM m) = InferM $ \ctx i -> let (a, i') = m ctx i in (f a, i')
-
-instance Applicative InferM where
-  pure a                  = InferM $ \ctx i -> (a, i)
-  InferM mf <*> InferM ma = InferM $ \ctx i -> let (f, i') = mf ctx i; (a, i'') = ma ctx i' in (f a, i'')
-
-instance Monad InferM where
-  return a = InferM $ \ctx i -> (a, i)
-  (InferM m) >>= k  = InferM $ \ctx i -> let (a, i') = m ctx i in runInferM (k a) ctx i'
-
-instance MonadState Int InferM where
-  state f = InferM $ \_ i -> f i 
-
-instance MonadReader Context InferM where
-  ask                = InferM $ \ctx i -> (ctx, i)
-  local f (InferM m) = InferM $ \ctx i -> let ctx' = f ctx in m ctx' i
-
+type InferM a = RWS Context () Int a
+  
 -- The variables in scope and their type
 newtype Context = Context {
   var :: M.Map Core.Var TypeScheme

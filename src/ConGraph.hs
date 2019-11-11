@@ -41,7 +41,7 @@ empty = ConGraph { succs = M.empty, preds = M.empty, subs = M.empty }
 
 -- Constructor a new constraint graph from a list
 fromList :: [(Type, Type)] -> InferME ConGraph
-fromList ts = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty ts
+fromList = foldM (\cg (t1, t2) -> insert t1 t2 cg) empty
 
 -- Returns a list of constraints as internally represented (incomplete)
 toList :: ConGraph -> [(Type, Type)]
@@ -63,40 +63,35 @@ instance TypeVars ConGraph Type where
 
 
 -- Normalise the constraints by applying recursive simplifications
-toNorm :: Type -> Type -> InferME [(Type, Type)]
-toNorm t1@(Con e k as ts) t2@(V x p d as') =
-  let args = delta p d k as
-      ts' = upArrow x <$> args
+toNorm :: Type -> Type -> [(Type, Type)]
+toNorm t1@(Con e tc k as ts) t2@(V x p d as') =
+  let ts' = upArrow x <$> delta p k as
   in if ts' /= ts
-    then do
-      c1 <- toNorm (Con e k as ts') (V x p d as')
-      c2 <- toNorm (Con e k as ts) (Con e k as ts')
-      return (c1 ++ c2)
-    else return [(Con e k as ts', V x p d as'), (Con e k as ts, Con e k as ts')]
-
-toNorm t1@(V x p d as) t2@(Sum e cs) =
+    then
+      let c1 = toNorm (Con e tc k as ts') (V x p d as')
+          c2 = toNorm (Con e tc k as ts) (Con e tc k as ts')
+      in (c1 ++ c2)
+    else [(Con e tc k as ts', V x p d as'), (Con e tc k as ts, Con e tc k as ts')]
+toNorm t1@(V x p d as) t2@(Sum e tc as' cs) =
   let cs' = refineCon <$> cs
   in if cs' /= cs
-    then do
-      c1 <- toNorm (Sum e cs') (Sum e cs)
-      c2 <- toNorm (V x p d as) (Sum e cs')
-      return (c1 ++ c2)
-    else return [(Sum e cs', Sum e cs), (V x p d as, Sum e cs)]
+    then
+      let c1 = toNorm (Sum e tc as' cs') (Sum e tc as' cs)
+          c2 = toNorm (V x p d as) (Sum e tc as' cs')
+      in (c1 ++ c2)
+    else [(Sum e tc as' cs', Sum e tc as' cs), (V x p d as, Sum e tc as' cs)]
   where
-    refineCon (k, as, ts) = (k, as, upArrow x <$> delta p d k as)
-
-toNorm t1 t2 = return [(t1, t2)]
+    refineCon (k, ts) = (k, upArrow x <$> delta p k as')
+toNorm t1 t2 = [(t1, t2)]
 
 -- Insert new constraint with normalisation
 insert :: Type -> Type -> ConGraph -> InferME ConGraph
-insert t1 t2 cg = do
-  cs <- toNorm t1 t2
-  foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg cs
+insert t1 t2 cg = foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg $ toNorm t1 t2
 
 -- Insert new constraint
 insertInner :: Type -> Type -> ConGraph -> InferME ConGraph
 insertInner Dot _ cg = return cg
-insertInner _ Dot cg = return cg -- Ignore any constriants concerning Dot
+insertInner _ Dot cg = return cg -- Ignore any constriants concerning Dot, i.e. coercions
 
 insertInner x y cg | x == y = return cg
 
@@ -104,26 +99,27 @@ insertInner (t1 :=> t2) (t1' :=> t2') cg = do
   cg' <- insert t1' t1 cg
   insert t2 t2' cg'
 
-insertInner t1@(Sum e1 cs) t2@(Sum e2 ds) _
-  | any (`notElem` cons ds) $ cons cs = do
+insertInner t1@(Sum e1 tc as cs) t2@(Sum e2 tc' as' ds) _
+  | tc /= tc' = Core.pprPanic "Sum type mismatch!" (Core.ppr ())
+  | any (`notElem` fmap fst ds) $ fmap fst cs = do
     (e, _) <- ask
     Core.pprPanic "Invalid sum!" (Core.ppr (t1, e1, t2, e2, e))
 
-insertInner cx@(Con _ c as cargs) dy@(Con _ d as' dargs) cg
+insertInner cx@(Con _ _ c as cargs) dy@(Con _ _ d as' dargs) cg
   | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
 
-insertInner cx@(Con _ c as cargs) (Sum e1 ((d, as', dargs):ds)) cg
-  | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
-  | otherwise                    = insert cx (Sum e1 ds) cg
+insertInner cx@(Con _ tc c as cargs) (Sum e1 tc' as' ((d, dargs):ds)) cg
+  | c == d && as == as' && tc == tc' = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
+  | otherwise                        = insert cx (Sum e1 tc' as' ds) cg
 
 insertInner vx@(Var x) vy@(Var y) cg
   | x > y                        = insertSucc x vy cg
   | otherwise                    = insertPred vx y cg
 
-insertInner (Var x) c@(Sum _ _) cg = insertSucc x c cg
-insertInner c@Con{} (Var y) cg     = insertPred c y cg
+insertInner (Var x) c@(Sum _ _ _ _) cg = insertSucc x c cg
+insertInner c@Con{} (Var y) cg         = insertPred c y cg
 
-insertInner (Sum e cs) t cg = foldM (\cg (c, as, cargs) -> insert (Con e c as cargs) t cg) cg cs
+insertInner (Sum e tc as cs) t cg = foldM (\cg (c, cargs) -> insert (Con e tc c as cargs) t cg) cg cs
 
 insertInner t1 t2 cg = do
   (e, _) <- ask
@@ -173,7 +169,7 @@ closeSucc x sy cg =
 closePred :: Type -> RVar -> ConGraph -> InferME ConGraph
 closePred sx y cg =
   case succs cg M.!? y of
-    Just ss   -> foldM (\cg p -> insert sx p cg) cg ss
+    Just ss   -> foldM (flip (insert sx)) cg ss
     _ -> return cg
 
 -- Partial online cycle elimination
@@ -218,7 +214,7 @@ substitute x se ConGraph{succs = s, preds = p, subs = sb} = do
     Just ps -> foldM (\cg pi -> insert pi se cg) cg ps
     Nothing -> return cg
   cg'' <- case s' M.!? x of
-    Just ss -> foldM (\cg pi -> insert se pi cg) cg' ss
+    Just ss -> foldM (flip $ insert se) cg' ss
     Nothing -> return cg'
   return cg''{ succs = M.delete x $ succs cg'', preds = M.delete x $ preds cg''}
   where
@@ -233,50 +229,44 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
   let msb  = M.union sb (subRefinementMap sb <$> sb')
 
   -- Update cg1 with new equivalences
-  cg1' <- M.foldrWithKey (\x se -> (>>= \cg -> substitute x se cg)) (return cg1) msb
+  cg1' <- M.foldrWithKey (\x se -> (>>= substitute x se)) (return cg1) msb
 
   -- Insert edges from cg2 into cg1
-  cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert (Var k) v cg') cg vs)) (return cg1') s
+  cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (flip (insert (Var k))) cg vs)) (return cg1') s
   M.foldrWithKey (\k vs -> (>>= \cg -> foldM (\cg' v -> insert v (Var k) cg') cg vs)) (return cg1'') p
 
 
 
 
 
--- Eagerly remove properly scoped bounded (intermediate) nodes that are not associated with the environment's stems (optimisation)
+-- Eagerly remove properly scoped bounded (intermediate) nodes
 closeScope :: Int -> ConGraph -> InferME ConGraph
 {-# INLINE closeScope #-}
 closeScope scope cg@ConGraph{subs = sb} = do
-  (_, ctx) <- ask
-  let varTypes = M.elems $ var ctx
-  let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
+  -- (_, ctx) <- ask
+  -- let varTypes = M.elems $ var ctx
+  -- let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
   
-  -- Filter irrelevant variable, i.e. those that have gone out of scope and cannot be accessed by the environment
-  let p v = case v of {(V x _ _ _) ->  x <= scope || (x `elem` envStems); _ -> True}
+  -- Filter irrelevant variable, i.e. those that have gone out of scope
+  let p v = case v of {(V x _ _ _) ->  x <= scope {- || (x `elem` envStems) -}; _ -> True}
 
-  cs <- saturate cg
-  fromListWith $ [(n1, n2) | (n1, n2) <- cs, p n1 || p n2]
+  fromListWith $ [(n1, n2) | (n1, n2) <- saturate cg, p n1 || p n2]
   where
     fromListWith = foldM (\cg (t1, t2) -> insert t1 t2 cg) ConGraph{succs = M.empty, preds = M.empty, subs = sb}
 
 -- The fixed point of normalisation and transitivity
-saturate :: ConGraph -> InferME [(Type, Type)]
+saturate :: ConGraph -> [(Type, Type)]
 {-# INLINE saturate #-}
 saturate cg@ConGraph{subs = sb} = saturate' $ toList cg
   where
     saturate' cs = do
-      -- Normalise all transitive edges in cs
-      delta <- concatMapM (\(a, b) -> concatMapM (\(b', c) -> if b == b' then toNorm a c else return []) cs) cs
-      let delta' = [(subRefinementMap sb d1, subRefinementMap sb d2) | (d1, d2) <- delta]
+      -- Normalise all transitive edges in cs and apply substitutions 
+      let delta = [(subRefinementMap sb d1, subRefinementMap sb d2) |(a, b) <-cs, (b', c) <- cs, b == b', (d1, d2) <- toNorm a c]
 
       -- Add new edges
-      let cs' = L.nub (cs ++ delta')
+      let cs' = L.nub (cs ++ delta)
 
       -- Until a fixed point is reached
       if cs == cs'
-        then return cs
+        then cs
         else saturate' cs'
-    
-    concatMapM op = foldr go $ return []
-      where
-        go x xs = do x <- op x; if null x then xs else do xs <- xs; return $ x++xs

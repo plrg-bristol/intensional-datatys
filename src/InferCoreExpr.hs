@@ -11,11 +11,12 @@ import Control.Monad.RWS hiding (Sum)
 import Data.Maybe
 import qualified Data.List as L
 
+import Kind
+import ToIface
 import qualified GhcPlugins as Core
 import qualified PrimOp as Prim
 import qualified TyCoRep as Tcr
 import qualified TyCon as Tc
-import Kind
 
 import Types
 import InferM
@@ -29,16 +30,16 @@ quantifyWith cg@ConGraph{succs = s, preds = p, subs = sb} ts = do
   let ts' = [Forall as [] [] (subRefinementMap sb u) | Forall as _ [] u <- ts]
 
   -- Take the full transitive closure of the graph using rewriting rules
-  lcg <- saturate cg `inExpr` undefined -- Pretty dodge
+  let lcg = saturate cg
 
   -- Check all the stems in the interface
-  let chkStems = all (\s -> any (\(Forall _ _ _ u) -> s `elem` (stems u)) ts') . stems
+  let chkStems = all (\s -> any (\(Forall _ _ _ u) -> s `elem` stems u) ts') . stems
 
   -- Restricted congraph with chkStems
   let edges = L.nub [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
 
   -- Only quantified by refinement variables that appear in the inferface
-  let nodes = L.nub ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ concat [vars u | Forall _ _ _ u <- ts'])
+  let nodes = L.nub ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ [v | Forall _ _ _ u <- ts', v <- vars u])
 
   return [Forall as nodes edges u | Forall as _ _ u <- ts']
 
@@ -47,23 +48,24 @@ quantifyWith cg@ConGraph{succs = s, preds = p, subs = sb} ts = do
 
 
 -- List all free variables in an expression
-freeVars :: Core.Expr Core.Var -> [Core.Var]
-freeVars (Core.Var i) = [i]
-freeVars (Core.Lit l) = []
-freeVars (Core.App e1 e2) = freeVars e1 ++ freeVars e2
-freeVars (Core.Lam x e) = freeVars e L.\\ [x]
-freeVars (Core.Let b e) = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) L.\\ Core.bindersOf b
-freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae L.\\ bs | (_, bs, ae) <- as] L.\\ [x])
-freeVars (Core.Cast e _) = freeVars e
-freeVars (Core.Tick _ e) = freeVars e
-freeVars (Core.Type t) = []
-freeVars (Core.Coercion c) = []
+freeVars :: Core.Expr Core.Var -> [Core.Name]
+freeVars (Core.Var i)         = [Core.getName i]
+freeVars (Core.Lit l)         = []
+freeVars (Core.App e1 e2)     = freeVars e1 ++ freeVars e2
+freeVars (Core.Lam x e)       = freeVars e L.\\ [Core.getName x]
+freeVars (Core.Let b e)       = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) L.\\ (Core.getName <$> Core.bindersOf b)
+freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae L.\\ (Core.getName <$> bs) | (_, bs, ae) <- as] L.\\ [Core.getName x])
+freeVars (Core.Cast e _)      = freeVars e
+freeVars (Core.Tick _ e)      = freeVars e
+freeVars (Core.Type t)        = []
+freeVars (Core.Coercion c)    = []
 
 -- Used to compare groups
 instance Eq Core.CoreBind where
   b == b' = Core.bindersOf b == Core.bindersOf b'
 
 -- Sort a program in order of dependancies
+-- Optimise this!
 dependancySort :: Core.CoreProgram -> Core.CoreProgram
 dependancySort p = foldl go [] depGraph
   where
@@ -78,7 +80,7 @@ dependancySort p = foldl go [] depGraph
     -- Find the group in which the variable is contained
     findGroup [] x = []
     findGroup (b:bs) x
-      | x `elem` Core.bindersOf b = [b]
+      | x `elem` (Core.getName <$> Core.bindersOf b) = [b]
       | otherwise = findGroup bs x
 
 
@@ -86,7 +88,7 @@ dependancySort p = foldl go [] depGraph
 
       
 -- Infer program
-inferProg :: Core.CoreProgram -> InferM [(Core.Var, TypeScheme)]
+inferProg :: Core.CoreProgram -> InferM [(Core.Name, TypeScheme)]
 inferProg p = do
 
   -- Reorder program with dependancies
@@ -94,7 +96,7 @@ inferProg p = do
 
   -- Mut rec groups
   z <- foldr (\b r -> do
-    let xs   = Core.bindersOf b
+    let xs   = Core.getName <$> Core.bindersOf b
     let rhss = Core.rhssOfBind b
 
     -- Fresh typescheme for each binder in the group
@@ -135,7 +137,7 @@ inferVar x ts e = do
       let (d, as, args) = safeCon k
       args' <- mapM (fresh . subTypeVars as ts) args
       t  <- fresh $ SData d ts
-      cg <- insert (Con e k ts args') t empty `inExpr` e
+      cg <- insert (Con e d (toDataCon k) ts args') t empty `inExpr` e
       return (foldr (:=>) t args', cg)
 
     Nothing ->
@@ -143,8 +145,8 @@ inferVar x ts e = do
         Just p -> do
           -- Infer fully instaitated polymorphic primitive operator
           let (as, args, rt, _, _) = Prim.primOpSig p
-          args' <- mapM (fresh . subTypeVars as ts . toSort) args
-          t  <- fresh $ subTypeVars as ts $ toSort rt
+          args' <- mapM (fresh . subTypeVars (Core.getName <$> as) ts . toSort) args
+          t  <- fresh $ subTypeVars (Core.getName <$> as) ts $ toSort rt
           return (foldr (:=>) t args', empty)
 
         Nothing -> do
@@ -209,7 +211,7 @@ infer e'@(Core.Lam x e) = do
     else do
       -- Variable abstraction
       t1 <- fresh $ toSort t
-      (t2, cg) <- local (insertVar x $ Forall [] [] [] t1) (infer e)
+      (t2, cg) <- local (insertVar (Core.getName x) $ Forall [] [] [] t1) (infer e)
       return (t1 :=> t2, cg)
     where
       -- Does the type eventually return a lifted type kind
@@ -228,7 +230,7 @@ infer e'@(Core.Let b e) = do
 
   -- Add each binds within the group to context with a fresh type (t) and no constraints
   ts <- mapM (freshScheme . toSortScheme . Core.exprType) rhss
-  let withBinds = local (insertMany xs ts)
+  let withBinds = local (insertMany (Core.getName <$> xs) ts)
 
   (ts', cg) <- foldM (\(ts, cg) rhs -> do
     -- Infer each bind within the group, compiling constraints
@@ -244,7 +246,7 @@ infer e'@(Core.Let b e) = do
   ts' <- quantifyWith cg' ts
 
   -- Infer in body with infered typescheme to the environment
-  (t, icg) <- local (insertMany xs ts') (infer e)
+  (t, icg) <- local (insertMany (Core.getName <$> xs) ts') (infer e)
   cg''     <- union cg' icg `inExpr` e'
 
   cg''' <- closeScope scope cg'' `inExpr` e'
@@ -263,7 +265,7 @@ infer e'@(Core.Case e b rt as) = do
   (t0, c0) <- infer e
   c0' <- insert et t0 c0 `inExpr` e'
 
-  (caseType, cg) <- local (insertVar b $ Forall [] [] [] et) $ foldM (\(caseType, cg) (a, bs, rhs) ->
+  (caseType, cg) <- local (insertVar (Core.getName b) $ Forall [] [] [] et) $ foldM (\(caseType, cg) (a, bs, rhs) ->
     if Core.exprIsBottom rhs
       then return (caseType, cg) -- If rhs is bottom it is not a valid case
       else do
@@ -271,24 +273,24 @@ infer e'@(Core.Case e b rt as) = do
         ts <- mapM (fresh . toSort . Core.varType) bs
 
         -- Ensure return type is valid
-        (ti', cgi) <- local (insertMany bs $ fmap (Forall [] [] []) ts) (infer rhs)
+        (ti', cgi) <- local (insertMany (Core.getName <$> bs) $ fmap (Forall [] [] []) ts) (infer rhs)
         cgi'       <- insert ti' t cgi `inExpr` e
         cg'        <- union cg cgi' `inExpr` e'
 
         -- Track the occurance of a constructors/default case
         caseType' <- case a of
           Core.DataAlt d -> case caseType of
-            Just s  -> let SData _ ss = es in return $ Just ((d, ss, ts):s)
+            Just (_, _, s) -> let SData _ ss = es in return $ Just (toIfaceTyCon $ Core.dataConTyCon d, ss, (toDataCon d, ts):s)
             Nothing -> return Nothing
           _         -> return Nothing
         
         return (caseType', cg')
-    ) (Just [], c0') as
+    ) (Just (undefined, undefined, []), c0') as
 
   -- Insure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
     Nothing  -> return cg -- Literal cases must have a default
-    Just dts -> insert t0 (Sum e' [(dc, ss, ts) | (dc, ss, ts) <- dts]) cg `inExpr` e'
+    Just (tc, ss, cs) -> insert t0 (Sum e' tc ss cs) cg `inExpr` e'
 
   cg' <- closeScope scope cg `inExpr` e'
   return (t, cg')

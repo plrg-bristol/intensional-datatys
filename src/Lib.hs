@@ -2,14 +2,17 @@ module Lib
     ( plugin
     ) where
 
+import System.IO
+
 import Control.Monad.RWS
 
 import qualified Data.Map as M
--- import Data.Serialize
+import Binary
 
 import Types
 import InferM
 import PrettyPrint
+import Serialization
 import InferCoreExpr
 
 import GhcPlugins
@@ -21,13 +24,25 @@ plugin = defaultPlugin { installCoreToDos = install }
 
 inferGuts :: ModGuts -> IO ModGuts
 inferGuts guts@ModGuts{mg_binds = p, mg_tcs = tcs, mg_module = m} = do
-  let env = Context{var = M.empty}
   -- pprTraceM "" (ppr p)
-  let (tss, _, _) = runRWS (inferProg p) env 0
+
+  -- Infer constraints
+  let (tss, _, _) = runRWS (inferProg p) Context{var = M.empty} 0
+
+  -- Display typeschemes
   mapM_ (\(v, ts) -> do
     putStrLn ""
     putStrLn $ showSDocUnsafe $ format v ts
     putStrLn ""
     ) tss
-  -- let ser = encode tss
+
+  -- Save typescheme to temporary file
+  (fp, h) <- openBinaryTempFile "" "typescheme"
+  bh <- openBinMem 1000
+  put_ bh tss
+  writeBinMem bh fp
+
+  -- Close temporary file
+  hClose h
+  
   return guts

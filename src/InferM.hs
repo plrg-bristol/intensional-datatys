@@ -21,6 +21,8 @@ import Control.Monad.RWS
 import Data.Functor.Identity
 import qualified Data.Map as M
 
+import IfaceType
+import ToIface
 import qualified GhcPlugins as Core
 
 import Types
@@ -37,14 +39,14 @@ inExpr ma e = withRWST (\ctx i -> ((e, ctx), i)) ma
   
 -- The variables in scope and their type
 newtype Context = Context {
-  var :: M.Map Core.Var TypeScheme
+  var :: M.Map Core.Name TypeScheme
 }
 
 -- Extract a variable from (local/global) context
 safeVar :: Core.Var -> InferM TypeScheme
 safeVar v = do
   ctx <- ask
-  case var ctx M.!? v of
+  case var ctx M.!? Core.getName v of
     Just ts -> return ts
     Nothing ->
       -- We can assume the variable is in scope as GHC hasn't emitted a warning
@@ -53,26 +55,23 @@ safeVar v = do
       in freshScheme $ toSortScheme t
 
 -- Extract a constructor from (local/global) context
-safeCon :: Core.DataCon -> (Core.TyCon, [Core.Var], [Sort])
+safeCon :: Core.DataCon -> (IfaceTyCon, [Core.Name], [Sort])
 safeCon k = 
   let tc   = Core.dataConTyCon k
-      as   = Core.dataConUnivAndExTyVars k
+      as   = Core.getName <$> Core.dataConUnivAndExTyVars k
       args = toSort <$> Core.dataConOrigArgTys k -- Ignore evidence
-  in (tc, as, args)
+  in (toIfaceTyCon tc, as, args)
 
 -- Extract polarised and instantiated constructor arguments from context
-delta :: Bool -> Core.TyCon -> Core.DataCon -> [Sort] -> [PType]
-delta p d k ss = 
-  let (d', as, ts) = safeCon k
-      ts' = subTypeVars as ss <$> ts
-  in (polarise p <$> ts')
+delta :: Bool -> DataCon -> [Sort] -> [PType]
+delta p (DataCon (_, as, ts)) as' = polarise p . subTypeVars as as' <$> ts
 
 -- Insert a variable into the context
-insertVar :: Core.Var -> TypeScheme -> Context ->  Context
+insertVar :: Core.Name -> TypeScheme -> Context ->  Context
 insertVar x f ctx = ctx{var = M.insert x f $ var ctx}
 
 -- Insert many variable into the context
-insertMany :: [Core.Var] -> [TypeScheme] -> Context ->  Context
+insertMany :: [Core.Name] -> [TypeScheme] -> Context ->  Context
 insertMany [] [] ctx = ctx
 insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 
@@ -83,8 +82,7 @@ insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 -- A fresh refinement variable
 fresh :: Sort -> InferM Type
 fresh (SVar a)       = return $ TVar a
-fresh (SBase b ss)   = return $ Base b ss
-fresh s@(SData d ss)   = do
+fresh s@(SData d ss) = do
   i <- get
   put (i + 1)
   return $ upArrow i (polarise True s)
@@ -99,7 +97,6 @@ fresh (SApp s1 s2) = do
 -- A fresh refinement scheme for module/let bindings
 freshScheme :: SortScheme -> InferM TypeScheme
 freshScheme (SForall as (SVar a))       = return $ Forall as [] [] $ TVar a
-freshScheme (SForall as (SBase b ss))   = return $ Forall as [] [] $ Base b ss
 freshScheme (SForall as s@(SData _ ss)) = do
   t <- fresh s
   case t of

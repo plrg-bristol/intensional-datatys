@@ -15,6 +15,8 @@ import PrettyPrint
 import Serialization
 import InferCoreExpr
 
+import Name
+import BinIface
 import GhcPlugins
 
 plugin :: Plugin
@@ -23,8 +25,11 @@ plugin = defaultPlugin { installCoreToDos = install }
     install _ todo = return ([ CoreDoStrictness, CoreDoPluginPass "Constraint Inference" (liftIO. inferGuts)] ++ todo)
 
 inferGuts :: ModGuts -> IO ModGuts
-inferGuts guts@ModGuts{mg_binds = p, mg_tcs = tcs, mg_module = m} = do
+inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   -- pprTraceM "" (ppr p)
+
+  -- Load modules
+  pprTraceM "" (ppr d)
 
   -- Infer constraints
   let (tss, _, _) = runRWS (inferProg p) Context{var = M.empty} 0
@@ -36,13 +41,12 @@ inferGuts guts@ModGuts{mg_binds = p, mg_tcs = tcs, mg_module = m} = do
     putStrLn ""
     ) tss
 
+  -- TODO: only globalise/serialize export binds
+  let tss' = globalise m tss
+    
   -- Save typescheme to temporary file
-  (fp, h) <- openBinaryTempFile "" "typescheme"
   bh <- openBinMem 1000
-  put_ bh tss
-  writeBinMem bh fp
-
-  -- Close temporary file
-  hClose h
+  putWithUserData (const $ return ()) bh tss'
+  writeBinMem bh $ moduleNameString $ moduleName m
   
   return guts

@@ -41,9 +41,11 @@ data Sort =
   deriving Eq
 
 -- Refinement variables
+-- TODO: pattern synonym 
 newtype RVar = RVar (Int, Bool, IfaceTyCon, [Sort]) deriving Eq
 
 instance Ord RVar where
+  {-# SPECIALIZE instance Ord RVar #-}
   RVar (x, _, _, _) <= RVar (x', _, _, _) = x <= x'
 
 -- Inference types
@@ -59,13 +61,17 @@ data Type =
 
 -- Equality of sums does not depend on their expression of origin
 instance Eq (Core.Expr Core.Var) where
+  {-# SPECIALIZE instance Eq (Core.Expr Core.Var) #-}
   e1 == e2 = True
 
--- Small representation of Core.DataCon
+-- Lightweight representation of Core.DataCon:
+-- DataCon n as args ~~ n :: forall as . args_0 -> ... -> args_n
+-- TODO: pattern synonym
 newtype DataCon = DataCon (Core.Name, [Core.Name], [Sort])
 
 -- DataCons are uniquely determined by their constructor's name
 instance Eq DataCon where
+  {-# SPECIALIZE instance Eq DataCon #-}
   DataCon (n, _, _) == DataCon (n', _, _) = n == n'
 
 -- Extract relevant information from Core.DataCon

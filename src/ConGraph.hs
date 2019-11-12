@@ -85,6 +85,7 @@ toNorm t1@(V x p d as) t2@(Sum e tc as' cs) =
 toNorm t1 t2 = [(t1, t2)]
 
 -- Insert new constraint with normalisation
+-- TODO: assert they have the same sort
 insert :: Type -> Type -> ConGraph -> InferME ConGraph
 insert t1 t2 cg = foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg $ toNorm t1 t2
 

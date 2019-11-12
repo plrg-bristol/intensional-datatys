@@ -145,8 +145,9 @@ inferVar x ts e = do
         Just p -> do
           -- Infer fully instaitated polymorphic primitive operator
           let (as, args, rt, _, _) = Prim.primOpSig p
-          args' <- mapM (fresh . subTypeVars (Core.getName <$> as) ts . toSort) args
-          t  <- fresh $ subTypeVars (Core.getName <$> as) ts $ toSort rt
+          let as' = Core.getName <$> as'
+          args' <- mapM (fresh . subTypeVars as' ts . toSort) args
+          t  <- fresh $ subTypeVars as' ts $ toSort rt
           return (foldr (:=>) t args', empty)
 
         Nothing -> do
@@ -225,12 +226,12 @@ infer e'@(Core.Let b e) = do
   scope <- get
 
   -- Infer local module (i.e. let expression)
-  let xs   = Core.bindersOf b
+  let xs   = Core.getName <$> Core.bindersOf b
   let rhss = Core.rhssOfBind b
 
   -- Add each binds within the group to context with a fresh type (t) and no constraints
   ts <- mapM (freshScheme . toSortScheme . Core.exprType) rhss
-  let withBinds = local (insertMany (Core.getName <$> xs) ts)
+  let withBinds = local (insertMany xs ts)
 
   (ts', cg) <- foldM (\(ts, cg) rhs -> do
     -- Infer each bind within the group, compiling constraints
@@ -246,7 +247,7 @@ infer e'@(Core.Let b e) = do
   ts' <- quantifyWith cg' ts
 
   -- Infer in body with infered typescheme to the environment
-  (t, icg) <- local (insertMany (Core.getName <$> xs) ts') (infer e)
+  (t, icg) <- local (insertMany xs ts') (infer e)
   cg''     <- union cg' icg `inExpr` e'
 
   cg''' <- closeScope scope cg'' `inExpr` e'
@@ -278,19 +279,26 @@ infer e'@(Core.Case e b rt as) = do
         cg'        <- union cg cgi' `inExpr` e'
 
         -- Track the occurance of a constructors/default case
-        caseType' <- case a of
-          Core.DataAlt d -> case caseType of
-            Just (_, _, s) -> let SData _ ss = es in return $ Just (toIfaceTyCon $ Core.dataConTyCon d, ss, (toDataCon d, ts):s)
-            Nothing -> return Nothing
-          _         -> return Nothing
+        let caseType' = case a of {
+          Core.DataAlt d ->
+            let SData _ ss' = es
+                tc'         = toIfaceTyCon $ Core.dataConTyCon d
+            in Just (Just tc', Just ss', (toDataCon d, ts):case caseType of {
+              Just (_, _, s) -> s; -- TODO: ensure type constructor and type arguments align
+              Nothing        -> []
+            });
+          -- Default/literal cases
+          _ -> Nothing
+          }
         
         return (caseType', cg')
-    ) (Just (undefined, undefined, []), c0') as
+    ) (Just (Nothing, Nothing, []), c0') as
 
   -- Insure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
     Nothing  -> return cg -- Literal cases must have a default
-    Just (tc, ss, cs) -> insert t0 (Sum e' tc ss cs) cg `inExpr` e'
+    Just (Just tc, Just ss, cs) -> insert t0 (Sum e' tc ss cs) cg `inExpr` e'
+    _ -> Core.pprPanic "Inconsistent data constructors arguments!" (Core.ppr ())
 
   cg' <- closeScope scope cg `inExpr` e'
   return (t, cg')

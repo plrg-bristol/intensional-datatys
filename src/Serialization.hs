@@ -1,10 +1,15 @@
 {-# LANGUAGE FlexibleInstances, InstanceSigs #-}
 
-module Serialization where
+module Serialization (
+  globalise
+) where
 
+import Name
 import Binary
+import GhcPlugins hiding (Type, Var, App, DataCon)
 
 import Types
+import PrettyPrint
 
 instance Binary Sort where
   put_ bh (SVar a) = do
@@ -129,3 +134,68 @@ instance Binary TypeScheme where
       cs  <- get bh
       u   <- get bh
       return $ Forall tvs rvs cs u
+  
+-- Globalise a bind ready to serialize
+globalise :: Module -> [(Name, TypeScheme)] -> [(Name, TypeScheme)]
+globalise m binds = zip names' (globaliseTypeScheme m names names' <$> types)
+    where
+      names  = fst <$> binds
+      types  = snd <$> binds
+      names' = globaliseName m <$> names
+
+-- Convert local name into globl name
+globaliseName :: Module -> Name -> Name
+globaliseName _ n | isExternalName n = n
+globaliseName m n = mkExternalName (nameUnique n) m (nameOccName n) (nameSrcSpan n)
+
+-- Convert local names in a typescheme to global names
+globaliseTypeScheme :: Module -> [Name] -> [Name] -> TypeScheme -> TypeScheme
+globaliseTypeScheme m old new (Forall ns xs cs u) = Forall ns' (subNames m old' new' xs) (subNames m old' new' cs) (subNames m old' new' u)
+    where
+      old' = old ++ ns
+      new' = new ++ ns' 
+      ns' = globaliseName m <$> ns
+  
+class NameSub a where
+  subName :: Module -> Name -> Name -> a -> a
+
+subNames :: NameSub a => Module -> [Name] -> [Name] -> a -> a
+subNames _ [] [] = id
+subNames m (n:ns) (n':ns') = subName m n n' . subNames m ns ns'
+
+instance NameSub RVar where
+  {-# SPECIALIZE instance NameSub RVar #-}
+  subName m n n' (RVar (i, p, tc, ss)) = RVar (i, p, tc, subName m n n' ss)
+
+instance NameSub Sort where
+  {-# SPECIALIZE instance NameSub Sort #-}
+  subName m n n' (SVar n'')     = SVar $ subName m n n' n''
+  subName m n n' (SData tc ss)  = SData tc (subName m n n' ss)
+  subName m n n' (SArrow s1 s2) = SArrow (subName m n n' s1) (subName m n n' s2)
+  subName m n n' (SApp s1 s2)   = SApp (subName m n n' s1) (subName m n n' s2)
+
+instance NameSub Type where
+  {-# SPECIALIZE instance NameSub Type #-}
+  subName m n n' (Var r)          = Var $ subName m n n' r
+  subName m n n' (Sum e tc ss cs) = Sum e tc (subName m n n' ss) (subName m n n' cs)
+  subName _ _ _ Dot               = Dot
+  subName m n n' (TVar n'')       = TVar $ subName m n n' n''
+  subName m n n' (t1 :=> t2)      = (subName m n n' t1) :=> (subName m n n' t2)
+  subName m n n' (App t1 s2)      = App (subName m n n' t1) (subName m n n' s2)
+
+instance NameSub Name where
+  subName _ x y x'
+    | x == x'   = y
+    | otherwise = x'
+
+instance NameSub DataCon where
+  {-# SPECIALIZE instance NameSub DataCon #-}
+  subName m n n' (DataCon (n'', ns, ss)) = DataCon (subName m n n' n'', ns', subNames m (n:ns) (n':ns') ss)
+    where
+      ns' = globaliseName m <$> ns
+
+instance (NameSub a, NameSub b) => NameSub (a, b) where
+  subName m n n' (a, b) = (subName m n n' a, subName m n n' b)
+  
+instance NameSub a => NameSub [a] where
+  subName m n n' = fmap $ subName m n n'

@@ -13,18 +13,18 @@ import PrettyPrint
 
 instance Binary Sort where
   put_ bh (SVar a) = do
-    put_ bh (1 :: Int)
+    put_ bh (0 :: Int)
     put_ bh a
   put_ bh (SData tc as) = do
-    put_ bh (2 :: Int)
+    put_ bh (1 :: Int)
     put_ bh tc
     put_ bh as
   put_ bh (SArrow s1 s2) =  do
-    put_ bh (3 :: Int)
+    put_ bh (2 :: Int)
     put_ bh s1
     put_ bh s2
   put_ bh (SApp s1 s2) = do
-    put_ bh (4 :: Int)
+    put_ bh (3 :: Int)
     put_ bh s1
     put_ bh s2
 
@@ -34,15 +34,15 @@ instance Binary Sort where
       0 -> do
         a <- get bh
         return $ SVar a
-      2 -> do
+      1 -> do
         tc <- get bh
         as <- get bh
         return $ SData tc as
-      3 -> do
+      2 -> do
         s1 <- get bh
         s2 <- get bh
         return $ SArrow s1 s2
-      4 -> do
+      3 -> do
         s1 <- get bh
         s2 <- get bh
         return $ SApp s1 s2

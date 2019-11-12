@@ -1,4 +1,4 @@
-module Test where
+module TestLib (head') where
 
 data Tm = Var Int | Cst Int | App Tm Tm
 
@@ -64,7 +64,5 @@ quicksort1 (x:xs) =
 
 liftA2 :: (Applicative f, Functor f) => (a -> b -> c) -> f a -> f b -> f c
 liftA2 f x = (<*>) (fmap f x)
-
--- test = head' []
 
 head' (x:xs) = x

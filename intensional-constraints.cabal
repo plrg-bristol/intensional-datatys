@@ -41,6 +41,7 @@ library
   ghc-options: -O2 -fwarn-missing-signatures
   build-depends:
       base >=4.7
+    , directory
     , containers
     , mtl
     , ghc
@@ -48,7 +49,7 @@ library
 
 test-suite intensional-constraints-test
   type: exitcode-stdio-1.0
-  main-is: Test.hs
+  main-is: TestMain.hs
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:

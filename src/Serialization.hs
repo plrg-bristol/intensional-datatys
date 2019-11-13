@@ -6,9 +6,10 @@ module Serialization (
 
 import Name
 import Binary
+import TyCoRep hiding (Type)
 import GhcPlugins hiding (Type, Var, App, DataCon)
 
-import Types
+import Types as Types
 import PrettyPrint
 
 instance Binary Sort where
@@ -27,6 +28,11 @@ instance Binary Sort where
     put_ bh (3 :: Int)
     put_ bh s1
     put_ bh s2
+  put_ bh (SLit l) = do
+    put_ bh (4 :: Int)
+    case l of
+      NumTyLit i -> put_ bh (0 :: Int) >> put_ bh i
+      StrTyLit s -> put_ bh (1 :: Int) >> put_ bh s
 
   get bh = do
     t <- get bh
@@ -46,6 +52,11 @@ instance Binary Sort where
         s1 <- get bh
         s2 <- get bh
         return $ SApp s1 s2
+      4 -> do
+        t' <- (get bh) :: IO Int
+        case t' of
+          0 -> get bh >>= return . SLit . NumTyLit
+          1 -> get bh >>= return . SLit . StrTyLit
 
 instance Binary RVar where
   put_ bh (RVar (i, b, tc, as)) = do
@@ -173,6 +184,7 @@ instance NameSub Sort where
   subName m n n' (SData tc ss)  = SData tc (subName m n n' ss)
   subName m n n' (SArrow s1 s2) = SArrow (subName m n n' s1) (subName m n n' s2)
   subName m n n' (SApp s1 s2)   = SApp (subName m n n' s1) (subName m n n' s2)
+  subName _ _ _ (SLit l)        = SLit l
 
 instance NameSub Type where
   {-# SPECIALIZE instance NameSub Type #-}
@@ -182,6 +194,7 @@ instance NameSub Type where
   subName m n n' (TVar n'')       = TVar $ subName m n n' n''
   subName m n n' (t1 :=> t2)      = (subName m n n' t1) :=> (subName m n n' t2)
   subName m n n' (App t1 s2)      = App (subName m n n' t1) (subName m n n' s2)
+  subName _ _ _ l@(Types.Lit _)   = l
 
 instance NameSub Name where
   subName _ x y x'

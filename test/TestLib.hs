@@ -1,4 +1,4 @@
-module TestLib (head') where
+module TestLib where
 
 data Tm = Var Int | Cst Int | App Tm Tm
 
@@ -41,8 +41,8 @@ foldn :: (a -> a) -> a -> Nat -> a
 foldn s z Z = z
 foldn s z (S n) = s (foldn s z n)
 
-add = foldn S Z
-mul = add
+-- add = foldn S Z
+-- mul = add
 
 foldr' :: (a -> b -> b) -> b -> (List a) -> b
 foldr' f x Empty = x

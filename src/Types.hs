@@ -1,9 +1,9 @@
 {-# LANGUAGE FlexibleInstances, PatternSynonyms, MultiParamTypeClasses #-}
 
 module Types (
-  Sort (SVar, SData, SArrow, SApp),
+  Sort (SVar, SData, SArrow, SApp, SLit),
   RVar (RVar),
-  Type (Var, V, Sum, Con, Dot, TVar, (:=>), App),
+  Type (Var, V, Sum, Con, Dot, TVar, (:=>), App, Lit),
   DataCon (DataCon),
   SortScheme (SForall),
   TypeScheme (Forall),
@@ -42,6 +42,7 @@ data Sort =
   | SData IfaceTyCon [Sort] 
   | SArrow Sort Sort 
   | SApp Sort Sort 
+  | SLit T.TyLit
   deriving Eq
 
 -- Refinement variables
@@ -61,6 +62,7 @@ data Type =
   | TVar Core.Name
   | Type :=> Type
   | App Type Sort
+  | Lit T.TyLit
   deriving Eq
 
 -- Equality of sums does not depend on their expression of origin
@@ -135,6 +137,10 @@ toSort (T.FunTy t1 t2) =
   let s1 = toSort t1
       s2 = toSort t2
   in SArrow s1 s2
+toSort (T.LitTy l) = SLit l
+toSort (T.ForAllTy _ _) = Core.pprPanic "Forall" (Core.ppr ())
+toSort (T.CastTy _ _) = Core.pprPanic "ca" (Core.ppr ())
+toSort (T.CoercionTy _) = Core.pprPanic "co" (Core.ppr ())
 toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Forall, Literal, Cast & Coercion
 
 -- Convert a core type into a sort scheme
@@ -160,6 +166,7 @@ data PType =
   | PData Bool IfaceTyCon [Sort] 
   | PArrow PType PType  
   | PApp PType Sort
+  | PLit T.TyLit
 
 -- Polarise a sort, i.e. Ty(+, -)(s) or Ty(-, +)(s)
 polarise :: Bool -> Sort -> PType

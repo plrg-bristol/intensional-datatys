@@ -53,6 +53,8 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   -- Infer constraints
   let (tss, _, _) = runRWS (inferProg p) env 0
 
+  -- Why are only exported binds displaying
+
   -- Display typeschemes
   liftIO $ mapM_ (\(v, ts) -> do
     putStrLn ""

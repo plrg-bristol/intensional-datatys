@@ -107,7 +107,7 @@ instance Binary Type where
         tc <- get bh
         as <- get bh
         cs <- get bh
-        return $ Sum undefined {- e -} tc as cs
+        return $ Sum undefined tc as cs
       2 -> return Dot
       3 -> do
         a <- get bh

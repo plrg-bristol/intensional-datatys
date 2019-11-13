@@ -8,6 +8,7 @@ module Types (
   SortScheme (SForall),
   TypeScheme (Forall),
   toDataCon,
+  tagSumsWith,
   vars,
   stems,
 
@@ -32,6 +33,9 @@ import ToIface
 import qualified GhcPlugins as Core
 import qualified TyCoRep as T
 
+-- For tracking the origin of sums, used in error messages
+type Origin = Either (Core.Expr Core.Var) Core.ModuleName
+
 -- Base sorts (unrefined types)
 data Sort = 
     SVar Core.Name 
@@ -51,7 +55,7 @@ instance Ord RVar where
 -- Inference types
 data Type = 
     Var RVar
-  | Sum (Core.Expr Core.Var) IfaceTyCon [Sort] [(DataCon, [Type])]
+  | Sum Origin IfaceTyCon [Sort] [(DataCon, [Type])]
   | Dot -- For coercions
 
   | TVar Core.Name
@@ -79,7 +83,7 @@ toDataCon :: Core.DataCon -> DataCon
 toDataCon dc = DataCon (Core.getName dc, Core.getName <$> Core.dataConUnivAndExTyVars dc, toSort <$> Core.dataConOrigArgTys dc)
 
 -- Singleton sum constructor
-pattern Con :: Core.Expr Core.Var -> IfaceTyCon -> DataCon -> [Sort] -> [Type] -> Type
+pattern Con :: Origin -> IfaceTyCon -> DataCon -> [Sort] -> [Type] -> Type
 pattern Con e tc k as args = Sum e tc as [(k, args)]
 
 -- pattern Con' :: Core.Expr Core.Var -> Core.DataCon -> [Sort] -> [Type] -> Type
@@ -94,6 +98,14 @@ data SortScheme = SForall [Core.Name] Sort
 -- Refinement quantified sort scheme
 data TypeScheme = Forall [Core.Name] [RVar] [(Type, Type)] Type
 -- instance Serialize TypeScheme
+
+-- Associate Sum types with their module of origin
+tagSumsWith :: Core.ModuleName -> TypeScheme -> TypeScheme
+tagSumsWith m (Forall xs rs cs u) = Forall xs rs ((\(t1, t2) -> (tagSumsWith' t1, tagSumsWith' t2)) <$> cs) (tagSumsWith' u)
+  where
+    tagSumsWith' :: Type -> Type
+    tagSumsWith' (Sum _ tc ss cs) = Sum (Right m) tc ss [(d, tagSumsWith' <$> ts) | (d, ts) <- cs]
+    tagSumsWith' t = t
 
 -- The refinement variables present in a type
 vars :: Type -> [RVar]

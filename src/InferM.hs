@@ -82,7 +82,7 @@ insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 -- A fresh refinement variable
 fresh :: Sort -> InferM Type
 fresh (SVar a)       = return $ TVar a
-fresh s@(SData d ss) = do
+fresh s@(SData _ _) = do
   i <- get
   put (i + 1)
   return $ upArrow i (polarise True s)

@@ -137,7 +137,7 @@ inferVar x ts e = do
       let (d, as, args) = safeCon k
       args' <- mapM (fresh . subTypeVars as ts) args
       t  <- fresh $ SData d ts
-      cg <- insert (Con e d (toDataCon k) ts args') t empty `inExpr` e
+      cg <- insert (Con (Left e) d (toDataCon k) ts args') t empty `inExpr` e
       return (foldr (:=>) t args', cg)
 
     Nothing ->
@@ -161,13 +161,14 @@ inferVar x ts e = do
               ts'     <- mapM fresh ts
               let cg' =  subTypeVars as ts' cg
               let xs' =  fmap (\(RVar (x, p, d, ss)) -> RVar (x, p, d, subTypeVars as ts <$> ss)) xs
-              ys      <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs'
+              ys      <- mapM (fresh . \(RVar (_, _, !d, !ss)) -> SData d ss) xs'
               let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
               
               -- Import variables constraints at type
               cg'' <- foldM (\cg' (x, y) -> substitute x y cg' `inExpr` e) cg' (zip xs' ys)
 
               v <- fresh $ toSort $ Core.exprType e
+
               cg''' <- insert u' v cg'' `inExpr` e
               return (v, cg''')
 
@@ -297,7 +298,7 @@ infer e'@(Core.Case e b rt as) = do
   -- Insure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
     Nothing  -> return cg -- Literal cases must have a default
-    Just (Just tc, Just ss, cs) -> insert t0 (Sum e' tc ss cs) cg `inExpr` e'
+    Just (Just tc, Just ss, cs) -> insert t0 (Sum (Left e') tc ss cs) cg `inExpr` e'
     _ -> Core.pprPanic "Inconsistent data constructors arguments!" (Core.ppr ())
 
   cg' <- closeScope scope cg `inExpr` e'

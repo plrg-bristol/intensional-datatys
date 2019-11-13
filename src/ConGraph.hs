@@ -208,6 +208,7 @@ succChain cg f t m = do
 
 -- Safely substitute variable with an expression
 substitute :: RVar -> Type -> ConGraph -> InferME ConGraph
+substitute x (Var y) cg | x == y = return cg
 substitute x se ConGraph{succs = s, preds = p, subs = sb} = do
   -- Necessary to recalculate preds and succs as se might not be a Var.
   -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications anyway

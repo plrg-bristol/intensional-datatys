@@ -40,13 +40,14 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   -- pprTraceM "" (ppr p)
 
   -- Reload saved typeschemes
-  deps <- liftIO $ filterM doesFileExist $ map (interfaceName . fst) $ dep_mods d
+  deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
   hask <- getHscEnv 
-  !env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env fp -> do
-    bh    <- liftIO $ readBinMem fp
+  env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m -> do
+    bh    <- liftIO $ readBinMem $ interfaceName m
     cache <- mkNameCacheUpdater
     tss   <- liftIO (getWithUserData cache bh :: IO [(Name, TypeScheme)])
-    let env' = foldr (\(x, ts) env' -> insertVar x ts env') Context{var = M.empty} tss
+    let tss' = [(n, tagSumsWith m ts) | (n, ts) <- tss]
+    let env' = foldr (\(x, ts) env' -> insertVar x ts env') Context{var = M.empty} tss'
     return env') Context{var = M.empty} deps
 
   -- Infer constraints
@@ -59,7 +60,6 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     putStrLn ""
     ) tss
 
-  -- TODO: only globalise/serialize export binds
   let tss' = globalise m tss
     
   -- Save typescheme to temporary file

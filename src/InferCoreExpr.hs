@@ -28,11 +28,14 @@ quantifyWith cg@ConGraph{subs = sb} ts = do
   -- Rewrite ts using equivalence class representations
   let ts' = [Forall as [] [] (subRefinementMap sb u) | Forall as _ [] u <- ts]
 
+  -- Stems which occur in the interface
+  let interfaceStems = [s | (Forall _ _ _ u) <- ts', s <- stems u]
+
   -- Take the full transitive closure of the graph using rewriting rules
-  let lcg = saturate cg
+  let lcg = saturate interfaceStems cg
 
   -- Check all the stems in the interface
-  let chkStems = all (\s -> any (\(Forall _ _ _ u) -> s `elem` stems u) ts') . stems
+  let chkStems = all (`elem` interfaceStems) . stems
 
   -- Restricted congraph with chkStems
   let edges = L.nub [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
@@ -197,7 +200,7 @@ infer e@(Core.App e1 e2) =
           cg  <- union c1 c2 `inExpr` e
           cg' <- insert t2 t3 cg `inExpr` e
           return (t4, cg')
-        _ -> Core.pprPanic "Asdsd" (Core.ppr t1)
+        _ -> Core.pprPanic "Application to a non-function expression!" (Core.ppr e)
   where
     -- Process a core type/evidence application
     fromPolyVar (Core.Var i) = Just (i, [])

@@ -12,6 +12,7 @@ module Types (
   vars,
   stems,
 
+  broaden,
   toSort,
   toSortScheme,
 
@@ -20,7 +21,6 @@ module Types (
   upArrow,
 
   TypeVars (subTypeVar),
-  broaden,
   subTypeVars,
   subRefinementVar,
   subRefinementVars,
@@ -58,7 +58,7 @@ instance Ord RVar where
 data Type = 
     Var RVar
   | Sum Origin IfaceTyCon [Sort] [(DataCon, [Type])]
-  | Dot -- For coercions
+  | Dot -- Coercions
 
   | TVar Core.Name
   | Type :=> Type
@@ -88,9 +88,6 @@ toDataCon dc = DataCon (Core.getName dc, Core.getName <$> Core.dataConUnivAndExT
 -- Singleton sum constructor
 pattern Con :: Origin -> IfaceTyCon -> DataCon -> [Sort] -> [Type] -> Type
 pattern Con e tc k as args = Sum e tc as [(k, args)]
-
--- pattern Con' :: Core.Expr Core.Var -> Core.DataCon -> [Sort] -> [Type] -> Type
--- pattern Con' e d as args = Sum e [(toIfaceTyCon $ Core.dataConTyCon d, Core.getName d, as, args)]
 
 -- Refinement variable pattern
 pattern V :: Int -> Bool -> IfaceTyCon -> [Sort] -> Type
@@ -126,6 +123,14 @@ stems t = [x | RVar (x, _, _, _) <- vars t]
 
 
 
+-- De-refine a type to a sort
+broaden :: Type -> Sort
+broaden (V _ _ d as)    = SData d as
+broaden (Sum _ tc as _) = SData tc as
+broaden (TVar a)        = SVar a
+broaden (t1 :=> t2)     = SArrow (broaden t1) (broaden t2)
+broaden (App t1 s2)     = SApp (broaden t1) s2
+
 -- Convert a core type into a sort
 toSort :: Core.Type -> Sort
 toSort (T.TyVarTy v)   = SVar $ Core.getName v
@@ -136,17 +141,13 @@ toSort (T.AppTy t1 t2) =
 toSort (T.TyConApp t args) | Core.isTypeSynonymTyCon t =
   case Core.synTyConDefn_maybe t of
     Just (as, u) -> subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
-    Nothing -> Core.pprPanic "Not a type synonym!" (Core.ppr t)
 toSort (T.TyConApp t args) = SData (toIfaceTyCon t) (toSort <$> args)
 toSort (T.FunTy t1 t2) = 
   let s1 = toSort t1
       s2 = toSort t2
   in SArrow s1 s2
 toSort (T.LitTy l) = SLit l
-toSort (T.ForAllTy _ _) = Core.pprPanic "Forall" (Core.ppr ())
-toSort (T.CastTy _ _) = Core.pprPanic "ca" (Core.ppr ())
-toSort (T.CoercionTy _) = Core.pprPanic "co" (Core.ppr ())
-toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Forall, Literal, Cast & Coercion
+toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Forall, Cast & Coercion
 
 -- Convert a core type into a sort scheme
 toSortScheme :: Core.Type -> SortScheme
@@ -202,14 +203,6 @@ class TypeVars a t where
 subTypeVars :: TypeVars a t => [Core.Name] -> [t] -> a -> a
 subTypeVars [] [] = id
 subTypeVars (a:as) (t:ts) = subTypeVar a t . subTypeVars as ts
-
--- De-refine a type to a sort
-broaden :: Type -> Sort
-broaden (V _ _ d as)    = SData d as
-broaden (Sum _ tc as _) = SData tc as
-broaden (TVar a)        = SVar a
-broaden (t1 :=> t2)     = SArrow (broaden t1) (broaden t2)
-broaden (App t1 s2)     = SApp (broaden t1) s2
 
 -- Collapse an application type if possible after a substitution has occured
 applySort :: Type -> Sort -> Type

@@ -4,7 +4,8 @@ import TestLib
 import Data.Array
 import qualified Data.List as List
 
-test = head' []
+-- test b = case odd' b of 
+--   True -> b
  
 data BW = Black | White
         deriving (Eq, Show)

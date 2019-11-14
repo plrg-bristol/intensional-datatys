@@ -90,11 +90,9 @@ insertInner (t1 :=> t2) (t1' :=> t2') cg = do
   cg' <- insert t1' t1 cg
   insert t2 t2' cg'
 
-insertInner t1@(Sum e1 tc as cs) t2@(Sum e2 tc' as' ds) _
-  | tc /= tc' = Core.pprPanic "Sum type mismatch!" (Core.ppr ()) --This should be unreachable
-  | any (`notElem` fmap fst ds) $ fmap fst cs = do
-    (e, _) <- ask
-    Core.pprPanic "Invalid sum!" (Core.ppr (t1, t2, e1, e2, e))
+insertInner t1@(Sum e1 tc as cs) t2@(Sum e2 tc' as' ds) _ | any (`notElem` fmap fst ds) $ fmap fst cs = do
+  (e, _) <- ask
+  Core.pprPanic "Invalid sum!" (Core.ppr (t1, t2, e1, e2, e))
 
 insertInner cx@(Con _ _ c as cargs) dy@(Con _ _ d as' dargs) cg
   | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
@@ -114,7 +112,7 @@ insertInner (Sum e tc as cs) t cg = foldM (\cg (c, cargs) -> insert (Con e tc c 
 
 insertInner t1 t2 cg = do
   (e, _) <- ask
-  Core.pprPanic "Error!" (Core.ppr (t1, t2, e)) -- This should be unreachable
+  Core.pprPanic "Unreduced type application in constraints!" (Core.ppr (t1, t2, e)) -- This should be unreachable
 
 insertSucc :: RVar -> Type -> ConGraph -> InferME ConGraph
 insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
@@ -232,33 +230,41 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 
 
 -- Eagerly remove properly scoped bounded (intermediate) nodes
+-- Unsound for mutual recursion
 closeScope :: Int -> ConGraph -> InferME ConGraph
 {-# INLINE closeScope #-}
-closeScope scope cg@ConGraph{subs = sb} = do
-  -- (_, ctx) <- ask
-  -- let varTypes = M.elems $ var ctx
-  -- let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
+closeScope scope cg@ConGraph{subs = sb} = return cg
+-- closeScope scope cg@ConGraph{subs = sb} = do
+--   (_, ctx) <- ask
+--   let varTypes = M.elems $ var ctx
+--   let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
   
-  -- Filter irrelevant variable, i.e. those that have gone out of scope
-  let p v = case v of {(V x _ _ _) ->  x <= scope {- || (x `elem` envStems) -}; _ -> True}
+--   -- Filter irrelevant variable, i.e. those that have gone out of scope
+--   let p v = case v of {(V x _ _ _) ->  x <= scope {- || (x `elem` envStems) -}; _ -> True}
 
-  fromListWith $ [(n1, n2) | (n1, n2) <- saturate cg, p n1 || p n2]
-  where
-    fromListWith = foldM (\cg (t1, t2) -> insert t1 t2 cg) ConGraph{succs = M.empty, preds = M.empty, subs = sb}
+--   fromListWith $ [(n1, n2) | (n1, n2) <- saturate cg, p n1 || p n2]
+--   where
+--     fromListWith = foldM (\cg (t1, t2) -> insert t1 t2 cg) ConGraph{succs = M.empty, preds = M.empty, subs = sb}
 
 -- The fixed point of normalisation and transitivity
-saturate :: ConGraph -> [(Type, Type)]
+saturate :: [Int] -> ConGraph -> [(Type, Type)]
 {-# INLINE saturate #-}
-saturate cg@ConGraph{subs = sb} = saturate' $ toList cg
+saturate interface cg@ConGraph{subs = sb} = saturate' $ toList cg
   where
-    saturate' cs = do
+    saturate' cs =
       -- Normalise all transitive edges in cs and apply substitutions 
-      let delta = [(subRefinementMap sb d1, subRefinementMap sb d2) |(a, b) <-cs, (b', c) <- cs, b == b', (d1, d2) <- normalise a c]
+      let delta = [(subRefinementMap sb d1, subRefinementMap sb d2) | (a, b) <-cs, (b', c) <- cs, 
+                    b == b', 
+                    (any (`elem` interface) $ stems a) || (any (`elem` interface) $ stems b),  -- If it not conncted to something in the interface we don't care
+                                                                                               -- Fix-point covers transitivity
+                    (d1, d2) <- normalise a c, 
+                    (subRefinementMap sb d1, subRefinementMap sb d2) `notElem` cs]
 
-      -- Add new edges
-      let cs' = L.nub (cs ++ delta)
-
-      -- Until a fixed point is reached
-      if cs == cs'
+      in if delta == []
         then cs
-        else saturate' cs'
+        else 
+          -- Add new edges
+          let cs' = (L.nub delta) ++ cs
+
+          -- Until a fixed point is reached
+          in saturate' cs'

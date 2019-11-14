@@ -4,7 +4,6 @@ module Lib
     ( plugin
     ) where
 
-import System.IO
 import System.Directory
 
 import Control.Monad.RWS hiding (get)
@@ -23,8 +22,6 @@ import IfaceEnv
 import BinIface
 import GhcPlugins
 import TcRnMonad
-import TcRnTypes
-import IOEnv
 
 plugin :: Plugin
 plugin = defaultPlugin { installCoreToDos = install }
@@ -35,7 +32,6 @@ interfaceName :: ModuleName -> FilePath
 interfaceName = ("interface/" ++) . moduleNameString
 
 inferGuts :: ModGuts -> CoreM ModGuts
--- HscEnv IORef UniqSupply
 inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   -- pprTraceM "" (ppr p)
 
@@ -47,13 +43,11 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     cache <- mkNameCacheUpdater
     tss   <- liftIO (getWithUserData cache bh :: IO [(Name, TypeScheme)])
     let tss' = [(n, tagSumsWith m ts) | (n, ts) <- tss]
-    let env' = foldr (\(x, ts) env' -> insertVar x ts env') Context{var = M.empty} tss'
-    return env') Context{var = M.empty} deps
+    return $ foldr (\(x, ts) env' -> insertVar x ts env') env tss'
+    ) Context{var = M.empty} deps
 
   -- Infer constraints
   let (tss, _, _) = runRWS (inferProg p) env 0
-
-  -- Why are only exported binds displaying
 
   -- Display typeschemes
   liftIO $ mapM_ (\(v, ts) -> do
@@ -71,5 +65,4 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   liftIO $ putWithUserData (const $ return ()) bh tss'
   liftIO $ writeBinMem bh $ interfaceName $ moduleName m
 
-  -- TODO: delete files ??  
   return guts

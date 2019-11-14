@@ -20,6 +20,7 @@ module Types (
   upArrow,
 
   TypeVars (subTypeVar),
+  broaden,
   subTypeVars,
   subRefinementVar,
   subRefinementVars,
@@ -132,6 +133,10 @@ toSort (T.AppTy t1 t2) =
   let s1 = toSort t1
       s2 = toSort t2
   in SApp s1 s2
+toSort (T.TyConApp t args) | Core.isTypeSynonymTyCon t =
+  case Core.synTyConDefn_maybe t of
+    Just (as, u) -> subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
+    Nothing -> Core.pprPanic "Not a type synonym!" (Core.ppr t)
 toSort (T.TyConApp t args) = SData (toIfaceTyCon t) (toSort <$> args)
 toSort (T.FunTy t1 t2) = 
   let s1 = toSort t1
@@ -147,6 +152,9 @@ toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Forall
 toSortScheme :: Core.Type -> SortScheme
 toSortScheme (T.TyVarTy v)       = SForall [] (SVar $ Core.getName v)
 toSortScheme (T.AppTy t1 t2)     = SForall [] $ SApp (toSort t1) (toSort t2)
+toSortScheme (T.TyConApp t args) | Core.isTypeSynonymTyCon t =
+  case Core.synTyConDefn_maybe t of
+    Just (as, u) -> SForall [] $ subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
 toSortScheme (T.TyConApp t args) = SForall [] $ SData (toIfaceTyCon t) (toSort <$> args)
 toSortScheme (T.ForAllTy b t) =
   let (SForall as st) = toSortScheme t

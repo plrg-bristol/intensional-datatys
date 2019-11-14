@@ -16,9 +16,7 @@ module ConGraph (
 
 import Control.Applicative hiding (empty)
 import Control.Monad.RWS hiding (Sum)
-import Control.Monad.Reader
 
-import Data.Bifunctor (second)
 import qualified Data.Map as M
 import qualified Data.List as L
 
@@ -63,37 +61,29 @@ instance TypeVars ConGraph Type where
 
 
 -- Normalise the constraints by applying recursive simplifications
-toNorm :: Type -> Type -> [(Type, Type)]
-toNorm t1@(Con e tc k as ts) t2@(V x p d as') =
+normalise :: Type -> Type -> [(Type, Type)]
+normalise t1@(Con e tc k as ts) t2@(V x p d as') =
   let ts' = upArrow x <$> delta p k as
-  in if ts' /= ts
-    then
-      let c1 = toNorm (Con e tc k as ts') (V x p d as')
-          c2 = toNorm (Con e tc k as ts) (Con e tc k as ts')
-      in (c1 ++ c2)
-    else [(Con e tc k as ts', V x p d as'), (Con e tc k as ts, Con e tc k as ts')]
-toNorm t1@(V x p d as) t2@(Sum e tc as' cs) =
+  in [(Con e tc k as ts', V x p d as'), (Con e tc k as ts, Con e tc k as ts')]
+normalise t1@(V x p d as) t2@(Sum e tc as' cs) =
   let cs' = refineCon <$> cs
-  in if cs' /= cs
-    then
-      let c1 = toNorm (Sum e tc as' cs') (Sum e tc as' cs)
-          c2 = toNorm (V x p d as) (Sum e tc as' cs')
-      in (c1 ++ c2)
-    else [(Sum e tc as' cs', Sum e tc as' cs), (V x p d as, Sum e tc as' cs)]
+  in [(Sum e tc as' cs', Sum e tc as' cs), (V x p d as, Sum e tc as' cs')]
   where
     refineCon (k, ts) = (k, upArrow x <$> delta p k as')
-toNorm t1 t2 = [(t1, t2)]
+normalise t1 t2 = [(t1, t2)]
 
 -- Insert new constraint with normalisation
 -- TODO: assert they have the same sort
 insert :: Type -> Type -> ConGraph -> InferME ConGraph
-insert t1 t2 cg = foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg $ toNorm t1 t2
+insert Dot t2 cg = return cg -- Ignore any constriants concerning Dot, i.e. coercions
+insert t1 Dot cg = return cg
+
+insert t1 t2 _ | broaden t1 /= broaden t2 = Core.pprPanic "Sorts must algin" (Core.ppr (t1, t2)) undefined
+
+insert t1 t2 cg = foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg $ normalise t1 t2
 
 -- Insert new constraint
 insertInner :: Type -> Type -> ConGraph -> InferME ConGraph
-insertInner Dot _ cg = return cg
-insertInner _ Dot cg = return cg -- Ignore any constriants concerning Dot, i.e. coercions
-
 insertInner x y cg | x == y = return cg
 
 insertInner (t1 :=> t2) (t1' :=> t2') cg = do
@@ -101,10 +91,10 @@ insertInner (t1 :=> t2) (t1' :=> t2') cg = do
   insert t2 t2' cg'
 
 insertInner t1@(Sum e1 tc as cs) t2@(Sum e2 tc' as' ds) _
-  | tc /= tc' = Core.pprPanic "Sum type mismatch!" (Core.ppr ())
+  | tc /= tc' = Core.pprPanic "Sum type mismatch!" (Core.ppr ()) --This should be unreachable
   | any (`notElem` fmap fst ds) $ fmap fst cs = do
     (e, _) <- ask
-    Core.pprPanic "Invalid sum!" (Core.ppr (t1, e1, t2, e2, e))
+    Core.pprPanic "Invalid sum!" (Core.ppr (t1, t2, e1, e2, e))
 
 insertInner cx@(Con _ _ c as cargs) dy@(Con _ _ d as' dargs) cg
   | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
@@ -263,7 +253,7 @@ saturate cg@ConGraph{subs = sb} = saturate' $ toList cg
   where
     saturate' cs = do
       -- Normalise all transitive edges in cs and apply substitutions 
-      let delta = [(subRefinementMap sb d1, subRefinementMap sb d2) |(a, b) <-cs, (b', c) <- cs, b == b', (d1, d2) <- toNorm a c]
+      let delta = [(subRefinementMap sb d1, subRefinementMap sb d2) |(a, b) <-cs, (b', c) <- cs, b == b', (d1, d2) <- normalise a c]
 
       -- Add new edges
       let cs' = L.nub (cs ++ delta)

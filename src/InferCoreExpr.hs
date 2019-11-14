@@ -8,7 +8,6 @@ module InferCoreExpr
 import Control.Arrow
 import Control.Monad.RWS hiding (Sum)
 
-import Data.Maybe
 import qualified Data.List as L
 
 import Kind
@@ -24,7 +23,7 @@ import ConGraph
 
 -- Add restricted constraints to an unquantifed type scheme
 quantifyWith :: ConGraph -> [TypeScheme] -> InferM [TypeScheme]
-quantifyWith cg@ConGraph{succs = s, preds = p, subs = sb} ts = do
+quantifyWith cg@ConGraph{subs = sb} ts = do
 
   -- Rewrite ts using equivalence class representations
   let ts' = [Forall as [] [] (subRefinementMap sb u) | Forall as _ [] u <- ts]
@@ -50,15 +49,15 @@ quantifyWith cg@ConGraph{succs = s, preds = p, subs = sb} ts = do
 -- List all free variables in an expression
 freeVars :: Core.Expr Core.Var -> [Core.Name]
 freeVars (Core.Var i)         = [Core.getName i]
-freeVars (Core.Lit l)         = []
+freeVars (Core.Lit _)         = []
 freeVars (Core.App e1 e2)     = freeVars e1 ++ freeVars e2
 freeVars (Core.Lam x e)       = freeVars e L.\\ [Core.getName x]
 freeVars (Core.Let b e)       = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) L.\\ (Core.getName <$> Core.bindersOf b)
 freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae L.\\ (Core.getName <$> bs) | (_, bs, ae) <- as] L.\\ [Core.getName x])
 freeVars (Core.Cast e _)      = freeVars e
 freeVars (Core.Tick _ e)      = freeVars e
-freeVars (Core.Type t)        = []
-freeVars (Core.Coercion c)    = []
+freeVars (Core.Type _)        = []
+freeVars (Core.Coercion _)    = []
 
 -- Used to compare groups
 instance Eq Core.CoreBind where
@@ -78,7 +77,7 @@ dependancySort p = foldl go [] depGraph
         _      -> p' ++ deps ++ [b]                             -- Concatenate dependencies and binder to the end of the program
     
     -- Find the group in which the variable is contained
-    findGroup [] x = []
+    findGroup [] _ = []
     findGroup (b:bs) x
       | x `elem` (Core.getName <$> Core.bindersOf b) = [b]
       | otherwise = findGroup bs x
@@ -112,7 +111,7 @@ inferProg p = do
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
     -- Type/refinement variables bound in match those bound in t'
     bcg' <- foldM (\bcg' (rhs, t', Forall _ _ _ t) -> insert t' t bcg' `inExpr` rhs) bcg (zip3 rhss ts' ts)
-    
+
     -- Restrict constraints to the interface
     ts'' <- quantifyWith bcg' ts
 
@@ -143,9 +142,10 @@ inferVar x ts e = do
     Nothing ->
       case Core.isPrimOpId_maybe x of
         Just p -> do
+          Core.pprPanic "Prim!" (Core.ppr ())
           -- Infer fully instaitated polymorphic primitive operator
           let (as, args, rt, _, _) = Prim.primOpSig p
-          let as' = Core.getName <$> as'
+          let as' = Core.getName <$> as
           args' <- mapM (fresh . subTypeVars as' ts . toSort) args
           t  <- fresh $ subTypeVars as' ts $ toSort rt
           return (foldr (:=>) t args', empty)
@@ -161,7 +161,7 @@ inferVar x ts e = do
               ts'     <- mapM fresh ts
               let cg' =  subTypeVars as ts' cg
               let xs' =  fmap (\(RVar (x, p, d, ss)) -> RVar (x, p, d, subTypeVars as ts <$> ss)) xs
-              ys      <- mapM (fresh . \(RVar (_, _, !d, !ss)) -> SData d ss) xs'
+              ys      <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs'
               let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
               
               -- Import variables constraints at type
@@ -197,6 +197,7 @@ infer e@(Core.App e1 e2) =
           cg  <- union c1 c2 `inExpr` e
           cg' <- insert t2 t3 cg `inExpr` e
           return (t4, cg')
+        _ -> Core.pprPanic "Asdsd" (Core.ppr t1)
   where
     -- Process a core type/evidence application
     fromPolyVar (Core.Var i) = Just (i, [])
@@ -206,7 +207,7 @@ infer e@(Core.App e1 e2) =
     fromPolyVar (Core.App e1 e2) | Core.isPredTy (Core.exprType e2) = fromPolyVar e1 --For typeclass evidence
     fromPolyVar _ = Nothing
 
-infer e'@(Core.Lam x e) = do
+infer (Core.Lam x e) = do
   let t = Core.varType x
   if Core.isDictId x || isKind t -- Ignore typeclass evidence and type variable abstractions
     then infer e
@@ -242,7 +243,7 @@ infer e'@(Core.Let b e) = do
     ) ([], empty) rhss
 
   --  Insure fresh types are quantified by infered constraint (t' < t)
-  cg' <- foldM (\cg (rhs, t', Forall as _ _ t) -> insert t' t cg `inExpr` rhs) cg (zip3 rhss ts' ts)
+  cg' <- foldM (\cg (rhs, t', Forall _ _ _ t) -> insert t' t cg `inExpr` rhs) cg (zip3 rhss ts' ts)
 
   -- Restrict constraints to the interface
   ts' <- quantifyWith cg' ts
@@ -281,13 +282,12 @@ infer e'@(Core.Case e b rt as) = do
 
         -- Track the occurance of a constructors/default case
         let caseType' = case a of {
-          Core.DataAlt d ->
-            let SData _ ss' = es
-                tc'         = toIfaceTyCon $ Core.dataConTyCon d
-            in Just (Just tc', Just ss', (toDataCon d, ts):case caseType of {
-              Just (_, _, s) -> s; -- TODO: ensure type constructor and type arguments align
-              Nothing        -> []
-            });
+          Core.DataAlt d -> do
+              let SData _ ss' = es
+              let tc' = toIfaceTyCon $ Core.dataConTyCon d
+              (_, _, s) <- caseType
+              return (Just tc', Just ss', (toDataCon d, ts):s)
+            ;
           -- Default/literal cases
           _ -> Nothing
           }
@@ -295,7 +295,7 @@ infer e'@(Core.Case e b rt as) = do
         return (caseType', cg')
     ) (Just (Nothing, Nothing, []), c0') as
 
-  -- Insure destructor is total, GHC will conservatively insert defaults
+  -- Ensure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
     Nothing  -> return cg -- Literal cases must have a default
     Just (Just tc, Just ss, cs) -> insert t0 (Sum (Left e') tc ss cs) cg `inExpr` e'
@@ -309,8 +309,8 @@ infer (Core.Tick _ e) = infer e
 
 -- Maintain constraints but give trivial type (Dot - a sub/super-type of everything) to expression - effectively ignore casts
 -- GHC already requires the prog to well typed
-infer (Core.Cast e c) = do
-  (t, cg) <- infer e
+infer (Core.Cast e _) = do
+  (_, cg) <- infer e
   return (Dot, cg)
 
 -- Cannot infer a coercion expression.

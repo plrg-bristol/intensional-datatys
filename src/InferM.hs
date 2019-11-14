@@ -18,7 +18,6 @@ module InferM (
 
 import Control.Monad.RWS
 
-import Data.Functor.Identity
 import qualified Data.Map as M
 
 import IfaceType
@@ -28,6 +27,7 @@ import qualified GhcPlugins as Core
 import Types
 
 -- The inference monad; a reader (i.e. local) context and a state (i.e. global) counter for taking fresh variables
+-- Keeps track of the rhs that we are currently processing 
 type InferM = RWS Context () Int
 
 -- Used to track the expression in which errors arrise
@@ -67,11 +67,11 @@ delta :: Bool -> DataCon -> [Sort] -> [PType]
 delta p (DataCon (_, as, ts)) as' = polarise p . subTypeVars as as' <$> ts
 
 -- Insert a variable into the context
-insertVar :: Core.Name -> TypeScheme -> Context ->  Context
+insertVar :: Core.Name -> TypeScheme -> Context -> Context
 insertVar x f ctx = ctx{var = M.insert x f $ var ctx}
 
 -- Insert many variable into the context
-insertMany :: [Core.Name] -> [TypeScheme] -> Context ->  Context
+insertMany :: [Core.Name] -> [TypeScheme] -> Context -> Context
 insertMany [] [] ctx = ctx
 insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 
@@ -93,6 +93,7 @@ fresh (SArrow s1 s2) = do
 fresh (SApp s1 s2) = do
   t1 <- fresh s1
   return $ App t1 s2
+fresh (SLit l) = return $ Lit l
 
 -- A fresh refinement scheme for module/let bindings
 freshScheme :: SortScheme -> InferM TypeScheme
@@ -108,3 +109,4 @@ freshScheme (SForall as (SArrow s1 s2)) = do
 freshScheme (SForall as (SApp s1 s2)) = do
   t1 <- fresh s1
   return $ Forall as [] [] $ App t1 s2
+freshScheme (SForall as (SLit l)) = return $ Forall as [] [] (Lit l)

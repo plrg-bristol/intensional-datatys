@@ -127,56 +127,47 @@ inferProg p = do
 
 
 
-
--- Infer a fully polyorphic variable with fully instantiated type arguments
+  
 inferVar :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)
-inferVar x ts e = do
-  scope <- get
+inferVar x ts e =
+  case Core.isDataConId_maybe x of
+    Just k -> 
+      if refinable k
+        then do
+          -- Infer refinable constructor
+          let (d, as, args) = safeCon k
+          args' <- mapM (fresh . subTypeVars as ts) args
+          t  <- fresh $ SData d ts
+          cg <- insert (Con (Left e) d (toDataCon k) ts args') t empty `inExpr` e
+          return (foldr (:=>) t args', cg)
+        else do
+          -- Infer unrefinable constructor
+          let (d, as, args) = safeCon k
+          args' <- mapM (fresh . subTypeVars as ts) args
+          t  <- fresh $ SBase d ts
+          return (t, empty)
 
-  (t, cg) <- case Core.isDataConId_maybe x of
-    Just k -> do
-      -- Infer fully instantiated polymorphic constructor
-      let (d, as, args) = safeCon k
-      args' <- mapM (fresh . subTypeVars as ts) args
-      t  <- fresh $ SData d ts
-      cg <- insert (Con (Left e) d (toDataCon k) ts args') t empty `inExpr` e
-      return (foldr (:=>) t args', cg)
+    Nothing -> do
+      -- Infer polymorphic variable at type(s)
+      (Forall as xs cs u) <- safeVar x
+      cg <- fromList cs `inExpr` e
+      if length as /= length ts
+        then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
+        else do
+          -- Instantiate typescheme
+          ts'     <- mapM fresh ts
+          let cg' =  subTypeVars as ts' cg
+          let xs' =  fmap (\(RVar (x, d, ss)) -> RVar (x, d, subTypeVars as ts <$> ss)) xs
+          ys      <- mapM (fresh . \(RVar (_, d, ss)) -> SData d ss) xs'
+          let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
+          
+          -- Import variables constraints at type
+          cg'' <- foldM (\cg' (x, y) -> substitute x y cg' `inExpr` e) cg' (zip xs' ys)
 
-    Nothing ->
-      case Core.isPrimOpId_maybe x of
-        Just p -> do
-          Core.pprPanic "Prim!" (Core.ppr ())
-          -- Infer fully instaitated polymorphic primitive operator
-          let (as, args, rt, _, _) = Prim.primOpSig p
-          let as' = Core.getName <$> as
-          args' <- mapM (fresh . subTypeVars as' ts . toSort) args
-          t  <- fresh $ subTypeVars as' ts $ toSort rt
-          return (foldr (:=>) t args', empty)
+          v <- fresh $ toSort $ Core.exprType e
 
-        Nothing -> do
-          -- Infer fully instantiated polymorphic variable
-          (Forall as xs cs u) <- safeVar x
-          cg <- fromList cs `inExpr` e
-          if length as /= length ts
-            then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
-            else do
-              -- Instantiate typescheme
-              ts'     <- mapM fresh ts
-              let cg' =  subTypeVars as ts' cg
-              let xs' =  fmap (\(RVar (x, p, d, ss)) -> RVar (x, p, d, subTypeVars as ts <$> ss)) xs
-              ys      <- mapM (fresh . \(RVar (_, _, d, ss)) -> SData d ss) xs'
-              let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
-              
-              -- Import variables constraints at type
-              cg'' <- foldM (\cg' (x, y) -> substitute x y cg' `inExpr` e) cg' (zip xs' ys)
-
-              v <- fresh $ toSort $ Core.exprType e
-
-              cg''' <- insert u' v cg'' `inExpr` e
-              return (v, cg''')
-
-  cg' <- closeScope scope cg `inExpr` e
-  return (t, cg')
+          cg''' <- insert u' v cg'' `inExpr` e
+          return (v, cg''')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e@(Core.Var x) = inferVar x [] e -- Infer monomorphic variable
@@ -228,8 +219,6 @@ infer (Core.Lam x e) = do
       isKind t                  = isLiftedTypeKind t
 
 infer e'@(Core.Let b e) = do
-  scope <- get
-
   -- Infer local module (i.e. let expression)
   let xs   = Core.getName <$> Core.bindersOf b
   let rhss = Core.rhssOfBind b
@@ -254,14 +243,11 @@ infer e'@(Core.Let b e) = do
   -- Infer in body with infered typescheme to the environment
   (t, icg) <- local (insertMany xs ts') (infer e)
   cg''     <- union cg' icg `inExpr` e'
-
-  cg''' <- closeScope scope cg'' `inExpr` e'
-  return (t, cg''')
+  
+  return (t, cg'')
 
   -- Infer case expession
 infer e'@(Core.Case e b rt as) = do
-  scope <- get
-
   -- Fresh return type
   t  <- fresh $ toSort rt
 
@@ -304,8 +290,7 @@ infer e'@(Core.Case e b rt as) = do
     Just (Just tc, Just ss, cs) -> insert t0 (Sum (Left e') tc ss cs) cg `inExpr` e'
     _ -> Core.pprPanic "Inconsistent data constructors arguments!" (Core.ppr ())
 
-  cg' <- closeScope scope cg `inExpr` e'
-  return (t, cg')
+  return (t, cg)
 
 -- Remove core ticks
 infer (Core.Tick _ e) = infer e

@@ -3,6 +3,8 @@ module TestLib  where
 import Data.List (sortBy, groupBy, maximumBy)
 import Data.Ord (comparing)
  
+primWorthy = 0 < 1 || (9- 5.5 /= 6)
+
 head' (x:xs) = x
 
 data Nat = Zero | Succ Nat

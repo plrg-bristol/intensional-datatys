@@ -63,8 +63,8 @@ safeCon k =
   in (toIfaceTyCon tc, as, args)
 
 -- Extract polarised and instantiated constructor arguments from context
-delta :: Bool -> DataCon -> [Sort] -> [PType]
-delta p (DataCon (_, as, ts)) as' = polarise p . subTypeVars as as' <$> ts
+delta :: DataCon -> [Sort] -> [Sort]
+delta (DataCon (_, as, ts)) as' = subTypeVars as as' <$> ts
 
 -- Insert a variable into the context
 insertVar :: Core.Name -> TypeScheme -> Context -> Context
@@ -85,7 +85,7 @@ fresh (SVar a)       = return $ TVar a
 fresh s@(SData _ _) = do
   i <- get
   put (i + 1)
-  return $ upArrow i (polarise True s)
+  return $ upArrow i s
 fresh (SArrow s1 s2) = do
   t1 <- fresh s1
   t2 <- fresh s2
@@ -94,6 +94,7 @@ fresh (SApp s1 s2) = do
   t1 <- fresh s1
   return $ App t1 s2
 fresh (SLit l) = return $ Lit l
+fresh (SBase b as) = return $ Base b as
 
 -- A fresh refinement scheme for module/let bindings
 freshScheme :: SortScheme -> InferM TypeScheme
@@ -101,7 +102,7 @@ freshScheme (SForall as (SVar a))       = return $ Forall as [] [] $ TVar a
 freshScheme (SForall as s@(SData _ ss)) = do
   t <- fresh s
   case t of
-    V x p d _ -> return $ Forall as [RVar (x, p, d, ss)] [] t
+    V x d _ -> return $ Forall as [RVar (x, d, ss)] [] t
 freshScheme (SForall as (SArrow s1 s2)) = do
   Forall _ v1 _ t1 <- freshScheme (SForall [] s1)
   Forall _ v2 _ t2 <- freshScheme (SForall [] s2)
@@ -110,3 +111,4 @@ freshScheme (SForall as (SApp s1 s2)) = do
   t1 <- fresh s1
   return $ Forall as [] [] $ App t1 s2
 freshScheme (SForall as (SLit l)) = return $ Forall as [] [] (Lit l)
+freshScheme (SForall as (SBase b ss)) = return $ Forall as [] [] (Base b ss)

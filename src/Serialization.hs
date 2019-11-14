@@ -33,6 +33,10 @@ instance Binary Sort where
     case l of
       NumTyLit i -> put_ bh (0 :: Int) >> put_ bh i
       StrTyLit s -> put_ bh (1 :: Int) >> put_ bh s
+  put_ bh (SBase tc as) = do
+    put_ bh (5 :: Int)
+    put_ bh tc
+    put_ bh as
 
   get bh = do
     t <- get bh
@@ -57,20 +61,22 @@ instance Binary Sort where
         case t' of
           0 -> get bh >>= return . SLit . NumTyLit
           1 -> get bh >>= return . SLit . StrTyLit
+      5 -> do
+        tc <- get bh
+        as <- get bh
+        return $ SBase tc as
 
 instance Binary RVar where
-  put_ bh (RVar (i, b, tc, as)) = do
+  put_ bh (RVar (i, tc, as)) = do
     put_ bh i
-    put_ bh b
     put_ bh tc
     put_ bh as
     
   get bh = do
     i  <- get bh
-    b  <- get bh
     tc <- get bh
     as <- get bh
-    return $ RVar (i, b, tc, as)
+    return $ RVar (i, tc, as)
 
 instance Binary DataCon where
   put_ bh (DataCon (n, as, args)) = do
@@ -106,6 +112,10 @@ instance Binary Type where
     put_ bh (5 :: Int)
     put_ bh t1
     put_ bh s2
+  put_ bh (Base b as) = do
+    put_ bh (6 :: Int)
+    put_ bh b
+    put_ bh as
 
   get bh = do
     t <- get bh
@@ -131,6 +141,10 @@ instance Binary Type where
         t1 <- get bh
         s2 <- get bh
         return $ App t1 s2
+      6 -> do
+        b <- get bh
+        as <- get bh
+        return $ Base b as
 
 instance Binary TypeScheme where
   put_ bh (Forall tvs rvs cs u) = do
@@ -176,7 +190,7 @@ subNames m (n:ns) (n':ns') = subName m n n' . subNames m ns ns'
 
 instance NameSub RVar where
   {-# SPECIALIZE instance NameSub RVar #-}
-  subName m n n' (RVar (i, p, tc, ss)) = RVar (i, p, tc, subName m n n' ss)
+  subName m n n' (RVar (i, tc, ss)) = RVar (i, tc, subName m n n' ss)
 
 instance NameSub Sort where
   {-# SPECIALIZE instance NameSub Sort #-}
@@ -185,6 +199,7 @@ instance NameSub Sort where
   subName m n n' (SArrow s1 s2) = SArrow (subName m n n' s1) (subName m n n' s2)
   subName m n n' (SApp s1 s2)   = SApp (subName m n n' s1) (subName m n n' s2)
   subName _ _ _ (SLit l)        = SLit l
+  subName _ _ _ (SBase b as)    = SBase b as
 
 instance NameSub Type where
   {-# SPECIALIZE instance NameSub Type #-}
@@ -195,6 +210,7 @@ instance NameSub Type where
   subName m n n' (t1 :=> t2)      = (subName m n n' t1) :=> (subName m n n' t2)
   subName m n n' (App t1 s2)      = App (subName m n n' t1) (subName m n n' s2)
   subName _ _ _ l@(Types.Lit _)   = l
+  subName _ _ _ l@(Base b as)     = l
 
 instance NameSub Name where
   subName _ x y x'

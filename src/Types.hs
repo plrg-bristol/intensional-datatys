@@ -1,9 +1,9 @@
 {-# LANGUAGE FlexibleInstances, PatternSynonyms, MultiParamTypeClasses #-}
 
 module Types (
-  Sort (SVar, SData, SArrow, SApp, SLit),
+  Sort (SVar, SData, SArrow, SApp, SLit, SBase),
   RVar (RVar),
-  Type (Var, V, Sum, Con, Dot, TVar, (:=>), App, Lit),
+  Type (Var, V, Sum, Con, Dot, TVar, (:=>), App, Lit, Base),
   DataCon (DataCon),
   SortScheme (SForall),
   TypeScheme (Forall),
@@ -12,12 +12,13 @@ module Types (
   vars,
   stems,
 
+  refinable,
   broaden,
   toSort,
   toSortScheme,
 
-  PType,
-  polarise,
+  -- PType,
+  -- polarise,
   upArrow,
 
   TypeVars (subTypeVar),
@@ -44,15 +45,16 @@ data Sort =
   | SArrow Sort Sort 
   | SApp Sort Sort 
   | SLit T.TyLit
+  | SBase IfaceTyCon [Sort] -- Unrefinable datatypes
   deriving Eq
 
 -- Refinement variables
 -- TODO: pattern synonym 
-newtype RVar = RVar (Int, Bool, IfaceTyCon, [Sort]) deriving Eq
+newtype RVar = RVar (Int, IfaceTyCon, [Sort]) deriving Eq
 
 instance Ord RVar where
   {-# SPECIALIZE instance Ord RVar #-}
-  RVar (x, _, _, _) <= RVar (x', _, _, _) = x <= x'
+  RVar (x, _, _) <= RVar (x', _, _) = x <= x'
 
 -- Inference types
 data Type = 
@@ -64,6 +66,7 @@ data Type =
   | Type :=> Type
   | App Type Sort
   | Lit T.TyLit
+  | Base IfaceTyCon [Sort]
   deriving Eq
 
 -- Equality of sums does not depend on their expression of origin
@@ -90,8 +93,8 @@ pattern Con :: Origin -> IfaceTyCon -> DataCon -> [Sort] -> [Type] -> Type
 pattern Con e tc k as args = Sum e tc as [(k, args)]
 
 -- Refinement variable pattern
-pattern V :: Int -> Bool -> IfaceTyCon -> [Sort] -> Type
-pattern V x p d as = Var (RVar (x, p, d, as))
+pattern V :: Int -> IfaceTyCon -> [Sort] -> Type
+pattern V x d as = Var (RVar (x, d, as))
 
 data SortScheme = SForall [Core.Name] Sort
 
@@ -117,19 +120,35 @@ vars _               = []
 
 -- The stems of refinement variables present in a type
 stems :: Type -> [Int]
-stems t = [x | RVar (x, _, _, _) <- vars t]
+stems t = [x | RVar (x, _, _) <- vars t]
 
 
 
 
+
+-- Decides whether a datatypes does not occur negatively
+-- Possible optimisation, d is the only possible constructor then unrefinedable
+refinable :: Core.DataCon -> Bool
+refinable d = all onlyPos (concatMap Core.dataConOrigArgTys $ Core.tyConDataCons tc)
+    where
+      tc :: Core.TyCon
+      tc = Core.dataConTyCon d
+
+      onlyPos :: Core.Type -> Bool
+      onlyPos = undefined
+
+      onlyNeg :: Core.Type -> Bool
+      onlyNeg = undefined
 
 -- De-refine a type to a sort
 broaden :: Type -> Sort
-broaden (V _ _ d as)    = SData d as
+broaden (V _ d as)      = SData d as
 broaden (Sum _ tc as _) = SData tc as
 broaden (TVar a)        = SVar a
 broaden (t1 :=> t2)     = SArrow (broaden t1) (broaden t2)
 broaden (App t1 s2)     = SApp (broaden t1) s2
+broaden (Lit l)         = SLit l
+broaden (Base b as)     = SBase b as
 
 -- Convert a core type into a sort
 toSort :: Core.Type -> Sort
@@ -169,27 +188,29 @@ toSortScheme (T.FunTy t1 t2) = let s1 = toSort t1; SForall as s2 = toSortScheme 
 
 
 
--- Polarised data types (sort)
-data PType = 
-    PVar Core.Name 
-  | PData Bool IfaceTyCon [Sort] 
-  | PArrow PType PType  
-  | PApp PType Sort
-  | PLit T.TyLit
+-- -- Polarised data types (sort)
+-- data PType = 
+--     PVar Core.Name 
+--   | PData Bool IfaceTyCon [Sort] 
+--   | PArrow PType PType  
+--   | PApp PType Sort
+--   | PLit T.TyLit
 
--- Polarise a sort, i.e. Ty(+, -)(s) or Ty(-, +)(s)
-polarise :: Bool -> Sort -> PType
-polarise p (SVar a)       = PVar a
-polarise p (SData d args) = PData p d args
-polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
-polarise p (SApp s1 s2)   = PApp (polarise p s1) s2
+-- -- Polarise a sort, i.e. Ty(+, -)(s) or Ty(-, +)(s)
+-- polarise :: Bool -> Sort -> PType
+-- polarise p (SVar a)       = PVar a
+-- polarise p (SData d args) = PData p d args
+-- polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
+-- polarise p (SApp s1 s2)   = PApp (polarise p s1) s2
 
--- Refinement a polarised data type at a stem 
-upArrow :: Int -> PType -> Type
-upArrow x (PData p d as) = V x p d as
-upArrow x (PArrow t1 t2) = upArrow x t1 :=> upArrow x t2
-upArrow x (PVar a)       = TVar a
-upArrow x (PApp s1 s2)   = App (upArrow x s1) s2
+-- Refinement a data type at a stem 
+upArrow :: Int -> Sort -> Type
+upArrow x (SData d as)   = V x d as
+upArrow x (SArrow t1 t2) = upArrow x t1 :=> upArrow x t2
+upArrow _ (SVar a)       = TVar a
+upArrow x (SApp s1 s2)   = App (upArrow x s1) s2
+upArrow _ (SLit l)       = Lit l
+upArrow _ (SBase b as)   = Base b as
 
 
 
@@ -206,7 +227,7 @@ subTypeVars (a:as) (t:ts) = subTypeVar a t . subTypeVars as ts
 
 -- Collapse an application type if possible after a substitution has occured
 applySort :: Type -> Sort -> Type
-applySort (V x p d as) a         = V x p d (as ++ [a])
+applySort (V x d as) a           = V x d (as ++ [a])
 applySort (Con e tc d as args) a = Con e tc d (as ++ [a]) args
 applySort t a                    = App t a -- Nonreducible
 
@@ -218,10 +239,12 @@ instance TypeVars Sort Sort where
   subTypeVar a t (SData d as)   = SData d (subTypeVar a t <$> as)
   subTypeVar a t (SArrow s1 s2) = SArrow (subTypeVar a t s1) (subTypeVar a t s2)
   subTypeVar a t (SApp s1 s2)   = SApp (subTypeVar a t s1) (subTypeVar a t s2)
+  subTypeVar a t (SLit l)       = SLit l
+  subTypeVar a t (SBase b as)   = SBase b as
 
 instance TypeVars Type Type where
   {-# SPECIALIZE instance TypeVars Type Type #-}
-  subTypeVar a t (V x p d as)    = V x p d (subTypeVar a t <$> as)
+  subTypeVar a t (V x d as)    = V x d (subTypeVar a t <$> as)
   subTypeVar a t (Sum e tc as s) = Sum e tc (subTypeVar a t <$> as) $ fmap (\(d, ts) -> (d, subTypeVar a t <$> ts)) s
   subTypeVar _ _ Dot             = Dot
   subTypeVar a t (TVar a')
@@ -229,6 +252,8 @@ instance TypeVars Type Type where
     | otherwise = TVar a'
   subTypeVar a t (t1 :=> t2)  = subTypeVar a t t1 :=> subTypeVar a t t2
   subTypeVar a t (App t1 s2)  = subTypeVar a t t1 `applySort` subTypeVar a t s2
+  subTypeVar a t (Lit l)      = Lit l
+  subTypeVar a t (Base b as)  = Base b as
 
 instance TypeVars Sort Type where
   {-# SPECIALIZE instance TypeVars Sort Type #-}

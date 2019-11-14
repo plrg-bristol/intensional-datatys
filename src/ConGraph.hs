@@ -10,7 +10,7 @@ module ConGraph (
     , substitute
     , union
 
-    , closeScope
+    -- , closeScope
     , saturate
      ) where
 
@@ -54,7 +54,7 @@ instance TypeVars ConGraph Type where
       subs  = M.mapKeys varMap (subTypeVar v t <$> sb)
     }
     where
-      varMap (RVar (x, p, d, as)) = RVar (x, p, d, subTypeVar v t <$> as)
+      varMap (RVar (x, d, as)) = RVar (x, d, subTypeVar v t <$> as)
 
 
 
@@ -62,14 +62,14 @@ instance TypeVars ConGraph Type where
 
 -- Normalise the constraints by applying recursive simplifications
 normalise :: Type -> Type -> [(Type, Type)]
-normalise t1@(Con e tc k as ts) t2@(V x p d as') =
-  let ts' = upArrow x <$> delta p k as
-  in [(Con e tc k as ts', V x p d as'), (Con e tc k as ts, Con e tc k as ts')]
-normalise t1@(V x p d as) t2@(Sum e tc as' cs) =
+normalise t1@(Con e tc k as ts) t2@(V x d as') =
+  let ts' = upArrow x <$> delta k as
+  in [(Con e tc k as ts', V x d as'), (Con e tc k as ts, Con e tc k as ts')]
+normalise t1@(V x d as) t2@(Sum e tc as' cs) =
   let cs' = refineCon <$> cs
-  in [(Sum e tc as' cs', Sum e tc as' cs), (V x p d as, Sum e tc as' cs')]
+  in [(Sum e tc as' cs', Sum e tc as' cs), (V x d as, Sum e tc as' cs')]
   where
-    refineCon (k, ts) = (k, upArrow x <$> delta p k as')
+    refineCon (k, ts) = (k, upArrow x <$> delta k as')
 normalise t1 t2 = [(t1, t2)]
 
 -- Insert new constraint with normalisation
@@ -229,24 +229,7 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 
 
 
--- Eagerly remove properly scoped bounded (intermediate) nodes
--- Unsound for mutual recursion
-closeScope :: Int -> ConGraph -> InferME ConGraph
-{-# INLINE closeScope #-}
-closeScope scope cg@ConGraph{subs = sb} = return cg
--- closeScope scope cg@ConGraph{subs = sb} = do
---   (_, ctx) <- ask
---   let varTypes = M.elems $ var ctx
---   let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
-  
---   -- Filter irrelevant variable, i.e. those that have gone out of scope
---   let p v = case v of {(V x _ _ _) ->  x <= scope {- || (x `elem` envStems) -}; _ -> True}
-
---   fromListWith $ [(n1, n2) | (n1, n2) <- saturate cg, p n1 || p n2]
---   where
---     fromListWith = foldM (\cg (t1, t2) -> insert t1 t2 cg) ConGraph{succs = M.empty, preds = M.empty, subs = sb}
-
--- The fixed point of normalisation and transitivity
+  -- The fixed point of normalisation and transitivity
 saturate :: [Int] -> ConGraph -> [(Type, Type)]
 {-# INLINE saturate #-}
 saturate interface cg@ConGraph{subs = sb} = saturate' $ toList cg
@@ -268,3 +251,20 @@ saturate interface cg@ConGraph{subs = sb} = saturate' $ toList cg
 
           -- Until a fixed point is reached
           in saturate' cs'
+
+-- Unsound/experimental optimisation:
+-- Eagerly remove properly scoped bounded (intermediate) nodes
+-- closeScope :: Int -> ConGraph -> InferME ConGraph
+-- {-# INLINE closeScope #-}
+-- closeScope scope cg@ConGraph{subs = sb} = return cg
+-- closeScope scope cg@ConGraph{subs = sb} = do
+--   (_, ctx) <- ask
+--   let varTypes = M.elems $ var ctx
+--   let envStems = concatMap (\(Forall _ ns cs t) -> [j | RVar (j, _, _, _) <- ns] ++ concat (concat [[stems c1, stems c2] | (c1, c2) <- cs]) ++ stems t) varTypes
+  
+--   -- Filter irrelevant variable, i.e. those that have gone out of scope
+--   let p v = case v of {(V x _ _ _) ->  x <= scope {- || (x `elem` envStems) -}; _ -> True}
+
+--   fromListWith $ [(n1, n2) | (n1, n2) <- saturate cg, p n1 || p n2]
+--   where
+--     fromListWith = foldM (\cg (t1, t2) -> insert t1 t2 cg) ConGraph{succs = M.empty, preds = M.empty, subs = sb}

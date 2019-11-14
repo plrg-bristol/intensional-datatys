@@ -20,7 +20,7 @@ instance Outputable Sort where
   ppr (SLit l)       = ppr l
 
 instance Outputable RVar where
-  ppr (RVar (x, p, d, as)) = braces (ppr x <> (if p then char '+' else char '-') <> ppr (SData d as))
+  ppr (RVar (x, d, as)) = braces (ppr x <> ppr (SData d as))
 
 instance Outputable DataCon where
   ppr (DataCon (n, as, ts)) = ppr n

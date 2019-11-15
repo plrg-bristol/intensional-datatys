@@ -18,6 +18,7 @@ instance Outputable Sort where
   ppr (SArrow s1 s2) = ppr s1 <> arrow  <> ppr s2
   ppr (SApp s1 s2)   = ppr s1 <> char '@' <> ppr s2
   ppr (SLit l)       = ppr l
+  ppr (SBase b as)   = ppr b <> fsep (punctuate (char '@') (ppr <$> as))
 
 instance Outputable RVar where
   ppr (RVar (x, d, as)) = braces (ppr x <> ppr (SData d as))
@@ -34,6 +35,7 @@ instance Outputable Type where
   ppr (t1 :=> t2)       = ppr t1 <> space <> arrow <> space <> ppr t2
   ppr (App t1 s2)       = ppr t1 <> char '@' <> ppr s2
   ppr (Lit l)           = ppr l
+  ppr (Base b as)       = ppr b <> fsep (punctuate (char '@') (ppr <$> as))
 
 instance Outputable TypeScheme where
   ppr (Forall as xs cs t) = hang header 3 (hang (keyword $ text "where") 3 body)

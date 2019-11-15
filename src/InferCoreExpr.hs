@@ -143,9 +143,8 @@ inferVar x ts e =
         else do
           -- Infer unrefinable constructor
           let (d, as, args) = safeCon k
-          args' <- mapM (fresh . subTypeVars as ts) args
-          t  <- fresh $ SBase d ts
-          return (t, empty)
+          let args' = map (toType . subTypeVars as ts) args
+          return (foldr (:=>) (Base d ts) args', empty)
 
     Nothing -> do
       -- Infer polymorphic variable at type(s)
@@ -191,7 +190,7 @@ infer e@(Core.App e1 e2) =
           cg  <- union c1 c2 `inExpr` e
           cg' <- insert t2 t3 cg `inExpr` e
           return (t4, cg')
-        _ -> Core.pprPanic "Application to a non-function expression!" (Core.ppr e)
+        _ -> Core.pprPanic "Application to a non-function expression!" (Core.ppr (t1, e1))
   where
     -- Process a core type/evidence application
     fromPolyVar (Core.Var i) = Just (i, [])

@@ -78,13 +78,16 @@ insert :: Type -> Type -> ConGraph -> InferME ConGraph
 insert Dot t2 cg = return cg -- Ignore any constriants concerning Dot, i.e. coercions
 insert t1 Dot cg = return cg
 
-insert t1 t2 _ | broaden t1 /= broaden t2 = Core.pprPanic "Sorts must algin" (Core.ppr (t1, t2)) undefined
+insert t1 t2 _ | toType (broaden t1) /= toType (broaden t2) = Core.pprPanic "Sorts must algin" (Core.ppr (t1, t2)) undefined
 
 insert t1 t2 cg = foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg $ normalise t1 t2
 
 -- Insert new constraint
 insertInner :: Type -> Type -> ConGraph -> InferME ConGraph
 insertInner x y cg | x == y = return cg
+
+-- t1 is an unrefined variant of t2 or vice versa
+insertInner t1 t2 cg | toType (broaden t1) == t2 || toType (broaden t2) == t1 = return cg
 
 insertInner (t1 :=> t2) (t1' :=> t2') cg = do
   cg' <- insert t1' t1 cg

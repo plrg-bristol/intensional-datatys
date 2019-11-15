@@ -13,6 +13,7 @@ module Types (
   stems,
 
   refinable,
+  toType,
   broaden,
   toSort,
   toSortScheme,
@@ -129,16 +130,22 @@ stems t = [x | RVar (x, _, _) <- vars t]
 -- Decides whether a datatypes does not occur negatively
 -- Possible optimisation, d is the only possible constructor then unrefinedable
 refinable :: Core.DataCon -> Bool
-refinable d = all onlyPos (concatMap Core.dataConOrigArgTys $ Core.tyConDataCons tc)
+refinable d = all pos (concatMap Core.dataConOrigArgTys $ Core.tyConDataCons tc)
     where
       tc :: Core.TyCon
       tc = Core.dataConTyCon d
 
-      onlyPos :: Core.Type -> Bool
-      onlyPos = undefined
+      pos :: Core.Type -> Bool
+      pos (T.FunTy t1 t2) = neg t1 && pos t2
+      pos _               = True
 
-      onlyNeg :: Core.Type -> Bool
-      onlyNeg = undefined
+      neg :: Core.Type -> Bool
+      neg (T.TyConApp tc' _)             | tc == tc' = False
+      neg (T.AppTy (T.TyConApp tc' _) _) | tc == tc' = False 
+      neg (T.TyVarTy a)   = False -- Type variables may be substituted with the type itself
+                                  -- Perhaps it is possible to record whether a type variable occurs +/-
+      neg (T.FunTy t1 t2) = pos t1 && neg t2
+      neg _               = True
 
 -- De-refine a type to a sort
 broaden :: Type -> Sort
@@ -149,6 +156,15 @@ broaden (t1 :=> t2)     = SArrow (broaden t1) (broaden t2)
 broaden (App t1 s2)     = SApp (broaden t1) s2
 broaden (Lit l)         = SLit l
 broaden (Base b as)     = SBase b as
+
+-- Lift a sort to a type without taking fresh refinement variables
+toType :: Sort -> Type
+toType (SData d as)   = Base d as
+toType (SBase d as)   = Base d as
+toType (SVar a)       = TVar a
+toType (SArrow s1 s2) = (toType s1) :=> (toType s2)
+toType (SApp s1 s2)   = App (toType s1) s2
+toType (SLit l)       = Lit l
 
 -- Convert a core type into a sort
 toSort :: Core.Type -> Sort
@@ -228,7 +244,8 @@ subTypeVars (a:as) (t:ts) = subTypeVar a t . subTypeVars as ts
 -- Collapse an application type if possible after a substitution has occured
 applySort :: Type -> Sort -> Type
 applySort (V x d as) a           = V x d (as ++ [a])
-applySort (Con e tc d as args) a = Con e tc d (as ++ [a]) args
+applySort (Sum e tc as cs) a     = Sum e tc (as ++ [a]) cs
+applySort (Base b as) a          = Base b (as ++ [a])
 applySort t a                    = App t a -- Nonreducible
 
 instance TypeVars Sort Sort where

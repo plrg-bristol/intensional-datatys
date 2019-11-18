@@ -179,7 +179,7 @@ globaliseTypeScheme m old new (Forall ns xs cs u) = Forall ns' (subNames m old' 
     where
       old' = old ++ ns
       new' = new ++ ns' 
-      ns' = globaliseName m <$> ns
+      ns'  = globaliseName m <$> ns
   
 class NameSub a where
   subName :: Module -> Name -> Name -> a -> a

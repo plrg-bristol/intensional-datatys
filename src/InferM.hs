@@ -1,7 +1,10 @@
-{-#  LANGUAGE MultiParamTypeClasses #-}
+{-#  LANGUAGE FlexibleInstances, MultiParamTypeClasses #-}
 
 module InferM (
   InferM,
+  pushCase,
+  popCase,
+  topLevel,
   InferME,
   inExpr,
   
@@ -27,15 +30,33 @@ import qualified GhcPlugins as Core
 import Types
 
 -- The inference monad; a reader (i.e. local) context and a state (i.e. global) counter for taking fresh variables
--- Keeps track of the rhs that we are currently processing 
-type InferM = RWS Context () Int
+-- A stack of a names which have pattern matched to corrctly order nested case
+type InferM = RWS Context () ([Core.Expr Core.Var], Int)
+
+instance Eq (Core.Expr Core.Var) where
+  Core.Var i == Core.Var i' = Core.getUnique i == Core.getUnique i'
+  _ == _ = False
+
+-- Enter a new case statement
+pushCase :: Core.Expr Core.Var-> InferM ()
+pushCase c = modify (\(cs, i) -> (c:cs, i))
+
+-- Exit a case statement
+popCase :: InferM ()
+popCase = modify (\(c:cs, i) -> (cs, i))
+
+-- Is the current case statement at the top level
+topLevel :: Core.Expr Core.Var -> InferM Bool
+topLevel e = do
+  (cs, _) <- get
+  return (e `notElem` cs)
 
 -- Used to track the expression in which errors arrise
-type InferME = RWS (Core.Expr Core.Var, Context) () Int
+type InferME = RWS (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Int)
 
 -- Attach an expression to an erroneous computation
 inExpr :: InferME a -> Core.Expr Core.Var -> InferM a
-inExpr ma e = withRWST (\ctx i -> ((e, ctx), i)) ma
+inExpr ma e = withRWST (\ctx (s, i) -> ((e, ctx), (s, i))) ma
   
 -- The variables in scope and their type
 newtype Context = Context {
@@ -83,8 +104,8 @@ insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 fresh :: Sort -> InferM Type
 fresh (SVar a)       = return $ TVar a
 fresh s@(SData _ _) = do
-  i <- get
-  put (i + 1)
+  (stack, i) <- get
+  put (stack, i + 1)
   return $ upArrow i s
 fresh (SArrow s1 s2) = do
   t1 <- fresh s1

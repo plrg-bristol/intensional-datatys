@@ -9,6 +9,9 @@ module Types (
   TypeScheme (Forall),
   toDataCon,
   tagSumsWith,
+  tvars,
+  tvarsR,
+  tvarsS,
   vars,
   stems,
 
@@ -47,7 +50,19 @@ data Sort =
   | SApp Sort Sort 
   | SLit T.TyLit
   | SBase IfaceTyCon [Sort] -- Unrefinable datatypes
-  deriving Eq
+  | SDot
+
+instance Eq Sort where
+  SDot == t = True
+  t == SDot = True
+  (SVar a) == (SVar a') = a == a'
+  (SData tc as) == (SData tc' as') = tc == tc' && as == as'
+  (SArrow s1 s2) == (SArrow s1' s2') = s1 == s1' && s2 == s2'
+  (SApp s1 s2) == (SApp s1' s2') = s1 == s1' && s2 == s2'
+  (SLit l) == (SLit l') = l == l'
+  (SBase tc as) == (SBase tc' as') = tc == tc' && as == as'
+  _ == _ = True
+
 
 -- Refinement variables
 -- TODO: pattern synonym 
@@ -68,12 +83,17 @@ data Type =
   | App Type Sort
   | Lit T.TyLit
   | Base IfaceTyCon [Sort]
-  deriving Eq
 
--- Equality of sums does not depend on their expression of origin
-instance Eq (Core.Expr Core.Var) where
-  {-# SPECIALIZE instance Eq (Core.Expr Core.Var) #-}
-  e1 == e2 = True
+instance Eq Type where
+  Dot == t = True
+  t == Dot = True
+  Var r == Var r' = r == r'
+  Sum _ tc as cs == Sum _ tc' as' cs' = tc == tc' && as == as' && all (`elem` cs') cs
+  TVar a == TVar a' = a == a'
+  (t1 :=> t2) == (t1' :=> t2') = t1 == t1' && t2 == t2'
+  (Lit l) == (Lit l') = l == l'
+  (Base tc as) == (Base tc' as') = tc == tc' && as == as'
+  _ == _ = False
 
 -- Lightweight representation of Core.DataCon:
 -- DataCon n as args ~~ n :: forall as . args_0 -> ... -> args_n
@@ -110,6 +130,27 @@ tagSumsWith m (Forall xs rs cs u) = Forall xs rs ((\(t1, t2) -> (tagSumsWith' t1
     tagSumsWith' :: Type -> Type
     tagSumsWith' (Sum _ tc ss cs) = Sum (Right m) tc ss [(d, tagSumsWith' <$> ts) | (d, ts) <- cs]
     tagSumsWith' t = t
+
+-- Type variables present in a types
+tvars :: Type -> [Core.Name]
+tvars (Var v)         = tvarsR v
+tvars (Sum _ _ _ cs)  = [v | (_, args) <- cs, a <- args, v <- tvars a]
+tvars (TVar a)        = [a]
+tvars (Base _ ss)     = concatMap tvarsS ss
+tvars (t1 :=> t2)     = tvars t1 ++ tvars t2
+tvars (App t s)       = tvars t ++ tvarsS s
+tvars _               = []
+
+tvarsR :: RVar -> [Core.Name]
+tvarsR (RVar (_, _, as)) = concatMap tvarsS as
+
+tvarsS :: Sort -> [Core.Name]
+tvarsS (SVar a) = [a]
+tvarsS (SData _ as) = concatMap tvarsS as
+tvarsS (SArrow s1 s2) = tvarsS s1 ++ tvarsS s2
+tvarsS (SApp s1 s2) = tvarsS s1 ++ tvarsS s2
+tvarsS (SBase _ as) = concatMap tvarsS as
+
 
 -- The refinement variables present in a type
 vars :: Type -> [RVar]
@@ -153,9 +194,10 @@ broaden (V _ d as)      = SData d as
 broaden (Sum _ tc as _) = SData tc as
 broaden (TVar a)        = SVar a
 broaden (t1 :=> t2)     = SArrow (broaden t1) (broaden t2)
-broaden (App t1 s2)     = SApp (broaden t1) s2
+broaden (App t1 s2)     = (broaden t1) `applySortToSort` s2
 broaden (Lit l)         = SLit l
 broaden (Base b as)     = SBase b as
+broaden Dot             = SDot
 
 -- Lift a sort to a type without taking fresh refinement variables
 toType :: Sort -> Type
@@ -163,7 +205,7 @@ toType (SData d as)   = Base d as
 toType (SBase d as)   = Base d as
 toType (SVar a)       = TVar a
 toType (SArrow s1 s2) = (toType s1) :=> (toType s2)
-toType (SApp s1 s2)   = App (toType s1) s2
+toType (SApp s1 s2)   = (toType s1) `applySort` s2
 toType (SLit l)       = Lit l
 
 -- Convert a core type into a sort
@@ -182,7 +224,8 @@ toSort (T.FunTy t1 t2) =
       s2 = toSort t2
   in SArrow s1 s2
 toSort (T.LitTy l) = SLit l
-toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Forall, Cast & Coercion
+-- toSort (T.ForAllTy b t) = toSort t `applySortToSort` (SVar $ Core.getName $ Core.binderVar b)
+toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Cast & Coercion
 
 -- Convert a core type into a sort scheme
 toSortScheme :: Core.Type -> SortScheme
@@ -199,6 +242,7 @@ toSortScheme (T.ForAllTy b t) =
 toSortScheme (T.FunTy t1@(T.TyConApp _ _) t2)
   | Core.isPredTy t1 = toSortScheme t2 -- Ignore evidence of typeclasses and implicit parameters
 toSortScheme (T.FunTy t1 t2) = let s1 = toSort t1; SForall as s2 = toSortScheme t2 in SForall as (SArrow s1 s2)
+toSortScheme t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Cast & Coercion
 
 
 
@@ -238,7 +282,7 @@ class TypeVars a t where
 
 -- Substitute many type variables
 subTypeVars :: TypeVars a t => [Core.Name] -> [t] -> a -> a
-subTypeVars [] [] = id
+subTypeVars _ [] = id
 subTypeVars (a:as) (t:ts) = subTypeVar a t . subTypeVars as ts
 
 -- Collapse an application type if possible after a substitution has occured
@@ -246,7 +290,13 @@ applySort :: Type -> Sort -> Type
 applySort (V x d as) a           = V x d (as ++ [a])
 applySort (Sum e tc as cs) a     = Sum e tc (as ++ [a]) cs
 applySort (Base b as) a          = Base b (as ++ [a])
+applySort Dot s                  = Dot
 applySort t a                    = App t a -- Nonreducible
+
+applySortToSort :: Sort -> Sort -> Sort
+applySortToSort (SData d as) a = SData d (as ++ [a])
+applySortToSort (SBase b as) a = SBase b (as ++ [a])
+applySortToSort t a            = SApp t a
 
 instance TypeVars Sort Sort where
   {-# SPECIALIZE instance TypeVars Sort Sort #-}
@@ -255,9 +305,9 @@ instance TypeVars Sort Sort where
     | otherwise = SVar a'
   subTypeVar a t (SData d as)   = SData d (subTypeVar a t <$> as)
   subTypeVar a t (SArrow s1 s2) = SArrow (subTypeVar a t s1) (subTypeVar a t s2)
-  subTypeVar a t (SApp s1 s2)   = SApp (subTypeVar a t s1) (subTypeVar a t s2)
+  subTypeVar a t (SApp s1 s2)   = (subTypeVar a t s1) `applySortToSort` (subTypeVar a t s2)
   subTypeVar a t (SLit l)       = SLit l
-  subTypeVar a t (SBase b as)   = SBase b as
+  subTypeVar a t (SBase b as)   = SBase b (subTypeVar a t <$> as)
 
 instance TypeVars Type Type where
   {-# SPECIALIZE instance TypeVars Type Type #-}
@@ -270,7 +320,7 @@ instance TypeVars Type Type where
   subTypeVar a t (t1 :=> t2)  = subTypeVar a t t1 :=> subTypeVar a t t2
   subTypeVar a t (App t1 s2)  = subTypeVar a t t1 `applySort` subTypeVar a t s2
   subTypeVar a t (Lit l)      = Lit l
-  subTypeVar a t (Base b as)  = Base b as
+  subTypeVar a t (Base b as)  = Base b (subTypeVar a t <$> as)
 
 instance TypeVars Sort Type where
   {-# SPECIALIZE instance TypeVars Sort Type #-}

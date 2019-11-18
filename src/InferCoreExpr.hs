@@ -43,7 +43,7 @@ quantifyWith cg@ConGraph{subs = sb} ts = do
   -- Only quantified by refinement variables that appear in the inferface
   let nodes = L.nub ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ [v | Forall _ _ _ u <- ts', v <- vars u])
 
-  return [Forall as nodes edges u | Forall as _ _ u <- ts']
+  return [Forall (L.nub (as ++ (concatMap tvarsR nodes) ++ (tvars  u))) nodes edges u | Forall as _ _ u <- ts']
 
 
 
@@ -98,8 +98,9 @@ inferProg p = do
 
   -- Mut rec groups
   z <- foldr (\b r -> do
-    let xs   = Core.getName <$> Core.bindersOf b
-    let rhss = Core.rhssOfBind b
+    -- Filter evidence binds
+    let xs   = Core.getName <$> (filter (not . Core.isPredTy . Core.varType) $ Core.bindersOf b)
+    let rhss = filter (not . Core.isPredTy . Core.exprType) $ Core.rhssOfBind b
 
     -- Fresh typescheme for each binder in the group
     ts <- mapM (freshScheme . toSortScheme . Core.exprType) rhss
@@ -136,10 +137,12 @@ inferVar x ts e =
         then do
           -- Infer refinable constructor
           let (d, as, args) = safeCon k
+          let ts' = take (length as) (ts ++ (SVar <$> as))
           args' <- mapM (fresh . subTypeVars as ts) args
-          t  <- fresh $ SData d ts
-          cg <- insert (Con (Left e) d (toDataCon k) ts args') t empty `inExpr` e
+          t  <- fresh $ SData d ts'
+          cg <- insert (Con (Left e) d (toDataCon k) ts' args') t empty `inExpr` e
           return (foldr (:=>) t args', cg)
+          
         else do
           -- Infer unrefinable constructor
           let (d, as, args) = safeCon k
@@ -149,19 +152,19 @@ inferVar x ts e =
     Nothing -> do
       -- Infer polymorphic variable at type(s)
       (Forall as xs cs u) <- safeVar x
-      cg <- fromList cs `inExpr` e
       if length as /= length ts
         then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
         else do
           -- Instantiate typescheme
           ts'     <- mapM fresh ts
+          cg      <- fromList cs `inExpr` e
           let cg' =  subTypeVars as ts' cg
           let xs' =  fmap (\(RVar (x, d, ss)) -> RVar (x, d, subTypeVars as ts <$> ss)) xs
           ys      <- mapM (fresh . \(RVar (_, d, ss)) -> SData d ss) xs'
           let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
           
           -- Import variables constraints at type
-          cg'' <- foldM (\cg' (x, y) -> substitute x y cg' `inExpr` e) cg' (zip xs' ys)
+          cg'' <- foldM (\cg' (x, y) -> substitute x y cg' False `inExpr` e) cg' (zip xs' ys)
 
           v <- fresh $ toSort $ Core.exprType e
 
@@ -178,7 +181,7 @@ infer l@(Core.Lit _) = do
 
 infer e@(Core.App e1 e2) =
   case fromPolyVar e of
-    Just (x, ts) ->
+    Just (x, ts) -> do
       -- Infer polymorphic variable
       inferVar x ts e
     Nothing -> do
@@ -230,7 +233,7 @@ infer e'@(Core.Let b e) = do
     -- Infer each bind within the group, compiling constraints
     (t, cg') <- withBinds (infer rhs)
     cg''     <- union cg cg' `inExpr` rhs
-    return (t:ts, cg'')
+    return (ts ++ [t], cg'')
     ) ([], empty) rhss
 
   --  Insure fresh types are quantified by infered constraint (t' < t)
@@ -245,7 +248,7 @@ infer e'@(Core.Let b e) = do
   
   return (t, cg'')
 
-  -- Infer case expession
+  -- Infer top-level case expession
 infer e'@(Core.Case e b rt as) = do
   -- Fresh return type
   t  <- fresh $ toSort rt
@@ -254,9 +257,9 @@ infer e'@(Core.Case e b rt as) = do
   let es = toSort $ Core.exprType e
   et <- fresh es
   (t0, c0) <- infer e
-  c0' <- insert et t0 c0 `inExpr` e'
+  c0' <- insert et t0 c0 `inExpr` e
 
-  (caseType, cg) <- local (insertVar (Core.getName b) $ Forall [] [] [] et) $ foldM (\(caseType, cg) (a, bs, rhs) ->
+  (caseType, cg) <- local (insertVar (Core.getName b) $ Forall [] [] [] et) (pushCase e >> foldM (\(caseType, cg) (a, bs, rhs) ->
     if Core.exprIsBottom rhs
       then return (caseType, cg) -- If rhs is bottom it is not a valid case
       else do
@@ -265,7 +268,7 @@ infer e'@(Core.Case e b rt as) = do
 
         -- Ensure return type is valid
         (ti', cgi) <- local (insertMany (Core.getName <$> bs) $ fmap (Forall [] [] []) ts) (infer rhs)
-        cgi'       <- insert ti' t cgi `inExpr` e
+        cgi'       <- insert ti' t cgi `inExpr` e'
         cg'        <- union cg cgi' `inExpr` e'
 
         -- Track the occurance of a constructors/default case
@@ -281,12 +284,16 @@ infer e'@(Core.Case e b rt as) = do
           }
         
         return (caseType', cg')
-    ) (Just (Nothing, Nothing, []), c0') as
+    ) (Just (Nothing, Nothing, []), c0') as)
+
+  popCase
+
+  tl <- topLevel e
 
   -- Ensure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
     Nothing  -> return cg -- Literal cases must have a default
-    Just (Just tc, Just ss, cs) -> insert t0 (Sum (Left e') tc ss cs) cg `inExpr` e'
+    Just (Just tc, Just ss, cs) -> if tl then insert t0 (Sum (Left e') tc ss cs) cg `inExpr` e' else return cg
     _ -> Core.pprPanic "Inconsistent data constructors arguments!" (Core.ppr ())
 
   return (t, cg)

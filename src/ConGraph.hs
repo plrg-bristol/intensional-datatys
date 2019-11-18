@@ -59,9 +59,9 @@ instance TypeVars ConGraph Type where
 
 
 
-
 -- Normalise the constraints by applying recursive simplifications
 normalise :: Type -> Type -> [(Type, Type)]
+-- normalise t1 t2 | Core.pprTrace "normalise" (Core.ppr (t1, t2)) False = undefined
 normalise t1@(Con e tc k as ts) t2@(V x d as') =
   let ts' = upArrow x <$> delta k as
   in [(Con e tc k as ts', V x d as'), (Con e tc k as ts, Con e tc k as ts')]
@@ -73,14 +73,16 @@ normalise t1@(V x d as) t2@(Sum e tc as' cs) =
 normalise t1 t2 = [(t1, t2)]
 
 -- Insert new constraint with normalisation
--- TODO: assert they have the same sort
 insert :: Type -> Type -> ConGraph -> InferME ConGraph
+-- insert t1 t2 _ | Core.pprTrace "insert" (Core.ppr (t1, t2)) False = undefined
 insert Dot t2 cg = return cg -- Ignore any constriants concerning Dot, i.e. coercions
 insert t1 Dot cg = return cg
 
-insert t1 t2 _ | toType (broaden t1) /= toType (broaden t2) = Core.pprPanic "Sorts must algin" (Core.ppr (t1, t2)) undefined
+insert t1 t2 _ | broaden t1 /= broaden t2 = do
+  (e, _) <- ask
+  Core.pprPanic "Sorts must algin" (Core.ppr (t1, t2, e)) undefined
 
-insert t1 t2 cg = foldM (\cg (t1', t2') -> insertInner t1' t2' cg) cg $ normalise t1 t2
+insert t1 t2 cg@ConGraph{subs = sb} = foldM (\cg (t1', t2') -> insertInner (subRefinementMap sb t1') (subRefinementMap sb t2') cg) cg $ normalise t1 t2
 
 -- Insert new constraint
 insertInner :: Type -> Type -> ConGraph -> InferME ConGraph
@@ -93,9 +95,9 @@ insertInner (t1 :=> t2) (t1' :=> t2') cg = do
   cg' <- insert t1' t1 cg
   insert t2 t2' cg'
 
-insertInner t1@(Sum e1 tc as cs) t2@(Sum e2 tc' as' ds) _ | any (`notElem` fmap fst ds) $ fmap fst cs = do
+insertInner t1@(Sum e1 tc as cs) t2@(Sum e2 tc' as' ds) cg | any (`notElem` fmap fst ds) $ fmap fst cs = do
   (e, _) <- ask
-  Core.pprPanic "Invalid sum!" (Core.ppr (t1, t2, e1, e2, e))
+  Core.pprPanic "Invalid sum!" (Core.ppr (t1, t2, e1, e2, e, toList cg, M.toList (subs cg)))
 
 insertInner cx@(Con _ _ c as cargs) dy@(Con _ _ d as' dargs) cg
   | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
@@ -113,55 +115,59 @@ insertInner c@Con{} (Var y) cg         = insertPred c y cg
 
 insertInner (Sum e tc as cs) t cg = foldM (\cg (c, cargs) -> insert (Con e tc c as cargs) t cg) cg cs
 
+insertInner (App (TVar _) _) (App (TVar _) _) cg = return cg
+
+-- insertInner (TVar a) t cg = return $ subTypeVar a t cg
+
+-- insertInner t (TVar a) cg = return $ subTypeVar a t cg
+
 insertInner t1 t2 cg = do
   (e, _) <- ask
   Core.pprPanic "Unreduced type application in constraints!" (Core.ppr (t1, t2, e)) -- This should be unreachable
 
 insertSucc :: RVar -> Type -> ConGraph -> InferME ConGraph
-insertSucc x sy cg@ConGraph{succs = s, subs = sb} =
-  case sb M.!? x of
-    Just z    -> insert z sy cg
-    _ ->
-      case s M.!? x of
-        Just ss ->
-          if sy `elem` ss
-            then return cg
-            else do
-              cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s}
-              -- TODO: intersect sums
-              case predChain cg' x sy [] of
-                Just vs -> foldM (\cg x -> substitute x sy cg) cg' vs
-                _ -> return cg'
-        _ -> closeSucc x sy cg{succs = M.insert x [sy] s}
+-- insertSucc x sy _ | Core.pprTrace "insertSucc" (Core.ppr (x, sy)) False = undefined
+insertSucc x sy cg@ConGraph{succs = s} =
+  case s M.!? x of
+    Just ss ->
+      if sy `elem` ss
+        then return cg
+        else do
+          cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s}
+          -- TODO: intersect sums
+          case predChain cg' x sy [] of
+            Just vs -> foldM (\cg x -> substitute x sy cg True) cg' vs
+            _ -> return cg'
+    _ -> closeSucc x sy cg{succs = M.insert x [sy] s}
 
 insertPred :: Type -> RVar -> ConGraph -> InferME ConGraph
-insertPred sx y cg@ConGraph{preds = p, subs = sb} =
-  case sb M.!? y of
-    Just z    -> insert sx z cg
-    _ ->
-      case p M.!? y of
-        Just ps ->
-          if sx `elem` ps
-            then return cg
-            else do
-              cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p}
-              -- TODO: union sums
-              case succChain cg' sx y [] of
-                Just vs -> foldM (\cg y -> substitute y sx cg) cg' vs
-                _ -> return cg'
-        _ -> closePred sx y cg{preds = M.insert y [sx] p}
+-- insertPred sx y _ | Core.pprTrace "insertPred" (Core.ppr (sx, y)) False = undefined
+insertPred sx y cg@ConGraph{preds = p} =
+  case p M.!? y of
+    Just ps ->
+      if sx `elem` ps
+        then return cg
+        else do
+          cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p}
+          -- TODO: union sums
+          case succChain cg' sx y [] of
+            Just vs -> foldM (\cg y -> substitute y sx cg True) cg' vs
+            _ -> return cg'
+    _ -> closePred sx y cg{preds = M.insert y [sx] p}
 
 -- Partial online transitive closure
 closeSucc :: RVar -> Type -> ConGraph -> InferME ConGraph
+-- closeSucc x sy _ | Core.pprTrace "closeSucc" (Core.ppr (x, sy)) False = undefined
 closeSucc x sy cg =
   case preds cg M.!? x of
     Just ps   -> foldM (\cg p -> insert p sy cg) cg ps
     _ -> return cg
 
 closePred :: Type -> RVar -> ConGraph -> InferME ConGraph
+-- closePred sx y _ | Core.pprTrace "closePred" (Core.ppr (sx, y)) False = undefined
 closePred sx y cg =
   case succs cg M.!? y of
-    Just ss   -> foldM (flip (insert sx)) cg ss
+    Just ss   -> foldM (\cg s -> insert sx s cg) cg ss
     _ -> return cg
 
 -- Partial online cycle elimination
@@ -198,31 +204,31 @@ succChain cg f t m = do
       return m'
 
 -- Safely substitute variable with an expression
-substitute :: RVar -> Type -> ConGraph -> InferME ConGraph
-substitute x (Var y) cg | x == y = return cg
-substitute x se ConGraph{succs = s, preds = p, subs = sb} = do
+substitute :: RVar -> Type -> ConGraph -> Bool -> InferME ConGraph
+-- substitute x se _ | Core.pprTrace "substitute" (Core.ppr (x, se)) False = undefined
+substitute x se cg t | t && (x `elem` vars se) = return cg
+substitute x se cg@ConGraph{succs = s, preds = p, subs = sb} t = do
   -- Necessary to recalculate preds and succs as se might not be a Var.
   -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications anyway
-  cg' <- case p' M.!? x of
-    Just ps -> foldM (\cg pi -> insert pi se cg) cg ps
-    Nothing -> return cg
-  cg'' <- case s' M.!? x of
-    Just ss -> foldM (flip $ insert se) cg' ss
+  let cg' = ConGraph{ succs = M.map (filter (notElem x . vars)) $ M.delete x s,
+                      preds = M.map (filter (notElem x . vars)) $ M.delete x p,
+                      subs  = if t then M.insert x se (subRefinementVar x se <$> sb) else sb}
+  cg'' <- case p M.!? x of
+    Just ps -> foldM (\cg pi -> insert (subRefinementMap sb pi) se cg) cg' ps
     Nothing -> return cg'
-  return cg''{ succs = M.delete x $ succs cg'', preds = M.delete x $ preds cg''}
-  where
-    p'  = fmap (fmap $ subRefinementVar x se) p
-    s'  = fmap (fmap $ subRefinementVar x se) s
-    cg = ConGraph { succs = s', preds = p', subs = M.insert x se (subRefinementVar x se <$> sb) }
+  case s M.!? x of
+    Just ss -> foldM (\cg si -> insert se (subRefinementMap sb si) cg) cg'' ss
+    Nothing -> return cg''
 
 -- Union of constraint graphs
 union :: ConGraph -> ConGraph -> InferME ConGraph
 union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
   -- Combine equivalence classes using left representation
+  -- TODO: check for cycles
   let msb  = M.union sb (subRefinementMap sb <$> sb')
 
   -- Update cg1 with new equivalences
-  cg1' <- M.foldrWithKey (\x se -> (>>= substitute x se)) (return cg1) msb
+  cg1' <- M.foldrWithKey (\x se -> (>>= (\cg -> substitute x se cg False))) (return cg1) msb
 
   -- Insert edges from cg2 into cg1
   cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (flip (insert (Var k))) cg vs)) (return cg1') s

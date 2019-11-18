@@ -33,7 +33,7 @@ interfaceName = ("interface/" ++) . moduleNameString
 
 inferGuts :: ModGuts -> CoreM ModGuts
 inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
-  pprTraceM "" (ppr p)
+  -- pprTraceM "" (ppr p)
 
   -- Reload saved typeschemes
   deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
@@ -50,11 +50,11 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   let (tss, _, _) = runRWS (inferProg p) env ([], 0)
 
   -- Display typeschemes
-  -- liftIO $ mapM_ (\(v, ts) -> do
-  --   putStrLn ""
-  --   putStrLn $ showSDocUnsafe $ format v ts
-  --   putStrLn ""
-  --   ) tss
+  liftIO $ mapM_ (\(v, ts) -> do
+    putStrLn ""
+    putStrLn $ showSDocUnsafe $ format v ts
+    putStrLn ""
+    ) tss
 
   let tss' = globalise m tss
     

@@ -137,8 +137,8 @@ inferVar x ts e =
         then do
           -- Infer refinable constructor
           let (d, as, args) = safeCon k
-          let ts' = take (length as) (ts ++ (SVar <$> as))
-          args' <- mapM (fresh . subTypeVars as ts) args
+          let ts' = take (length as) (ts ++ drop (length ts) (SVar <$> as))
+          args' <- mapM (fresh . subTypeVars as ts') args
           t  <- fresh $ SData d ts'
           cg <- insert (Con (Left e) d (toDataCon k) ts' args') t empty `inExpr` e
           return (foldr (:=>) t args', cg)
@@ -152,24 +152,22 @@ inferVar x ts e =
     Nothing -> do
       -- Infer polymorphic variable at type(s)
       (Forall as xs cs u) <- safeVar x
-      if length as /= length ts
-        then Core.pprPanic "Variables must fully instantiate type arguments." (Core.ppr x)
-        else do
-          -- Instantiate typescheme
-          ts'     <- mapM fresh ts
-          cg      <- fromList cs `inExpr` e
-          let cg' =  subTypeVars as ts' cg
-          let xs' =  fmap (\(RVar (x, d, ss)) -> RVar (x, d, subTypeVars as ts <$> ss)) xs
-          ys      <- mapM (fresh . \(RVar (_, d, ss)) -> SData d ss) xs'
-          let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
-          
-          -- Import variables constraints at type
-          cg'' <- foldM (\cg' (x, y) -> substitute x y cg' False `inExpr` e) cg' (zip xs' ys)
 
-          v <- fresh $ toSort $ Core.exprType e
+      -- Instantiate typescheme
+      ts'     <- mapM fresh $ take (length as) (ts ++ drop (length ts) (SVar <$> as))
+      cg      <- fromList cs `inExpr` e
+      let xs' =  fmap (\(RVar (x, d, ss)) -> RVar (x, d, subTypeVars as ts' <$> ss)) xs
+      ys      <- mapM (fresh . \(RVar (_, d, ss)) -> SData d ss) xs'
+      let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
+      let cg' =  subTypeVars as ts' cg
+      
+      -- Import variables constraints at type
+      cg'' <- foldM (\cg' (x, y) -> substitute x y cg' False `inExpr` e) cg' (zip xs' ys)
 
-          cg''' <- insert u' v cg'' `inExpr` e
-          return (v, cg''')
+      v <- fresh $ toSort $ Core.exprType e
+
+      cg''' <- insert u' v cg'' `inExpr` e
+      return (v, cg''')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e@(Core.Var x) = inferVar x [] e -- Infer monomorphic variable

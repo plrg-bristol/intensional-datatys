@@ -97,7 +97,7 @@ insertInner (t1 :=> t2) (t1' :=> t2') cg = do
 
 insertInner t1@(Sum e1 tc as cs) t2@(Sum e2 tc' as' ds) cg | any (`notElem` fmap fst ds) $ fmap fst cs = do
   (e, _) <- ask
-  Core.pprPanic "Invalid sum!" (Core.ppr (t1, t2, e1, e2, e, toList cg, M.toList (subs cg)))
+  Core.pprPanic "Invalid sum!" (Core.ppr ()) -- t1, t2, e1, e2, e, toList cg, M.toList (subs cg)))
 
 insertInner cx@(Con _ _ c as cargs) dy@(Con _ _ d as' dargs) cg
   | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
@@ -210,14 +210,16 @@ substitute x se cg t | t && (x `elem` vars se) = return cg
 substitute x se cg@ConGraph{succs = s, preds = p, subs = sb} t = do
   -- Necessary to recalculate preds and succs as se might not be a Var.
   -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications anyway
-  let cg' = ConGraph{ succs = M.map (filter (notElem x . vars)) $ M.delete x s,
-                      preds = M.map (filter (notElem x . vars)) $ M.delete x p,
+  let cg' = ConGraph{ succs = M.map (fmap (subRefinementVar x se)) $ M.delete x s,
+                      preds = M.map (fmap (subRefinementVar x se)) $ M.delete x p,
                       subs  = if t then M.insert x se (subRefinementVar x se <$> sb) else sb}
+
   cg'' <- case p M.!? x of
-    Just ps -> foldM (\cg pi -> insert (subRefinementMap sb pi) se cg) cg' ps
+    Just ps -> foldM (\cg pi -> insert (subRefinementVar x se pi) se cg) cg' ps
     Nothing -> return cg'
+
   case s M.!? x of
-    Just ss -> foldM (\cg si -> insert se (subRefinementMap sb si) cg) cg'' ss
+    Just ss -> foldM (\cg si -> insert se (subRefinementVar x se si) cg) cg'' ss
     Nothing -> return cg''
 
 -- Union of constraint graphs

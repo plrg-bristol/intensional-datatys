@@ -74,13 +74,14 @@ normalise t1 t2 = [(t1, t2)]
 
 -- Insert new constraint with normalisation
 insert :: Type -> Type -> ConGraph -> InferME ConGraph
--- insert t1 t2 _ | Core.pprTrace "insert" (Core.ppr (t1, t2)) False = undefined
-insert Dot t2 cg = return cg -- Ignore any constriants concerning Dot, i.e. coercions
-insert t1 Dot cg = return cg
-
 insert t1 t2 _ | broaden t1 /= broaden t2 = do
   (e, _) <- ask
   Core.pprPanic "Sorts must algin" (Core.ppr (t1, t2, e)) undefined
+
+-- insert t1 t2 _ | Core.pprTrace "insert" (Core.ppr (t1, t2)) False = undefined
+
+insert Dot t2 cg = return cg -- Ignore any constriants concerning Dot, i.e. coercions
+insert t1 Dot cg = return cg
 
 insert t1 t2 cg@ConGraph{subs = sb} = foldM (\cg (t1', t2') -> insertInner (subRefinementMap sb t1') (subRefinementMap sb t2') cg) cg $ normalise t1 t2
 
@@ -205,7 +206,7 @@ succChain cg f t m = do
 
 -- Safely substitute variable with an expression
 substitute :: RVar -> Type -> ConGraph -> Bool -> InferME ConGraph
--- substitute x se _ | Core.pprTrace "substitute" (Core.ppr (x, se)) False = undefined
+-- substitute x se _ _ | Core.pprTrace "substitute" (Core.ppr (x, se)) False = undefined
 substitute x se cg t | t && (x `elem` vars se) = return cg
 substitute x se cg@ConGraph{succs = s, preds = p, subs = sb} t = do
   -- Necessary to recalculate preds and succs as se might not be a Var.
@@ -254,14 +255,14 @@ saturate interface cg@ConGraph{subs = sb} = saturate' $ toList cg
                     (d1, d2) <- normalise a c, 
                     (subRefinementMap sb d1, subRefinementMap sb d2) `notElem` cs]
 
-      in if delta == []
-        then cs
-        else 
-          -- Add new edges
-          let cs' = (L.nub delta) ++ cs
+      in if null delta
+          then cs
+          else 
+            -- Add new edges
+            let cs' = (L.nub delta) ++ cs
 
-          -- Until a fixed point is reached
-          in saturate' cs'
+            -- Until a fixed point is reached
+            in saturate' cs'
 
 -- Unsound/experimental optimisation:
 -- Eagerly remove properly scoped bounded (intermediate) nodes

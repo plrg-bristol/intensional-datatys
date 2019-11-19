@@ -47,7 +47,7 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     ) Context{var = M.empty} deps
 
   -- Infer constraints
-  let (tss, _, _) = runRWS (inferProg p) env ([], 0)
+  let (!tss, _, _) = runRWS (inferProg p) env ([], 0)
 
   -- Display typeschemes
   liftIO $ mapM_ (\(v, ts) -> do

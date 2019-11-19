@@ -33,6 +33,7 @@ import Types
 -- A stack of a names which have pattern matched to corrctly order nested case
 type InferM = RWS Context () ([Core.Expr Core.Var], Int)
 
+-- TODO: better comparison for top-level
 instance Eq (Core.Expr Core.Var) where
   Core.Var i == Core.Var i' = Core.getUnique i == Core.getUnique i'
   _ == _ = False

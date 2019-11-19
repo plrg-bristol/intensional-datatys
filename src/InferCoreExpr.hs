@@ -252,9 +252,11 @@ infer e'@(Core.Case e b rt as) = do
   t  <- fresh $ toSort rt
 
   -- Infer expression to pattern match on
+  (t0, c0) <- infer e
+
+  -- b @ e
   let es = toSort $ Core.exprType e
   et <- fresh es
-  (t0, c0) <- infer e
   c0' <- insert et t0 c0 `inExpr` e
 
   (caseType, cg) <- local (insertVar (Core.getName b) $ Forall [] [] [] et) (pushCase e >> foldM (\(caseType, cg) (a, bs, rhs) ->

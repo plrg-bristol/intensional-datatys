@@ -67,7 +67,6 @@ module Sequence (
 import Prelude hiding (
 	null, length, take, drop, splitAt, foldl, foldl1, foldr, foldr1,
     reverse)
-import qualified Set as S
 import qualified Data.List (foldl')
 import qualified Control.Applicative as Alternative
 import Control.Applicative (Applicative(..), (<$>))

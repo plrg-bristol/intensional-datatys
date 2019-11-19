@@ -8,4 +8,4 @@ hie.yaml
 interface/*
 interface/
 interface
-log
+log*

@@ -61,7 +61,7 @@ instance Eq Sort where
   (SApp s1 s2) == (SApp s1' s2') = s1 == s1' && s2 == s2'
   (SLit l) == (SLit l') = l == l'
   (SBase tc as) == (SBase tc' as') = tc == tc' && as == as'
-  _ == _ = True
+  _ == _ = False
 
 
 -- Refinement variables
@@ -290,7 +290,7 @@ applySort :: Type -> Sort -> Type
 applySort (V x d as) a           = V x d (as ++ [a])
 applySort (Sum e tc as cs) a     = Sum e tc (as ++ [a]) cs
 applySort (Base b as) a          = Base b (as ++ [a])
-applySort Dot s                  = Dot
+-- applySort Dot s                  = Dot
 applySort t a                    = App t a -- Nonreducible
 
 applySortToSort :: Sort -> Sort -> Sort

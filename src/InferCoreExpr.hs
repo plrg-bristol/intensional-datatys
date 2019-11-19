@@ -8,6 +8,8 @@ module InferCoreExpr
 import Control.Arrow
 import Control.Monad.RWS hiding (Sum)
 
+import Data.Time
+import Data.Functor.Identity
 import qualified Data.List as L
 
 import Kind
@@ -98,6 +100,8 @@ inferProg p = do
 
   -- Mut rec groups
   z <- foldr (\b r -> do
+    start <- liftIO $ getCurrentTime
+
     -- Filter evidence binds
     let xs   = Core.getName <$> (filter (not . Core.isPredTy . Core.varType) $ Core.bindersOf b)
     let rhss = filter (not . Core.isPredTy . Core.exprType) $ Core.rhssOfBind b
@@ -121,6 +125,11 @@ inferProg p = do
 
     -- Add infered typescheme to the environment
     r' <- local (insertMany xs ts'') r
+    
+    stop <- liftIO $ getCurrentTime
+    !() <- liftIO $ putStr "Dep time: "
+    !() <- liftIO $ print $ (Core.nameStableString <$> xs, diffUTCTime stop start)
+
     return $ (xs, ts''):r'
     ) (return []) p'
   return $ concatMap (uncurry zip) z

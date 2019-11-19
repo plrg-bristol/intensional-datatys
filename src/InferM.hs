@@ -31,7 +31,7 @@ import Types
 
 -- The inference monad; a reader (i.e. local) context and a state (i.e. global) counter for taking fresh variables
 -- A stack of a names which have pattern matched to corrctly order nested case
-type InferM = RWS Context () ([Core.Expr Core.Var], Int)
+type InferM = RWST Context () ([Core.Expr Core.Var], Int) IO
 
 -- TODO: better comparison for top-level
 instance Eq (Core.Expr Core.Var) where
@@ -53,7 +53,7 @@ topLevel e = do
   return (e `notElem` cs)
 
 -- Used to track the expression in which errors arrise
-type InferME = RWS (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Int)
+type InferME = RWST (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Int) IO
 
 -- Attach an expression to an erroneous computation
 inExpr :: InferME a -> Core.Expr Core.Var -> InferM a

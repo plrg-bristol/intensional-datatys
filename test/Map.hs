@@ -167,7 +167,6 @@ module Map  (
 
 import Prelude hiding (lookup,map,filter,foldr,foldl,null)
 import qualified Set as Set
-import qualified Sequence as Seq
 import qualified Data.List as List
 import Data.Monoid (Monoid(..))
 import Control.Applicative (Applicative(..), (<$>))

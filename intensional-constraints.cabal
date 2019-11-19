@@ -43,13 +43,14 @@ library
       base >=4.7
     , directory
     , containers
+    , time
     , mtl
     , ghc
   default-language: Haskell2010
 
 test-suite intensional-constraints-test
   type: exitcode-stdio-1.0
-  main-is: IntMap.hs
+  main-is: Sequence.hs
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:

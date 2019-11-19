@@ -29,7 +29,7 @@ module Tree(
 import Control.Applicative (Applicative(..), (<$>))
 import Control.Monad
 import Data.Monoid (Monoid(..))
-import Data.Sequence (Seq, empty, singleton, (<|), (|>), fromList,
+import Sequence (Seq, empty, singleton, (<|), (|>), fromList,
 			ViewL(..), ViewR(..), viewl, viewr)
 import Data.Foldable (Foldable(foldMap), toList)
 import Data.Traversable (Traversable(traverse))

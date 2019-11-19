@@ -88,7 +88,7 @@ instance Eq Type where
   Dot == t = True
   t == Dot = True
   Var r == Var r' = r == r'
-  Sum _ tc as cs == Sum _ tc' as' cs' = tc == tc' && as == as' && all (`elem` cs') cs
+  Sum _ tc as cs == Sum _ tc' as' cs' = tc == tc' && as == as' && all (`elem` cs') cs && all (`elem` cs) cs'
   TVar a == TVar a' = a == a'
   (t1 :=> t2) == (t1' :=> t2') = t1 == t1' && t2 == t2'
   (Lit l) == (Lit l') = l == l'

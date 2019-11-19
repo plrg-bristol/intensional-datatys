@@ -98,7 +98,7 @@ insertInner (t1 :=> t2) (t1' :=> t2') cg = do
 
 insertInner t1@(Sum e1 tc as cs) t2@(Sum e2 tc' as' ds) cg | any (`notElem` fmap fst ds) $ fmap fst cs = do
   (e, _) <- ask
-  Core.pprPanic "Invalid sum!" (Core.ppr ()) -- t1, t2, e1, e2, e, toList cg, M.toList (subs cg)))
+  Core.pprPanic "Invalid sum!" (Core.ppr (t1, t2, e1, e2, e, toList cg, M.toList (subs cg)))
 
 insertInner cx@(Con _ _ c as cargs) dy@(Con _ _ d as' dargs) cg
   | c == d && as == as'          = foldM (\cg (ci, di) -> insert ci di cg) cg $ zip cargs dargs
@@ -173,6 +173,7 @@ closePred sx y cg =
 
 -- Partial online cycle elimination
 predChain :: ConGraph -> RVar -> Type -> [RVar] -> Maybe [RVar]
+-- predChain _ x t _ | Core.pprTrace "predChain" (Core.ppr (x, t)) False = undefined
 predChain cg f (Var t) m = do
   guard $ f == t
   return $ f:m
@@ -189,6 +190,7 @@ predChain cg f t m = do
       return m'
 
 succChain :: ConGraph -> Type -> RVar -> [RVar] -> Maybe [RVar]
+-- succChain _ t x _ | Core.pprTrace "succChain" (Core.ppr (t, x)) False = undefined
 succChain cg (Var f) t m = do
   guard $ f == t
   return $ t:m
@@ -206,7 +208,7 @@ succChain cg f t m = do
 
 -- Safely substitute variable with an expression
 substitute :: RVar -> Type -> ConGraph -> Bool -> InferME ConGraph
--- substitute x se _ _ | Core.pprTrace "substitute" (Core.ppr (x, se)) False = undefined
+-- substitute x se _ t | Core.pprTrace "substitute" (Core.ppr (x, se, t)) False = undefined
 substitute x se cg t | t && (x `elem` vars se) = return cg
 substitute x se cg@ConGraph{succs = s, preds = p, subs = sb} t = do
   -- Necessary to recalculate preds and succs as se might not be a Var.

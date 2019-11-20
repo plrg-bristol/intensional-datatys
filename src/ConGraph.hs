@@ -141,7 +141,8 @@ insertSucc x sy cg@ConGraph{succs = s} =
           case predChain cg' x sy [] of
             Just vs -> foldM (\cg x -> substitute x sy cg True) cg' vs
             _ -> return cg'
-    _ -> closeSucc x sy cg{succs = M.insert x [sy] s}
+    _ -> return cg{succs = M.insert x [sy] s}
+      -- closeSucc x sy cg{succs = M.insert x [sy] s}
 
 insertPred :: Type -> RVar -> ConGraph -> InferME ConGraph
 -- insertPred sx y _ | Core.pprTrace "insertPred" (Core.ppr (sx, y)) False = undefined
@@ -157,22 +158,23 @@ insertPred sx y cg@ConGraph{preds = p} =
           case succChain cg' sx y [] of
             Just vs -> foldM (\cg y -> substitute y sx cg True) cg' vs
             _ -> return cg'
-    _ -> closePred sx y cg{preds = M.insert y [sx] p}
+    _ -> return cg{preds = M.insert y [sx] p}
+      -- closePred sx y cg{preds = M.insert y [sx] p}
 
 -- Partial online transitive closure
-closeSucc :: RVar -> Type -> ConGraph -> InferME ConGraph
+-- closeSucc :: RVar -> Type -> ConGraph -> InferME ConGraph
 -- closeSucc x sy _ | Core.pprTrace "closeSucc" (Core.ppr (x, sy)) False = undefined
-closeSucc x sy cg =
-  case preds cg M.!? x of
-    Just ps   -> foldM (\cg p -> insert p sy cg) cg ps
-    _ -> return cg
+-- closeSucc x sy cg =
+--   case preds cg M.!? x of
+--     Just ps   -> foldM (\cg p -> insert p sy cg) cg ps
+--     _ -> return cg
 
-closePred :: Type -> RVar -> ConGraph -> InferME ConGraph
+-- closePred :: Type -> RVar -> ConGraph -> InferME ConGraph
 -- closePred sx y _ | Core.pprTrace "closePred" (Core.ppr (sx, y)) False = undefined
-closePred sx y cg =
-  case succs cg M.!? y of
-    Just ss   -> foldM (\cg s -> insert sx s cg) cg ss
-    _ -> return cg
+-- closePred sx y cg =
+--   case succs cg M.!? y of
+--     Just ss   -> foldM (\cg s -> insert sx s cg) cg ss
+--     _ -> return cg
 
 -- Partial online cycle elimination
 predChain :: ConGraph -> RVar -> Type -> [RVar] -> Maybe [RVar]

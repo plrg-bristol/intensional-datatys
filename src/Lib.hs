@@ -34,7 +34,11 @@ interfaceName = ("interface/" ++) . moduleNameString
 
 inferGuts :: ModGuts -> CoreM ModGuts
 inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
-  start <- liftIO $ getCurrentTime
+
+  !start <- liftIO $ getCurrentTime
+  !() <- pprTraceM "Mod name: " (ppr m)
+  !() <- pprTraceM "Def count" $ (ppr $ length $ concatMap (\b -> getName <$> (filter (not . isPredTy . varType) $ bindersOf b)) p)
+
   -- pprTraceM "" (ppr p)
 
   -- Reload saved typeschemes
@@ -48,20 +52,15 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     return $ foldr (\(x, ts) env' -> insertVar x ts env') env tss'
     ) Context{var = M.empty} deps
 
-  -- !() <- pprTraceM "Mod name" (ppr m)
-
-  -- !() <- pprTraceM "Def count" $ (ppr $ length $ concatMap (\b -> getName <$> (filter (not . isPredTy . varType) $ bindersOf b)) p)
-
   -- Infer constraints
-  let !p' = inferProg p
-  (!tss, _, _) <- liftIO $ runRWST p' env ([], 0)
+  tss <- runInferM (inferProg p) env
 
   -- Display typeschemes
-  liftIO $ mapM_ (\(v, ts) -> return ()
-    -- putStrLn ""
-    -- putStrLn $ showSDocUnsafe $ format v ts
-    -- putStrLn ""
-    ) tss
+  -- liftIO $ mapM_ (\(v, ts) -> do
+  --     putStrLn ""
+  --     putStrLn $ showSDocUnsafe $ format v ts
+  --     putStrLn ""
+  --   ) tss
 
   let tss' = globalise m tss
     

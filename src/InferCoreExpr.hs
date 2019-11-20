@@ -104,7 +104,7 @@ inferProg p = do
 
   -- Mut rec groups
   !z <- foldr (\b r -> do
-    !start <- liftIO $ getCurrentTime
+    !start <- liftIO getCurrentTime
 
     -- Filter evidence binds
     let !xs   = Core.getName <$> (filter (not . Core.isPredTy . Core.varType) $ Core.bindersOf b)
@@ -131,9 +131,9 @@ inferProg p = do
     -- Add infered typescheme to the environment
     !r' <- local (insertMany xs ts'') r
     
-    !stop <- liftIO $ getCurrentTime
+    !stop <- liftIO getCurrentTime
     !() <- liftIO $ putStr "Dep time: "
-    !() <- liftIO $ print $ (Core.nameStableString <$> xs, diffUTCTime stop start)
+    !() <- liftIO $ print (Core.nameStableString <$> xs, diffUTCTime stop start)
 
     return $ (xs, ts''):r'
     ) (return []) p'

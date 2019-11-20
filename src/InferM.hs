@@ -2,9 +2,11 @@
 
 module InferM (
   InferM,
+  runInferM,
   pushCase,
   popCase,
   topLevel,
+
   InferME,
   inExpr,
   
@@ -54,6 +56,9 @@ topLevel e = do
 
 -- Used to track the expression in which errors arrise
 type InferME = RWST (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Int) IO
+runInferM p env = do 
+  (tss, _, _) <- liftIO $ runRWST p env ([], 0)
+  return tss
 
 -- Attach an expression to an erroneous computation
 inExpr :: InferME a -> Core.Expr Core.Var -> InferM a

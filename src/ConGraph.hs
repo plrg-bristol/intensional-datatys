@@ -59,6 +59,7 @@ instance TypeVars ConGraph Type where
 
 
 
+      
 -- Normalise the constraints by applying recursive simplifications
 normalise :: Type -> Type -> [(Type, Type)]
 -- normalise t1 t2 | Core.pprTrace "normalise" (Core.ppr (t1, t2)) False = undefined
@@ -111,8 +112,8 @@ insertInner vx@(Var x) vy@(Var y) cg
   | x > y                        = insertSucc x vy cg
   | otherwise                    = insertPred vx y cg
 
-insertInner (Var x) c@(Sum _ _ _ _) cg = insertSucc x c cg
-insertInner c@Con{} (Var y) cg         = insertPred c y cg
+insertInner (Var x) c@Sum{} cg = insertSucc x c cg
+insertInner c@Con{} (Var y) cg = insertPred c y cg
 
 insertInner (Sum e tc as cs) t cg = foldM (\cg (c, cargs) -> insert (Con e tc c as cargs) t cg) cg cs
 
@@ -134,7 +135,8 @@ insertSucc x sy cg@ConGraph{succs = s} =
       if sy `elem` ss
         then return cg
         else do
-          cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s}
+          let cg' = cg{succs = M.insert x (sy:ss) s}
+          -- cg' <- closeSucc x sy cg{succs = M.insert x (sy:ss) s}
           -- TODO: intersect sums
           case predChain cg' x sy [] of
             Just vs -> foldM (\cg x -> substitute x sy cg True) cg' vs
@@ -149,7 +151,8 @@ insertPred sx y cg@ConGraph{preds = p} =
       if sx `elem` ps
         then return cg
         else do
-          cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p}
+          let cg' = cg{preds = M.insert y (sx:ps) p}
+          -- cg' <- closePred sx y cg{preds = M.insert y (sx:ps) p}
           -- TODO: union sums
           case succChain cg' sx y [] of
             Just vs -> foldM (\cg y -> substitute y sx cg True) cg' vs
@@ -227,6 +230,7 @@ substitute x se cg@ConGraph{succs = s, preds = p, subs = sb} t = do
 
 -- Union of constraint graphs
 union :: ConGraph -> ConGraph -> InferME ConGraph
+-- union _ _ | Core.pprTrace "Union" (Core.ppr ()) False = undefined
 union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
   -- Combine equivalence classes using left representation
   -- TODO: check for cycles
@@ -243,28 +247,46 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 
 
 
-  -- The fixed point of normalisation and transitivity
-saturate :: [Int] -> ConGraph -> [(Type, Type)]
+-- The fixed point of normalisation and transitivity
+saturate :: [Int] -> [Int] -> ConGraph -> [(Type, Type)]
 {-# INLINE saturate #-}
-saturate interface cg@ConGraph{subs = sb} = saturate' $ toList cg
+saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate $ toList cg
   where
-    saturate' cs =
+    saturate' [] cs     = saturate'' cs
+    saturate' (n:ns) cs = 
+      let diff = [ (d1', d2') | 
+                      (a, b) <- cs, 
+                      n `elem` stems b,
+                      (b', c) <- cs,
+                      b == b',
+                      (d1, d2) <- normalise a c, 
+                      let (d1', d2') = (subRefinementMap sb d1, subRefinementMap sb d2),
+                      (d1', d2') `notElem` cs]
+      in if null diff
+        then 
+          saturate' ns [(a, b) | (a, b) <- cs, n `notElem` (stems a ++ stems b)]
+        else
+          -- Add new edges
+          let cs' = (L.nub diff) ++ cs
+
+          -- Until a fixed point is reached
+          in saturate' (n:ns) cs'
+
+    saturate'' cs =
       -- Normalise all transitive edges in cs and apply substitutions 
-      let delta = [(subRefinementMap sb d1, subRefinementMap sb d2) | (a, b) <-cs, (b', c) <- cs, 
-                    b == b', 
-                    (any (`elem` interface) $ stems a) || (any (`elem` interface) $ stems b),  -- If it not conncted to something in the interface we don't care
-                                                                                               -- Fix-point covers transitivity
+      let diff = [(subRefinementMap sb d1, subRefinementMap sb d2) | (a, b) <-cs, (b', c) <- cs, 
+                    b == b',
                     (d1, d2) <- normalise a c, 
                     (subRefinementMap sb d1, subRefinementMap sb d2) `notElem` cs]
 
-      in if null delta
+      in if null diff
           then cs
           else 
             -- Add new edges
-            let cs' = (L.nub delta) ++ cs
+            let cs' = (L.nub diff) ++ cs
 
             -- Until a fixed point is reached
-            in saturate' cs'
+            in saturate'' cs'
 
 -- Unsound/experimental optimisation:
 -- Eagerly remove properly scoped bounded (intermediate) nodes

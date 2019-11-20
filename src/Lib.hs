@@ -38,22 +38,23 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   -- pprTraceM "" (ppr p)
 
   -- Reload saved typeschemes
-  -- deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
-  -- hask <- getHscEnv 
-  -- env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m -> do
-  --   bh    <- liftIO $ readBinMem $ interfaceName m
-  --   cache <- mkNameCacheUpdater
-  --   tss   <- liftIO (getWithUserData cache bh :: IO [(Name, TypeScheme)])
-  --   let tss' = [(n, tagSumsWith m ts) | (n, ts) <- tss]
-  --   return $ foldr (\(x, ts) env' -> insertVar x ts env') env tss'
-  --   ) Context{var = M.empty} deps
+  deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
+  hask <- getHscEnv 
+  env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m -> do
+    bh    <- liftIO $ readBinMem $ interfaceName m
+    cache <- mkNameCacheUpdater
+    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, TypeScheme)])
+    let tss' = [(n, tagSumsWith m ts) | (n, ts) <- tss]
+    return $ foldr (\(x, ts) env' -> insertVar x ts env') env tss'
+    ) Context{var = M.empty} deps
 
-  !() <- pprTraceM "Mod name" (ppr m)
+  -- !() <- pprTraceM "Mod name" (ppr m)
 
-  !() <- pprTraceM "Def count" $ (ppr $ length $ concatMap (\b -> getName <$> (filter (not . isPredTy . varType) $ bindersOf b)) p)
+  -- !() <- pprTraceM "Def count" $ (ppr $ length $ concatMap (\b -> getName <$> (filter (not . isPredTy . varType) $ bindersOf b)) p)
 
   -- Infer constraints
-  (tss, _, _) <- liftIO $ runRWST (inferProg p) Context{var = M.empty} ([], 0)
+  let !p' = inferProg p
+  (!tss, _, _) <- liftIO $ runRWST p' env ([], 0)
 
   -- Display typeschemes
   liftIO $ mapM_ (\(v, ts) -> return ()
@@ -62,14 +63,14 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     -- putStrLn ""
     ) tss
 
-  -- let tss' = globalise m tss
+  let tss' = globalise m tss
     
-  -- Save typescheme to temporary file
-  -- exist <- liftIO $ doesDirectoryExist "interface"
-  -- liftIO $ unless exist (createDirectory "interface")
-  -- bh <- liftIO $ openBinMem 1000
-  -- liftIO $ putWithUserData (const $ return ()) bh tss'
-  -- liftIO $ writeBinMem bh $ interfaceName $ moduleName m
+  -- -- Save typescheme to temporary file
+  exist <- liftIO $ doesDirectoryExist "interface"
+  liftIO $ unless exist (createDirectory "interface")
+  bh <- liftIO $ openBinMem 1000
+  liftIO $ putWithUserData (const $ return ()) bh tss'
+  liftIO $ writeBinMem bh $ interfaceName $ moduleName m
 
   stop <- liftIO $ getCurrentTime
   liftIO $ print $ diffUTCTime stop start

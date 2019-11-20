@@ -14,6 +14,7 @@ module Types (
   tvarsS,
   vars,
   stems,
+  strip,
 
   refinable,
   toType,
@@ -93,6 +94,7 @@ instance Eq Type where
   (t1 :=> t2) == (t1' :=> t2') = t1 == t1' && t2 == t2'
   (Lit l) == (Lit l') = l == l'
   (Base tc as) == (Base tc' as') = tc == tc' && as == as'
+  (App t s) == (App t' s') = t == t' && s == s'
   _ == _ = False
 
 -- Lightweight representation of Core.DataCon:
@@ -163,6 +165,14 @@ vars _               = []
 -- The stems of refinement variables present in a type
 stems :: Type -> [Int]
 stems t = [x | RVar (x, _, _) <- vars t]
+
+-- Strip a refinement type of type arguments
+strip :: Type -> Type
+strip (V x d ss)       = V x d []
+strip (Sum e tc as cs) = Sum e tc [] (fmap (\(d, ts) -> (d, strip <$> ts)) cs)
+strip (t1 :=> t2)      = strip t1 :=> strip t2
+strip (Base tc as)     = Base tc []
+strip t                = t
 
 
 

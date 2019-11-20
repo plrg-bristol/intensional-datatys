@@ -28,12 +28,20 @@ import qualified Data.Map as M
 import IfaceType
 import ToIface
 import qualified GhcPlugins as Core
+import qualified TyCoRep as T
 
 import Types
 
--- The inference monad; a reader (i.e. local) context and a state (i.e. global) counter for taking fresh variables
--- A stack of a names which have pattern matched to corrctly order nested case
-type InferM = RWST Context () ([Core.Expr Core.Var], Int) IO
+instance Core.Uniquable IfaceTyCon where
+  getUnique (IfaceTyCon n _) = Core.getUnique n
+
+-- The inference monad;
+-- a local context
+-- a global expr stack for nested pattern matching, datatype reachability tree, and a fresh int
+type InferM = RWST Context () ([Core.Expr Core.Var], Core.UniqFM [IfaceTyCon], Int) IO
+runInferM p env = do 
+  (tss, _, _) <- liftIO $ runRWST p env ([], Core.emptyUFM, 0)
+  return tss
 
 -- TODO: better comparison for top-level
 instance Eq (Core.Expr Core.Var) where
@@ -42,27 +50,24 @@ instance Eq (Core.Expr Core.Var) where
 
 -- Enter a new case statement
 pushCase :: Core.Expr Core.Var-> InferM ()
-pushCase c = modify (\(cs, i) -> (c:cs, i))
+pushCase c = modify (\(cs, rt, i) -> (c:cs, rt, i))
 
 -- Exit a case statement
 popCase :: InferM ()
-popCase = modify (\(c:cs, i) -> (cs, i))
+popCase = modify (\(c:cs, rt, i) -> (cs, rt, i))
 
 -- Is the current case statement at the top level
 topLevel :: Core.Expr Core.Var -> InferM Bool
 topLevel e = do
-  (cs, _) <- get
+  (cs, _, _) <- get
   return (e `notElem` cs)
 
 -- Used to track the expression in which errors arrise
-type InferME = RWST (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Int) IO
-runInferM p env = do 
-  (tss, _, _) <- liftIO $ runRWST p env ([], 0)
-  return tss
+type InferME = RWST (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Core.UniqFM [IfaceTyCon], Int) IO
 
 -- Attach an expression to an erroneous computation
 inExpr :: InferME a -> Core.Expr Core.Var -> InferM a
-inExpr ma e = withRWST (\ctx (s, i) -> ((e, ctx), (s, i))) ma
+inExpr ma e = withRWST (\ctx (s, rt, i) -> ((e, ctx), (s, rt, i))) ma
   
 -- The variables in scope and their type
 newtype Context = Context {
@@ -81,15 +86,18 @@ safeVar v = do
       let t = Core.varType v
       in freshScheme $ toSortScheme t
 
--- Extract a constructor from (local/global) context
-safeCon :: Core.DataCon -> (IfaceTyCon, [Core.Name], [Sort])
-safeCon k = 
+-- Extract a constructor from (local/global) context and fillout the reachability tree
+safeCon :: Core.DataCon -> InferM (IfaceTyCon, [Core.Name], [Sort])
+safeCon k = do
   let tc   = Core.dataConTyCon k
       as   = Core.getName <$> Core.dataConUnivAndExTyVars k
       args = toSort <$> Core.dataConOrigArgTys k -- Ignore evidence
-  in (toIfaceTyCon tc, as, args)
+  (stack, rt, i) <- get
+  let rt' = Core.addListToUFM rt [(tc, [toIfaceTyCon tc' | (T.TyConApp tc' _) <- Core.dataConOrigArgTys dc]) | dc <- Core.tyConDataCons tc]
+  put (stack, rt', i)
+  return (toIfaceTyCon tc, as, args)
 
--- Extract polarised and instantiated constructor arguments from context
+-- Instantiated constructor
 delta :: DataCon -> [Sort] -> [Sort]
 delta (DataCon (_, as, ts)) as' = subTypeVars as as' <$> ts
 
@@ -110,8 +118,8 @@ insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 fresh :: Sort -> InferM Type
 fresh (SVar a)       = return $ TVar a
 fresh s@(SData _ _) = do
-  (stack, i) <- get
-  put (stack, i + 1)
+  (stack, rt, i) <- get
+  put (stack, rt, i + 1)
   return $ upArrow i s
 fresh (SArrow s1 s2) = do
   t1 <- fresh s1

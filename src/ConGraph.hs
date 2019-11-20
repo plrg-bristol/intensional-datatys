@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, BangPatterns #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module ConGraph (
       ConGraph (ConGraph, succs, preds, subs)
@@ -17,6 +17,7 @@ module ConGraph (
 import Control.Applicative hiding (empty)
 import Control.Monad.RWS hiding (Sum)
 
+import Data.Maybe
 import qualified Data.Map as M
 import qualified Data.List as L
 
@@ -90,7 +91,7 @@ insert t1 t2 cg@ConGraph{subs = sb} = foldM (\cg (t1', t2') -> insertInner (subR
 insertInner :: Type -> Type -> ConGraph -> InferME ConGraph
 insertInner x y cg | x == y = return cg
 
--- t1 is an unrefined variant of t2 or vice versa
+-- t1 is an unrefined variant of t2 or vice versa, i.e. a base type
 insertInner t1 t2 cg | toType (broaden t1) == t2 || toType (broaden t2) == t1 = return cg
 
 insertInner (t1 :=> t2) (t1' :=> t2') cg = do
@@ -117,7 +118,7 @@ insertInner c@Con{} (Var y) cg = insertPred c y cg
 
 insertInner (Sum e tc as cs) t cg = foldM (\cg (c, cargs) -> insert (Con e tc c as cargs) t cg) cg cs
 
-insertInner (App (TVar _) _) (App (TVar _) _) cg = return cg
+insertInner (App (TVar _) _) (App (TVar _) _) cg = return cg -- We already know these have the same sort and cannot inspect the tyvar
 
 -- insertInner (TVar a) t cg = return $ subTypeVar a t cg
 
@@ -250,42 +251,53 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 
 
 -- The fixed point of normalisation and transitivity
-saturate :: [Int] -> [Int] -> ConGraph -> [(Type, Type)]
+saturate :: [Int] -> [Int] -> ConGraph -> InferM [(Type, Type)]
 {-# INLINE saturate #-}
 saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate $ toList cg
   where
-    saturate' [] cs     = saturate'' cs
-    saturate' (n:ns) cs = 
-      let diff = [ (d1', d2') | 
-                      (a, b) <- cs, 
-                      n `elem` stems b,
-                      (b', c) <- cs,
-                      b == b',
-                      (d1, d2) <- normalise a c, 
-                      let (d1', d2') = (subRefinementMap sb d1, subRefinementMap sb d2),
-                      (d1', d2') `notElem` cs]
-      in if null diff
+    -- Remove intermediate nodes in sequence
+    -- TODO: online cycle elimination: if a == c then replace b with a
+    saturate' :: [Int] -> [(Type, Type)] -> InferM [(Type, Type)]
+    saturate' [] cs     = return $ saturate'' cs
+    saturate' (n:ns) cs = do
+      (_, rt, _) <- get
+      let cs' = L.nub [(V x d' as, V x' d' as) | 
+                       (V x d  as, V x' _  _ ) <- cs,
+                       n `elem` [x, x'],
+                       d' <- fromMaybe [] $ Core.lookupUFM rt d] ++ cs
+          
+      let diff = [ (d1', d2') |
+                   (a, b) <- cs',
+                   n `elem` stems b,
+                   (b', c) <- cs',
+                   b == b',
+                   (d1, d2) <- normalise a c, 
+                   let (d1', d2') = (subRefinementMap sb d1, subRefinementMap sb d2),
+                   (d1', d2') `notElem` cs']
+      if null diff
         then 
-          saturate' ns [(a, b) | (a, b) <- cs, n `notElem` (stems a ++ stems b)]
-        else
+          saturate' ns [(a, b) | (a, b) <- cs', n `notElem` (stems a ++ stems b)]
+        else do
           -- Add new edges
-          let cs' = (L.nub diff) ++ cs
+          let cs'' = L.nub diff ++ cs'
 
           -- Until a fixed point is reached
-          in saturate' (n:ns) cs'
+          saturate' (n:ns) cs''
 
+    -- Saturate remaining interface nodes
     saturate'' cs =
       -- Normalise all transitive edges in cs and apply substitutions 
-      let diff = [(subRefinementMap sb d1, subRefinementMap sb d2) | (a, b) <-cs, (b', c) <- cs, 
-                    b == b',
-                    (d1, d2) <- normalise a c, 
-                    (subRefinementMap sb d1, subRefinementMap sb d2) `notElem` cs]
+      let diff = [(d1', d2') | (a, b) <-cs, (b', c) <- cs,
+                   b == b',
+                   (d1, d2) <- normalise a c, 
+                   let (d1', d2') = (subRefinementMap sb d1, subRefinementMap sb d2),
+                   (d1', d2') `notElem` cs]
 
       in if null diff
           then cs
           else 
             -- Add new edges
-            let cs' = (L.nub diff) ++ cs
+            let cs' = L.nub diff ++ cs
 
             -- Until a fixed point is reached
             in saturate'' cs'

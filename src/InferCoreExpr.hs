@@ -38,7 +38,7 @@ quantifyWith cg@ConGraph{subs = sb} ts = do
   let intermediateStems = L.nub ([s | (t1, _) <- toList cg, s <- stems t1, s `notElem` interfaceStems] ++ [s | (_, t1) <- toList cg, s <- stems t1, s `notElem` interfaceStems])
 
   -- Take the full transitive closure of the graph using rewriting rules
-  let !lcg = saturate interfaceStems intermediateStems cg
+  !lcg <- saturate interfaceStems intermediateStems cg
 
   -- Check all the stems in the interface
   let !chkStems = all (`elem` interfaceStems) . stems
@@ -150,7 +150,7 @@ inferVar x ts e =
       if refinable k
         then do
           -- Infer refinable constructor
-          let (d, as, args) = safeCon k
+          (d, as, args) <- safeCon k
           let ts' = take (length as) (ts ++ drop (length ts) (SVar <$> as))
           args' <- mapM (fresh . subTypeVars as ts') args
           t  <- fresh $ SData d ts'
@@ -159,7 +159,7 @@ inferVar x ts e =
           
         else do
           -- Infer unrefinable constructor
-          let (d, as, args) = safeCon k
+          (d, as, args) <- safeCon k
           let args' = map (toType . subTypeVars as ts) args
           return (foldr (:=>) (Base d ts) args', empty)
 

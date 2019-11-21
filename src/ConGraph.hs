@@ -252,9 +252,14 @@ substitute x se cg@ConGraph{succs = s, preds = p, subs = sb} t = do
 union :: ConGraph -> ConGraph -> InferME ConGraph
 -- union _ _ | Core.pprTrace "Union" (Core.ppr ()) False = undefined
 union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = do
+  -- Use cg1's representation
+  let sb'' = subRefinementMap sb <$> sb'
+
+  -- Check there are no cycles
+  unless (null [(r, t)| (r@(RVar (x, _, _)), t) <- M.toList sb'', x `elem` stems t]) $ Core.pprPanic "Cyclic equivalences!" (Core.ppr ())
+
   -- Combine equivalence classes using left representation
-  -- TODO: check for cycles
-  let msb  = M.union sb (subRefinementMap sb <$> sb')
+  let msb  = M.union sb sb''
 
   -- Update cg1 with new equivalences
   cg1' <- substituteMany (M.keys msb) (M.elems msb) cg1
@@ -270,6 +275,7 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 -- The fixed point of normalisation and transitivity
 saturate :: [Int] -> [Int] -> ConGraph -> InferM [(Type, Type)]
 {-# INLINE saturate #-}
+-- saturate _ _ cg | Core.pprTrace "saturate" (Core.ppr $ toList cg) False = undefined
 saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate $ toList cg
   where
     -- Remove cycles of length one

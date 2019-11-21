@@ -24,7 +24,7 @@ instance Outputable RVar where
   ppr (RVar (x, d, as)) = braces (ppr x <> ppr (SData d as))
 
 instance Outputable DataCon where
-  ppr (DataCon (n, as, ts)) = ppr n
+  ppr (Data n as ts) = ppr n
 
 instance Outputable Type where
   ppr (Var r)           = ppr r

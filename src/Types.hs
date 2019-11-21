@@ -4,7 +4,7 @@ module Types (
   Sort (SVar, SData, SArrow, SApp, SLit, SBase),
   RVar (RVar),
   Type (Var, V, Sum, Con, Dot, TVar, (:=>), App, Lit, Base),
-  DataCon (DataCon),
+  DataCon (Data),
   SortScheme (SForall),
   TypeScheme (Forall), 
   tagSumsWith,
@@ -34,9 +34,8 @@ import Data.Bifunctor
 import qualified Data.Map as M
 
 import IfaceType
-import ToIface
 import qualified GhcPlugins as Core
-import qualified TyCoRep as T
+import qualified TyCoRep as Tcr
 
 -- For tracking the origin of sums, used in error messages
 type Origin = Either (Core.Expr Core.Var) Core.ModuleName
@@ -47,7 +46,7 @@ data Sort =
   | SData IfaceTyCon [Sort] 
   | SArrow Sort Sort 
   | SApp Sort Sort 
-  | SLit T.TyLit
+  | SLit Tcr.TyLit
   | SBase IfaceTyCon [Sort] -- Unrefinable datatypes
 
 instance Eq Sort where
@@ -62,7 +61,6 @@ instance Eq Sort where
 
 
 -- Refinement variables
--- TODO: pattern synonym 
 newtype RVar = RVar (Int, IfaceTyCon, [Sort]) deriving Eq
 
 instance Ord RVar where
@@ -78,7 +76,7 @@ data Type =
   | TVar Core.Name
   | Type :=> Type
   | App Type Sort
-  | Lit T.TyLit
+  | Lit Tcr.TyLit
   | Base IfaceTyCon [Sort]
 
 instance Eq Type where
@@ -100,13 +98,15 @@ instance Eq Type where
 
 -- Lightweight representation of Core.DataCon:
 -- DataCon n as args ~~ n :: forall as . args_0 -> ... -> args_n
--- TODO: pattern synonym
 newtype DataCon = DataCon (Core.Name, [Core.Name], [Sort])
 
 -- DataCons are uniquely determined by their constructor's name
 instance Eq DataCon where
   {-# SPECIALIZE instance Eq DataCon #-}
   DataCon (n, _, _) == DataCon (n', _, _) = n == n'
+
+pattern Data :: Core.Name -> [Core.Name] -> [Sort] -> DataCon
+pattern Data n ns ss = DataCon (n, ns, ss)
 
 -- Singleton sum constructor
 pattern Con :: Origin -> IfaceTyCon -> DataCon -> [Sort] -> [Type] -> Type
@@ -128,39 +128,6 @@ tagSumsWith m (Forall xs rs cs u) = Forall xs rs (fmap (bimap tagSumsWith' tagSu
     tagSumsWith' :: Type -> Type
     tagSumsWith' (Sum _ tc ss cs) = Sum (Right m) tc ss [(d, tagSumsWith' <$> ts) | (d, ts) <- cs]
     tagSumsWith' t = t
-
--- Type variables present in a types
-tvars :: Type -> [Core.Name]
-tvars (Var v)         = tvarsR v
-tvars (Sum _ _ _ cs)  = [v | (_, args) <- cs, a <- args, v <- tvars a]
-tvars (TVar a)        = [a]
-tvars (Base _ ss)     = concatMap tvarsS ss
-tvars (t1 :=> t2)     = tvars t1 ++ tvars t2
-tvars (App t s)       = tvars t ++ tvarsS s
-tvars _               = []
-
-tvarsR :: RVar -> [Core.Name]
-tvarsR (RVar (_, _, as)) = concatMap tvarsS as
-
-tvarsS :: Sort -> [Core.Name]
-tvarsS (SVar a) = [a]
-tvarsS (SData _ as) = concatMap tvarsS as
-tvarsS (SArrow s1 s2) = tvarsS s1 ++ tvarsS s2
-tvarsS (SApp s1 s2) = tvarsS s1 ++ tvarsS s2
-tvarsS (SBase _ as) = concatMap tvarsS as
-
-
--- The refinement variables present in a type
-vars :: Type -> [RVar]
-vars (Var v)         = [v]
-vars (Sum _ _ _ cs)  = [v | (_, args) <- cs, a <- args, v <- vars a]
-vars (t1 :=> t2)     = vars t1 ++ vars t2
-vars (App t s)       = vars t
-vars _               = []
-
--- The stems of refinement variables present in a type
-stems :: Type -> [Int]
-stems t = [x | RVar (x, _, _) <- vars t]
 
 
 
@@ -197,16 +164,53 @@ refinable d = (length (Core.tyConDataCons tc) > 1) && all pos (concatMap Core.da
       tc = Core.dataConTyCon d
 
       pos :: Core.Type -> Bool
-      pos (T.FunTy t1 t2) = neg t1 && pos t2
+      pos (Tcr.FunTy t1 t2) = neg t1 && pos t2
       pos _               = True
 
       neg :: Core.Type -> Bool
-      neg (T.TyConApp tc' _)             | tc == tc' = False
-      neg (T.AppTy (T.TyConApp tc' _) _) | tc == tc' = False 
-      neg (T.TyVarTy a)   = False -- Type variables may be substituted with the type itself
+      neg (Tcr.TyConApp tc' _)             | tc == tc' = False
+      neg (Tcr.AppTy (Tcr.TyConApp tc' _) _) | tc == tc' = False 
+      neg (Tcr.TyVarTy a)   = False -- Type variables may be substituted with the type itself
                                   -- Perhaps it is possible to record whether a type variable occurs +/-
-      neg (T.FunTy t1 t2) = pos t1 && neg t2
+      neg (Tcr.FunTy t1 t2) = pos t1 && neg t2
       neg _               = True
+
+
+
+
+      
+-- Type variables present in a types
+tvars :: Type -> [Core.Name]
+tvars (Var v)         = tvarsR v
+tvars (Sum _ _ _ cs)  = [v | (_, args) <- cs, a <- args, v <- tvars a]
+tvars (TVar a)        = [a]
+tvars (Base _ ss)     = concatMap tvarsS ss
+tvars (t1 :=> t2)     = tvars t1 ++ tvars t2
+tvars (App t s)       = tvars t ++ tvarsS s
+tvars _               = []
+
+tvarsR :: RVar -> [Core.Name]
+tvarsR (RVar (_, _, as)) = concatMap tvarsS as
+
+tvarsS :: Sort -> [Core.Name]
+tvarsS (SVar a) = [a]
+tvarsS (SData _ as) = concatMap tvarsS as
+tvarsS (SArrow s1 s2) = tvarsS s1 ++ tvarsS s2
+tvarsS (SApp s1 s2) = tvarsS s1 ++ tvarsS s2
+tvarsS (SBase _ as) = concatMap tvarsS as
+
+
+-- The refinement variables present in a type
+vars :: Type -> [RVar]
+vars (Var v)         = [v]
+vars (Sum _ _ _ cs)  = [v | (_, args) <- cs, a <- args, v <- vars a]
+vars (t1 :=> t2)     = vars t1 ++ vars t2
+vars (App t s)       = vars t
+vars _               = []
+
+-- The stems of refinement variables present in a type
+stems :: Type -> [Int]
+stems t = [x | RVar (x, _, _) <- vars t]
 
 -- Lift a sort to a type without taking fresh refinement variables
 toType :: Sort -> Type
@@ -227,7 +231,7 @@ toType (SLit l)       = Lit l
 --   | PData Bool IfaceTyCon [Sort] 
 --   | PArrow PType PType  
 --   | PApp PType Sort
---   | PLit T.TyLit
+--   | PLit Tcr.TyLit
 
 -- -- Polarise a sort, i.e. Ty(+, -)(s) or Ty(-, +)(s)
 -- polarise :: Bool -> Sort -> PType
@@ -272,6 +276,10 @@ instance TypeVars Sort Sort where
   subTypeVar a t (SApp s1 s2)   = (subTypeVar a t s1) `applySortToSort` (subTypeVar a t s2)
   subTypeVar a t (SLit l)       = SLit l
   subTypeVar a t (SBase b as)   = SBase b (subTypeVar a t <$> as)
+
+instance TypeVars RVar Type where
+  {-# SPECIALIZE instance TypeVars RVar Type #-}
+  subTypeVar a t (RVar (x, d, ss)) = RVar (x, d, subTypeVar a t <$> ss)
 
 instance TypeVars Type Type where
   {-# SPECIALIZE instance TypeVars Type Type #-}

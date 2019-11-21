@@ -35,7 +35,7 @@ quantifyWith cg@ConGraph{subs = sb} ts = do
   -- !() <- Core.pprTraceM "Stems of: " (Core.ppr (interfaceStems, ts'))
 
   -- Intermediate nodes
-  let intermediateStems = L.nub ([s | (t1, _) <- toList cg, s <- stems t1, s `notElem` interfaceStems] ++ [s | (_, t1) <- toList cg, s <- stems t1, s `notElem` interfaceStems])
+  let !intermediateStems = L.nub ([s | (t1, _) <- toList cg, s <- stems t1, s `notElem` interfaceStems] ++ [s | (_, t1) <- toList cg, s <- stems t1, s `notElem` interfaceStems])
 
   -- Take the full transitive closure of the graph using rewriting rules
   !lcg <- saturate interfaceStems intermediateStems cg
@@ -103,8 +103,8 @@ inferProg p = do
   let !p' = dependancySort p
 
   -- Mut rec groups
-  !z <- foldr (\b r -> do
-    !start <- liftIO getCurrentTime
+  z <- foldr (\b r -> do
+    -- start <- liftIO getCurrentTime
 
     -- Filter evidence binds
     let !xs   = Core.getName <$> filter (not . Core.isPredTy . Core.varType) (Core.bindersOf b)
@@ -130,9 +130,9 @@ inferProg p = do
     -- Add infered typescheme to the environment
     !r' <- local (insertMany xs ts'') r
     
-    !stop <- liftIO getCurrentTime
-    !() <- liftIO $ putStr "Dep time: "
-    !() <- liftIO $ print (Core.nameStableString <$> xs, diffUTCTime stop start)
+    -- !stop <- liftIO getCurrentTime
+    -- !() <- liftIO $ putStr "Dep time: "
+    -- !() <- liftIO $ print (Core.nameStableString <$> xs, diffUTCTime stop start)
 
     return $ (xs, ts''):r'
     ) (return []) p'
@@ -141,18 +141,25 @@ inferProg p = do
 
 
 
-  
+
+-- Extend constructors arguments with default type variables, i.e. Empty :: forall a. [a]
+merge :: [Sort] -> [Core.Name] -> [Sort]
+merge [] [] = []
+merge [] as = map SVar as
+merge (t:ts) (a:as) = t : merge ts as
+
 inferVar :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)
 inferVar x ts e =
   case Core.isDataConId_maybe x of
     Just k -> do 
       (d, as, args) <- safeCon k
+      let ts' = merge ts as
       if refinable k
         then do
           -- Infer refinable constructor
           args' <- mapM (fresh . subTypeVars as ts) args
-          x     <- fresh $ SData d ts
-          cg    <- insert (Con (Left e) d (toDataCon k) ts args') x empty `inExpr` e
+          x     <- fresh $ SData d ts'
+          cg    <- insert (Con (Left e) d (toDataCon k) ts' args') x empty `inExpr` e
           return (foldr (:=>) x args', cg)
           
         else do
@@ -160,7 +167,7 @@ inferVar x ts e =
           let args' = map (toType . subTypeVars as ts) args
           return (foldr (:=>) (Base d ts) args', empty)
 
-    Nothing -> do
+    Nothing -> do  
       -- Infer polymorphic variable at type(s)
       (Forall as xs cs u) <- safeVar x
       let ds = fmap (\(RVar (_, d, ss)) -> SData d ss) xs
@@ -168,15 +175,26 @@ inferVar x ts e =
       -- Import variables constraints
       cg  <- fromList cs `inExpr` e
       ys  <- mapM fresh ds
-      cg' <- substituteMany xs ys cg `inExpr` e
-
+      ts' <- mapM fresh ts
+            
+      -- Instantiate typescheme
+      let xs' =  subTypeVars as ts' <$> xs
+      ys      <- mapM (fresh . \(RVar (_, d, ss)) -> SData d ss) xs'
+      
       -- Instantiate types
-      ts'    <- mapM fresh ts
-      let u' =  subTypeVars as ts' $ subRefinementVars xs ys u
+      let u' =  subTypeVars as ts' $ subRefinementVars xs' ys u
       v      <- fresh $ toSort $ Core.exprType e
-      cg''   <- insert u' v (subTypeVars as ts' cg') `inExpr` e
+
+      -- Import variables constraints at type
+      cg' <- substituteMany xs' ys (subTypeVars as ts' cg) `inExpr` e
+
+      cg'' <- insert u' v cg' `inExpr` e
 
       return (v, cg'')
+
+
+
+
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e@(Core.Var x) = inferVar x [] e -- Infer monomorphic variable

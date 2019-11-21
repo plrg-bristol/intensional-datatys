@@ -53,14 +53,14 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     ) Context{var = M.empty} deps
 
   -- Infer constraints
-  tss <- runInferM (inferProg p) env
+  !tss <- runInferM (inferProg p) env
 
   -- Display typeschemes
-  -- liftIO $ mapM_ (\(v, ts) -> do
-  --     putStrLn ""
-  --     putStrLn $ showSDocUnsafe $ format v ts
-  --     putStrLn ""
-  --   ) tss
+  liftIO $ mapM_ (\(v, ts) -> return () --do
+      -- putStrLn ""
+      -- putStrLn $ showSDocUnsafe $ format v ts
+      -- putStrLn ""
+    ) tss
 
   let tss' = globalise m tss
     

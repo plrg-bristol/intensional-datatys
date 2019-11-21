@@ -79,7 +79,7 @@ instance Binary RVar where
     return $ RVar (i, tc, as)
 
 instance Binary DataCon where
-  put_ bh (DataCon (n, as, args)) = do
+  put_ bh (Data n as args) = do
     put_ bh n
     put_ bh as
     put_ bh args
@@ -88,7 +88,7 @@ instance Binary DataCon where
     n    <- get bh
     as   <- get bh
     args <- get bh
-    return $ DataCon (n, as, args)
+    return $ Data n as args
 
 instance Binary Type where
   put_ bh (Var rv) = do
@@ -213,13 +213,14 @@ instance NameSub Type where
   subName _ _ _ l@(Base b as)     = l
 
 instance NameSub Name where
+  {-# SPECIALIZE instance NameSub Name #-}
   subName _ x y x'
     | x == x'   = y
     | otherwise = x'
 
 instance NameSub DataCon where
   {-# SPECIALIZE instance NameSub DataCon #-}
-  subName m n n' (DataCon (n'', ns, ss)) = DataCon (subName m n n' n'', ns', subNames m (n:ns) (n':ns') ss)
+  subName m n n' (Data n'' ns ss) = Data (subName m n n' n'') ns' (subNames m (n:ns) (n':ns') ss)
     where
       ns' = globaliseName m <$> ns
 

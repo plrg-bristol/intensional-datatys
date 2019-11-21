@@ -13,10 +13,13 @@ module InferM (
   Context (Context, var),
   safeVar,
   safeCon,
-  delta,
+  upArrowDataCon,
   insertVar,
   insertMany,
   
+  toSort,
+  toSortScheme,
+  toDataCon,
   fresh,
   freshScheme
 ) where
@@ -92,14 +95,30 @@ safeCon k = do
   let tc   = Core.dataConTyCon k
       as   = Core.getName <$> Core.dataConUnivAndExTyVars k
       args = toSort <$> Core.dataConOrigArgTys k -- Ignore evidence
+
+  -- Construct reachability tree of data constructor
   (stack, rt, i) <- get
-  let rt' = Core.addListToUFM rt [(tc, [toIfaceTyCon tc' | (T.TyConApp tc' _) <- Core.dataConOrigArgTys dc]) | dc <- Core.tyConDataCons tc]
-  put (stack, rt', i)
+  if Core.elemUFM tc rt
+    then return ()
+    else do
+      let rt' = Core.addToUFM rt tc [toIfaceTyCon tc' | dc <- Core.tyConDataCons tc, (T.TyConApp tc' _) <- Core.dataConOrigArgTys dc, length (Core.tyConDataCons tc') > 1]
+      put (stack, rt', i)
+
   return (toIfaceTyCon tc, as, args)
 
+-- Refinement a data type at a stem 
+upArrow :: Int -> Sort -> Type
+upArrow x (SData d as)   = V x d as
+upArrow x (SArrow t1 t2) = upArrow x t1 :=> upArrow x t2
+upArrow _ (SVar a)       = TVar a
+upArrow x (SApp s1 s2)   = App (upArrow x s1) s2
+upArrow _ (SLit l)       = Lit l
+upArrow _ (SBase b as)   = Base b as
+
 -- Instantiated constructor
-delta :: DataCon -> [Sort] -> [Sort]
-delta (DataCon (_, as, ts)) as' = subTypeVars as as' <$> ts
+upArrowDataCon :: Int -> DataCon -> [Sort] -> [Type]
+upArrowDataCon x (DataCon (_, _, [])) _      = []
+upArrowDataCon x (DataCon (d, as, t:ts)) as' = upArrow x (subTypeVars as as' t) : upArrowDataCon x (DataCon (d, as, ts)) as'
 
 -- Insert a variable into the context
 insertVar :: Core.Name -> TypeScheme -> Context -> Context
@@ -113,6 +132,46 @@ insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 
 
 
+
+-- Extract relevant information from Core.DataCon
+toDataCon :: Core.DataCon -> DataCon
+toDataCon dc = DataCon (Core.getName dc, Core.getName <$> Core.dataConUnivAndExTyVars dc, toSort <$> Core.dataConOrigArgTys dc)
+
+-- Convert a core type into a sort
+toSort :: Core.Type -> Sort
+toSort (T.TyVarTy v)   = SVar $ Core.getName v
+toSort (T.AppTy t1 t2) =
+  let s1 = toSort t1
+      s2 = toSort t2
+  in SApp s1 s2
+toSort (T.TyConApp t args) | Core.isTypeSynonymTyCon t =
+  case Core.synTyConDefn_maybe t of
+    Just (as, u) -> subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
+toSort (T.TyConApp t args) = SData (toIfaceTyCon t) (toSort <$> args)
+toSort (T.FunTy t1 t2) = 
+  let s1 = toSort t1
+      s2 = toSort t2
+  in SArrow s1 s2
+toSort (T.LitTy l) = SLit l
+-- toSort (T.ForAllTy b t) = toSort t `applySortToSort` (SVar $ Core.getName $ Core.binderVar b)
+toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Cast & Coercion
+
+-- Convert a core type into a sort scheme
+toSortScheme :: Core.Type -> SortScheme
+toSortScheme (T.TyVarTy v)       = SForall [] (SVar $ Core.getName v)
+toSortScheme (T.AppTy t1 t2)     = SForall [] $ SApp (toSort t1) (toSort t2)
+toSortScheme (T.TyConApp t args) | Core.isTypeSynonymTyCon t =
+  case Core.synTyConDefn_maybe t of
+    Just (as, u) -> SForall [] $ subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
+toSortScheme (T.TyConApp t args) = SForall [] $ SData (toIfaceTyCon t) (toSort <$> args)
+toSortScheme (T.ForAllTy b t) =
+  let (SForall as st) = toSortScheme t
+      a = Core.getName $ Core.binderVar b
+  in SForall (a:as) st
+toSortScheme (T.FunTy t1@(T.TyConApp _ _) t2)
+  | Core.isPredTy t1 = toSortScheme t2 -- Ignore evidence of typeclasses and implicit parameters
+toSortScheme (T.FunTy t1 t2) = let s1 = toSort t1; SForall as s2 = toSortScheme t2 in SForall as (SArrow s1 s2)
+toSortScheme t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Cast & Coercion
 
 -- A fresh refinement variable
 fresh :: Sort -> InferM Type

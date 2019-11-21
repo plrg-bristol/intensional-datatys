@@ -49,7 +49,7 @@ quantifyWith cg@ConGraph{subs = sb} ts = do
   -- Only quantified by refinement variables that appear in the inferface
   let !nodes = L.nub ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ [v | Forall _ _ _ u <- ts', v <- vars u])
 
-  return [Forall (L.nub (as ++ (concatMap tvarsR nodes) ++ (tvars  u))) nodes edges u | Forall as _ _ u <- ts']
+  return [Forall (L.nub (as ++ concatMap tvarsR nodes)) nodes edges u | Forall as _ _ u <- ts']
 
 
 
@@ -107,8 +107,7 @@ inferProg p = do
     !start <- liftIO getCurrentTime
 
     -- Filter evidence binds
-    let !xs   = Core.getName <$> (filter (not . Core.isPredTy . Core.varType) $ Core.bindersOf b)
-    -- !() <- Core.pprTraceM "Binds: " (Core.ppr xs)
+    let !xs   = Core.getName <$> filter (not . Core.isPredTy . Core.varType) (Core.bindersOf b)
     let !rhss = filter (not . Core.isPredTy . Core.exprType) $ Core.rhssOfBind b
 
     -- Fresh typescheme for each binder in the group
@@ -146,42 +145,38 @@ inferProg p = do
 inferVar :: Core.Var -> [Sort] -> Core.Expr Core.Var -> InferM (Type, ConGraph)
 inferVar x ts e =
   case Core.isDataConId_maybe x of
-    Just k -> 
+    Just k -> do 
+      (d, as, args) <- safeCon k
       if refinable k
         then do
           -- Infer refinable constructor
-          (d, as, args) <- safeCon k
-          let ts' = take (length as) (ts ++ drop (length ts) (SVar <$> as))
-          args' <- mapM (fresh . subTypeVars as ts') args
-          t  <- fresh $ SData d ts'
-          cg <- insert (Con (Left e) d (toDataCon k) ts' args') t empty `inExpr` e
-          return (foldr (:=>) t args', cg)
+          args' <- mapM (fresh . subTypeVars as ts) args
+          x     <- fresh $ SData d ts
+          cg    <- insert (Con (Left e) d (toDataCon k) ts args') x empty `inExpr` e
+          return (foldr (:=>) x args', cg)
           
         else do
           -- Infer unrefinable constructor
-          (d, as, args) <- safeCon k
           let args' = map (toType . subTypeVars as ts) args
           return (foldr (:=>) (Base d ts) args', empty)
 
     Nothing -> do
       -- Infer polymorphic variable at type(s)
       (Forall as xs cs u) <- safeVar x
+      let ds = fmap (\(RVar (_, d, ss)) -> SData d ss) xs
 
-      -- Instantiate typescheme
-      ts'     <- mapM fresh $ take (length as) (ts ++ drop (length ts) (SVar <$> as))
-      cg      <- fromList cs `inExpr` e
-      let xs' =  fmap (\(RVar (x, d, ss)) -> RVar (x, d, subTypeVars as ts' <$> ss)) xs
-      ys      <- mapM (fresh . \(RVar (_, d, ss)) -> SData d ss) xs'
-      let u'  =  subTypeVars as ts' $ subRefinementVars xs' ys u
-      let cg' =  subTypeVars as ts' cg
-      
-      -- Import variables constraints at type
-      cg'' <- foldM (\cg' (x, y) -> substitute x y cg' False `inExpr` e) cg' (zip xs' ys)
+      -- Import variables constraints
+      cg  <- fromList cs `inExpr` e
+      ys  <- mapM fresh ds
+      cg' <- substituteMany xs ys cg `inExpr` e
 
-      v <- fresh $ toSort $ Core.exprType e
+      -- Instantiate types
+      ts'    <- mapM fresh ts
+      let u' =  subTypeVars as ts' $ subRefinementVars xs ys u
+      v      <- fresh $ toSort $ Core.exprType e
+      cg''   <- insert u' v (subTypeVars as ts' cg') `inExpr` e
 
-      cg''' <- insert u' v cg'' `inExpr` e
-      return (v, cg''')
+      return (v, cg'')
 
 infer :: Core.Expr Core.Var -> InferM (Type, ConGraph)
 infer e@(Core.Var x) = inferVar x [] e -- Infer monomorphic variable
@@ -193,7 +188,7 @@ infer l@(Core.Lit _) = do
 
 infer e@(Core.App e1 e2) =
   case fromPolyVar e of
-    Just (x, ts) -> do
+    Just (x, ts) ->
       -- Infer polymorphic variable
       inferVar x ts e
     Nothing -> do
@@ -252,11 +247,11 @@ infer e'@(Core.Let b e) = do
   cg' <- foldM (\cg (rhs, t', Forall _ _ _ t) -> insert t' t cg `inExpr` rhs) cg (zip3 rhss ts' ts)
 
   -- Restrict constraints to the interface
-  ts' <- quantifyWith cg' ts
+  ts'' <- quantifyWith cg' ts
 
   -- Infer in body with infered typescheme to the environment
-  (t, icg) <- local (insertMany xs ts') (infer e)
-  cg''     <- union cg' icg `inExpr` e'
+  (t, icg) <- local (insertMany xs ts'') (infer e)
+  cg''     <- union cg' icg `inExpr` e
   
   return (t, cg'')
 

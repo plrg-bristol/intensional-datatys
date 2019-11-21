@@ -6,24 +6,22 @@ module Types (
   Type (Var, V, Sum, Con, Dot, TVar, (:=>), App, Lit, Base),
   DataCon (DataCon),
   SortScheme (SForall),
-  TypeScheme (Forall),
-  toDataCon,
+  TypeScheme (Forall), 
   tagSumsWith,
+
+  incomparable,
+  refinable,
+
+  toType,
   tvars,
   tvarsR,
   tvarsS,
   vars,
   stems,
 
-  refinable,
-  toType,
-  broaden,
-  toSort,
-  toSortScheme,
-
   -- PType,
   -- polarise,
-  upArrow,
+  -- upArrow,
 
   TypeVars (subTypeVar),
   subTypeVars,
@@ -32,6 +30,7 @@ module Types (
   subRefinementMap
 ) where
 
+import Data.Bifunctor
 import qualified Data.Map as M
 
 import IfaceType
@@ -50,11 +49,9 @@ data Sort =
   | SApp Sort Sort 
   | SLit T.TyLit
   | SBase IfaceTyCon [Sort] -- Unrefinable datatypes
-  | SDot
 
 instance Eq Sort where
-  SDot == t = True
-  t == SDot = True
+  {-# SPECIALIZE instance Eq Sort #-}
   (SVar a) == (SVar a') = a == a'
   (SData tc as) == (SData tc' as') = tc == tc' && as == as'
   (SArrow s1 s2) == (SArrow s1' s2') = s1 == s1' && s2 == s2'
@@ -85,6 +82,7 @@ data Type =
   | Base IfaceTyCon [Sort]
 
 instance Eq Type where
+  {-# SPECIALIZE instance Eq Type #-}
   Dot == t = True
   t == Dot = True
   Var r == Var r' = r == r'
@@ -92,8 +90,12 @@ instance Eq Type where
   TVar a == TVar a' = a == a'
   (t1 :=> t2) == (t1' :=> t2') = t1 == t1' && t2 == t2'
   (Lit l) == (Lit l') = l == l'
-  (Base tc as) == (Base tc' as') = tc == tc' && as == as'
   (App t s) == (App t' s') = t == t' && s == s'
+
+  -- Base doesn't appear in the constraint graph, this is just for comparing trivial inserts
+  V x d as == Base d' as' = d == d' && as == as'
+  Base d' as' == V x d as = d == d' && as == as'
+  (Base tc as) == (Base tc' as') = tc == tc' && as == as'
   _ == _ = False
 
 -- Lightweight representation of Core.DataCon:
@@ -105,10 +107,6 @@ newtype DataCon = DataCon (Core.Name, [Core.Name], [Sort])
 instance Eq DataCon where
   {-# SPECIALIZE instance Eq DataCon #-}
   DataCon (n, _, _) == DataCon (n', _, _) = n == n'
-
--- Extract relevant information from Core.DataCon
-toDataCon :: Core.DataCon -> DataCon
-toDataCon dc = DataCon (Core.getName dc, Core.getName <$> Core.dataConUnivAndExTyVars dc, toSort <$> Core.dataConOrigArgTys dc)
 
 -- Singleton sum constructor
 pattern Con :: Origin -> IfaceTyCon -> DataCon -> [Sort] -> [Type] -> Type
@@ -122,11 +120,10 @@ data SortScheme = SForall [Core.Name] Sort
 
 -- Refinement quantified sort scheme
 data TypeScheme = Forall [Core.Name] [RVar] [(Type, Type)] Type
--- instance Serialize TypeScheme
 
 -- Associate Sum types with their module of origin
 tagSumsWith :: Core.ModuleName -> TypeScheme -> TypeScheme
-tagSumsWith m (Forall xs rs cs u) = Forall xs rs ((\(t1, t2) -> (tagSumsWith' t1, tagSumsWith' t2)) <$> cs) (tagSumsWith' u)
+tagSumsWith m (Forall xs rs cs u) = Forall xs rs (fmap (bimap tagSumsWith' tagSumsWith') cs) $ tagSumsWith' u
   where
     tagSumsWith' :: Type -> Type
     tagSumsWith' (Sum _ tc ss cs) = Sum (Right m) tc ss [(d, tagSumsWith' <$> ts) | (d, ts) <- cs]
@@ -169,10 +166,32 @@ stems t = [x | RVar (x, _, _) <- vars t]
 
 
 
+-- Do the two types refine different sorts
+incomparable :: Type -> Type -> Bool
+incomparable Dot _                       = False
+incomparable _ Dot                       = False
+incomparable (V _ d as) (V _ d' as')     = d /= d' || as /= as'
+incomparable (V _ d as) (Sum _ d' as' _) = d /= d' || as /= as'
+incomparable (V _ d as) (Base d' as')    = d /= d' || as /= as'
+
+
+incomparable (Sum _ d as _) (V _ d' as')     = d /= d' || as /= as'
+incomparable (Sum _ d as _) (Sum _ d' as' _) = d /= d' || as /= as'
+incomparable (Sum _ d as _) (Base d' as')    = d /= d' || as /= as'
+
+incomparable (Base d as)  (V _ d' as')     = d /= d' || as /= as'
+incomparable (Base d as)  (Sum _ d' as' _) = d /= d' || as /= as'
+incomparable (Base d as)  (Base d' as')    = d /= d' || as /= as'
+
+incomparable (TVar a) (TVar a')        = a /= a'
+incomparable (t1 :=> t2) (t1' :=> t2') = incomparable t1 t1' || incomparable t2 t2'
+incomparable (App t s) (App t' s')     = incomparable t t' || s /= s'
+incomparable (Lit l) (Lit l')          = l /= l'
+incomparable _ _                       = True
+
 -- Decides whether a datatypes does not occur negatively
--- Possible optimisation, d is the only possible constructor then unrefinedable
 refinable :: Core.DataCon -> Bool
-refinable d = all pos (concatMap Core.dataConOrigArgTys $ Core.tyConDataCons tc)
+refinable d = (length (Core.tyConDataCons tc) > 1) && all pos (concatMap Core.dataConOrigArgTys $ Core.tyConDataCons tc)
     where
       tc :: Core.TyCon
       tc = Core.dataConTyCon d
@@ -189,17 +208,6 @@ refinable d = all pos (concatMap Core.dataConOrigArgTys $ Core.tyConDataCons tc)
       neg (T.FunTy t1 t2) = pos t1 && neg t2
       neg _               = True
 
--- De-refine a type to a sort
-broaden :: Type -> Sort
-broaden (V _ d as)      = SData d as
-broaden (Sum _ tc as _) = SData tc as
-broaden (TVar a)        = SVar a
-broaden (t1 :=> t2)     = SArrow (broaden t1) (broaden t2)
-broaden (App t1 s2)     = (broaden t1) `applySortToSort` s2
-broaden (Lit l)         = SLit l
-broaden (Base b as)     = SBase b as
-broaden Dot             = SDot
-
 -- Lift a sort to a type without taking fresh refinement variables
 toType :: Sort -> Type
 toType (SData d as)   = Base d as
@@ -208,42 +216,6 @@ toType (SVar a)       = TVar a
 toType (SArrow s1 s2) = (toType s1) :=> (toType s2)
 toType (SApp s1 s2)   = (toType s1) `applySort` s2
 toType (SLit l)       = Lit l
-
--- Convert a core type into a sort
-toSort :: Core.Type -> Sort
-toSort (T.TyVarTy v)   = SVar $ Core.getName v
-toSort (T.AppTy t1 t2) =
-  let s1 = toSort t1
-      s2 = toSort t2
-  in SApp s1 s2
-toSort (T.TyConApp t args) | Core.isTypeSynonymTyCon t =
-  case Core.synTyConDefn_maybe t of
-    Just (as, u) -> subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
-toSort (T.TyConApp t args) = SData (toIfaceTyCon t) (toSort <$> args)
-toSort (T.FunTy t1 t2) = 
-  let s1 = toSort t1
-      s2 = toSort t2
-  in SArrow s1 s2
-toSort (T.LitTy l) = SLit l
--- toSort (T.ForAllTy b t) = toSort t `applySortToSort` (SVar $ Core.getName $ Core.binderVar b)
-toSort t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Cast & Coercion
-
--- Convert a core type into a sort scheme
-toSortScheme :: Core.Type -> SortScheme
-toSortScheme (T.TyVarTy v)       = SForall [] (SVar $ Core.getName v)
-toSortScheme (T.AppTy t1 t2)     = SForall [] $ SApp (toSort t1) (toSort t2)
-toSortScheme (T.TyConApp t args) | Core.isTypeSynonymTyCon t =
-  case Core.synTyConDefn_maybe t of
-    Just (as, u) -> SForall [] $ subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
-toSortScheme (T.TyConApp t args) = SForall [] $ SData (toIfaceTyCon t) (toSort <$> args)
-toSortScheme (T.ForAllTy b t) =
-  let (SForall as st) = toSortScheme t
-      a = Core.getName $ Core.binderVar b
-  in SForall (a:as) st
-toSortScheme (T.FunTy t1@(T.TyConApp _ _) t2)
-  | Core.isPredTy t1 = toSortScheme t2 -- Ignore evidence of typeclasses and implicit parameters
-toSortScheme (T.FunTy t1 t2) = let s1 = toSort t1; SForall as s2 = toSortScheme t2 in SForall as (SArrow s1 s2)
-toSortScheme t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- Cast & Coercion
 
 
 
@@ -263,15 +235,6 @@ toSortScheme t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- 
 -- polarise p (SData d args) = PData p d args
 -- polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
 -- polarise p (SApp s1 s2)   = PApp (polarise p s1) s2
-
--- Refinement a data type at a stem 
-upArrow :: Int -> Sort -> Type
-upArrow x (SData d as)   = V x d as
-upArrow x (SArrow t1 t2) = upArrow x t1 :=> upArrow x t2
-upArrow _ (SVar a)       = TVar a
-upArrow x (SApp s1 s2)   = App (upArrow x s1) s2
-upArrow _ (SLit l)       = Lit l
-upArrow _ (SBase b as)   = Base b as
 
 
 
@@ -326,6 +289,16 @@ instance TypeVars Type Type where
 instance TypeVars Sort Type where
   {-# SPECIALIZE instance TypeVars Sort Type #-}
   subTypeVar a t = subTypeVar a (broaden t)
+    where
+      -- De-refine a type to a sort
+      broaden :: Type -> Sort
+      broaden (V _ d as)      = SData d as
+      broaden (Sum _ tc as _) = SData tc as
+      broaden (TVar a)        = SVar a
+      broaden (t1 :=> t2)     = SArrow (broaden t1) (broaden t2)
+      broaden (App t1 s2)     = (broaden t1) `applySortToSort` s2
+      broaden (Lit l)         = SLit l
+      broaden (Base b as)     = SData b as
 
 -- Substitute refinement variables into a type
 subRefinementVar :: RVar -> Type -> Type -> Type

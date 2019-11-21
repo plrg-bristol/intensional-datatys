@@ -8,6 +8,7 @@ module ConGraph (
 
     , insert
     , substitute
+    , substituteMany
     , union
 
     -- , closeScope
@@ -65,18 +66,18 @@ instance TypeVars ConGraph Type where
 normalise :: Type -> Type -> [(Type, Type)]
 -- normalise t1 t2 | Core.pprTrace "normalise" (Core.ppr (t1, t2)) False = undefined
 normalise t1@(Con e tc k as ts) t2@(V x d as') =
-  let ts' = upArrow x <$> delta k as
+  let ts' = upArrowDataCon x k as
   in [(Con e tc k as ts', V x d as'), (Con e tc k as ts, Con e tc k as ts')]
 normalise t1@(V x d as) t2@(Sum e tc as' cs) =
   let cs' = refineCon <$> cs
   in [(Sum e tc as' cs', Sum e tc as' cs), (V x d as, Sum e tc as' cs')]
   where
-    refineCon (k, ts) = (k, upArrow x <$> delta k as')
+    refineCon (k, ts) = (k, upArrowDataCon x k as')
 normalise t1 t2 = [(t1, t2)]
 
 -- Insert new constraint with normalisation
 insert :: Type -> Type -> ConGraph -> InferME ConGraph
-insert t1 t2 _ | broaden t1 /= broaden t2 = do
+insert t1 t2 _ | incomparable t1 t2 = do
   (e, _) <- ask
   Core.pprPanic "Sorts must algin" (Core.ppr (t1, t2, e)) undefined
 
@@ -90,9 +91,6 @@ insert t1 t2 cg@ConGraph{subs = sb} = foldM (\cg (t1', t2') -> insertInner (subR
 -- Insert new constraint
 insertInner :: Type -> Type -> ConGraph -> InferME ConGraph
 insertInner x y cg | x == y = return cg
-
--- t1 is an unrefined variant of t2 or vice versa, i.e. a base type
-insertInner t1 t2 cg | toType (broaden t1) == t2 || toType (broaden t2) == t1 = return cg
 
 insertInner (t1 :=> t2) (t1' :=> t2') cg = do
   cg' <- insert t1' t1 cg
@@ -212,6 +210,25 @@ succChain cg f t m = do
       guard $ f == f'
       return m'
 
+-- Substitute many variables
+substituteMany :: [RVar] -> [Type] -> ConGraph -> InferME ConGraph
+substituteMany _ [] cg = return cg
+substituteMany (r:rs) (t:ts) cg@ConGraph{succs = s, preds = p, subs = sb} = do
+  -- Necessary to recalculate preds and succs as se might not be a Var.
+  -- If se is a Var this insures there are no redundant edges (i.e. x < x) or further simplifications anyway
+  let cg' = cg{ succs = M.map (fmap (subRefinementVar r t)) $ M.delete r s,
+                      preds = M.map (fmap (subRefinementVar r t)) $ M.delete r p}
+
+  cg'' <- case p M.!? r of
+    Just ps -> foldM (\cg pi -> insert (subRefinementVar r t pi) t cg) cg' ps
+    Nothing -> return cg'
+
+  cg''' <- case s M.!? r of
+    Just ss -> foldM (\cg si -> insert t (subRefinementVar r t si) cg) cg'' ss
+    Nothing -> return cg''
+  
+  substituteMany rs ts cg'''
+
 -- Safely substitute variable with an expression
 substitute :: RVar -> Type -> ConGraph -> Bool -> InferME ConGraph
 -- substitute x se _ t | Core.pprTrace "substitute" (Core.ppr (x, se, t)) False = undefined
@@ -240,7 +257,7 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
   let msb  = M.union sb (subRefinementMap sb <$> sb')
 
   -- Update cg1 with new equivalences
-  cg1' <- M.foldrWithKey (\x se -> (>>= (\cg -> substitute x se cg False))) (return cg1) msb
+  cg1' <- substituteMany (M.keys msb) (M.elems msb) cg1
 
   -- Insert edges from cg2 into cg1
   cg1'' <- M.foldrWithKey (\k vs -> (>>= \cg -> foldM (flip (insert (Var k))) cg vs)) (return cg1') s
@@ -255,23 +272,37 @@ saturate :: [Int] -> [Int] -> ConGraph -> InferM [(Type, Type)]
 {-# INLINE saturate #-}
 saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate $ toList cg
   where
+    -- Remove cycles of length one
+    removeCycles :: [(Type, Type)] -> [(Type, Type)]
+    removeCycles cs = 
+      let diff = [(a,  b) |
+                  (a,  b)  <- cs,
+                  (b', a') <- cs,
+                  a == a',
+                  b == b'] -- New cycles
+      in
+        [(if x == a then b else x, if y == a then b else y) | (a, b) <- diff, (x, y) <- cs, x /= y] -- make substitutions
+
+
     -- Remove intermediate nodes in sequence
-    -- TODO: online cycle elimination: if a == c then replace b with a
     saturate' :: [Int] -> [(Type, Type)] -> InferM [(Type, Type)]
     saturate' [] cs     = return $ saturate'' cs
     saturate' (n:ns) cs = do
       (_, rt, _) <- get
       let cs' = L.nub [(V x d' as, V x' d' as) | 
                        (V x d  as, V x' _  _ ) <- cs,
+                       x /= x',
                        n `elem` [x, x'],
-                       d' <- fromMaybe [] $ Core.lookupUFM rt d] ++ cs
+                       d' <- fromMaybe [] $ Core.lookupUFM rt d] -- Ensure all intermediate refinement variables ares suitably bound
+                       ++ cs
           
       let diff = [ (d1', d2') |
                    (a, b) <- cs',
                    n `elem` stems b,
                    (b', c) <- cs',
+                   a /= c,
                    b == b',
-                   (d1, d2) <- normalise a c, 
+                   (d1, d2) <- normalise a c,
                    let (d1', d2') = (subRefinementMap sb d1, subRefinementMap sb d2),
                    (d1', d2') `notElem` cs']
       if null diff
@@ -289,12 +320,13 @@ saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate 
       -- Normalise all transitive edges in cs and apply substitutions 
       let diff = [(d1', d2') | (a, b) <-cs, (b', c) <- cs,
                    b == b',
+                   a /= c,
                    (d1, d2) <- normalise a c, 
                    let (d1', d2') = (subRefinementMap sb d1, subRefinementMap sb d2),
                    (d1', d2') `notElem` cs]
 
       in if null diff
-          then cs
+          then removeCycles cs -- Remove trivial constraints
           else 
             -- Add new edges
             let cs' = L.nub diff ++ cs

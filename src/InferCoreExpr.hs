@@ -10,6 +10,7 @@ import Control.Monad.RWS hiding (Sum)
 
 import Data.Time
 import Data.Functor.Identity
+import Data.Maybe
 import qualified Data.List as L
 
 import Kind
@@ -28,28 +29,28 @@ quantifyWith :: ConGraph -> [TypeScheme] -> InferM [TypeScheme]
 quantifyWith cg@ConGraph{subs = sb} ts = do
 
   -- Rewrite ts using equivalence class representations
-  let !ts' = [Forall as [] [] (subRefinementMap sb u) | Forall as _ [] u <- ts]
+  let ts' = [Forall as [] [] (subRefinementMap sb u) | Forall as _ [] u <- ts]
 
   -- Stems which occur in the interface
-  let !interfaceStems = [s | (Forall _ _ _ u) <- ts', s <- stems u]
+  let interfaceStems = [s | (Forall _ _ _ u) <- ts', s <- stems u]
   -- !() <- Core.pprTraceM "Stems of: " (Core.ppr (interfaceStems, ts'))
 
   -- Intermediate nodes
-  let !intermediateStems = L.nub ([s | (t1, _) <- toList cg, s <- stems t1, s `notElem` interfaceStems] ++ [s | (_, t1) <- toList cg, s <- stems t1, s `notElem` interfaceStems])
+  let intermediateStems = L.nub ([s | (t1, _) <- toList cg, s <- stems t1, s `notElem` interfaceStems] 
+                              ++ [s | (_, t1) <- toList cg, s <- stems t1, s `notElem` interfaceStems])
 
   -- Take the full transitive closure of the graph using rewriting rules
-  !lcg <- saturate interfaceStems intermediateStems cg
+  (m, lcg) <- saturate interfaceStems intermediateStems cg
 
-  -- Check all the stems in the interface
-  let !chkStems = all (`elem` interfaceStems) . stems
+  -- Quantify over all refinement variables that have stems from the inferface
+  let nodes = L.nub ([x1 | (Var x1, _) <- lcg] 
+                  ++ [x2 | (_, Var x2) <- lcg] 
+                  ++ catMaybes [subTypesRVar m v | Forall _ _ _ u <- ts', v <- vars u])
 
-  -- Restricted congraph with chkStems
-  let !edges = L.nub [(t1, t2) | (t1, t2) <- lcg, t1 /= t2, chkStems t1, chkStems t2]
+  -- Quantify over all type variables appearing in the constraint graph
+  let tyvars = [v | n <- nodes, v <- tvarsR n]
 
-  -- Only quantified by refinement variables that appear in the inferface
-  let !nodes = L.nub ([x1 | (Var x1, _) <- edges] ++ [x2 | (_, Var x2) <- edges] ++ [v | Forall _ _ _ u <- ts', v <- vars u])
-
-  return [Forall (L.nub (as ++ concatMap tvarsR nodes)) nodes edges u | Forall as _ _ u <- ts']
+  return [Forall (L.nub (as ++ tyvars)) nodes lcg (subTypesType m u) | Forall as _ _ u <- ts']
 
 
 
@@ -100,35 +101,35 @@ inferProg :: Core.CoreProgram -> InferM [(Core.Name, TypeScheme)]
 inferProg p = do
 
   -- Reorder program with dependancies
-  let !p' = dependancySort p
+  let p' = dependancySort p
 
   -- Mut rec groups
   z <- foldr (\b r -> do
     -- start <- liftIO getCurrentTime
 
     -- Filter evidence binds
-    let !xs   = Core.getName <$> filter (not . Core.isPredTy . Core.varType) (Core.bindersOf b)
-    let !rhss = filter (not . Core.isPredTy . Core.exprType) $ Core.rhssOfBind b
+    let xs   = Core.getName <$> filter (not . Core.isPredTy . Core.varType) (Core.bindersOf b)
+    let rhss = filter (not . Core.isPredTy . Core.exprType) $ Core.rhssOfBind b
 
     -- Fresh typescheme for each binder in the group
-    !ts <- mapM (freshScheme . toSortScheme . Core.exprType) rhss
+    ts <- mapM (freshScheme . toSortScheme . Core.exprType) rhss
 
     -- Infer constraints for the rhs of each bind
-    !binds <- mapM (local (insertMany xs ts) . infer) rhss
-    let (!ts', !cgs) = unzip binds
+    binds <- mapM (local (insertMany xs ts) . infer) rhss
+    let (ts', cgs) = unzip binds
 
     -- Combine constraint graphs
-    !bcg <- foldM (\cg' (rhs, cg) -> union cg cg' `inExpr` rhs) empty $ zip rhss cgs 
+    bcg <- foldM (\cg' (rhs, cg) -> union cg cg' `inExpr` rhs) empty $ zip rhss cgs 
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
     -- Type/refinement variables bound in match those bound in t'
-    !bcg' <- foldM (\bcg' (rhs, t', Forall _ _ _ t) -> insert t' t bcg' `inExpr` rhs) bcg (zip3 rhss ts' ts)
+    bcg' <- foldM (\bcg' (rhs, t', Forall _ _ _ t) -> insert t' t bcg' `inExpr` rhs) bcg (zip3 rhss ts' ts)
 
     -- Restrict constraints to the interface
-    !ts'' <- quantifyWith bcg' ts
+    ts'' <- quantifyWith bcg' ts
 
     -- Add infered typescheme to the environment
-    !r' <- local (insertMany xs ts'') r
+    r' <- local (insertMany xs ts'') r
     
     -- !stop <- liftIO getCurrentTime
     -- !() <- liftIO $ putStr "Dep time: "

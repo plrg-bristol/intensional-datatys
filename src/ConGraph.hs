@@ -273,27 +273,30 @@ union cg1@ConGraph{subs = sb} cg2@ConGraph{succs = s, preds = p, subs = sb'} = d
 
 
 -- The fixed point of normalisation and transitivity
-saturate :: [Int] -> [Int] -> ConGraph -> InferM [(Type, Type)]
+saturate :: [Int] -> [Int] -> ConGraph -> InferM ([(Type, Type)], [(Type, Type)])
 {-# INLINE saturate #-}
 -- saturate _ _ cg | Core.pprTrace "saturate" (Core.ppr $ toList cg) False = undefined
-saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate $ toList cg
+saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate ([], toList cg)
   where
+    unionUM :: [(Type, Type)] -> [(Type, Type)] -> [(Type, Type)]
+    unionUM diff m = diff ++ [(a, b) | (a, b) <- m, a `notElem` map fst diff]
+
     -- Remove cycles of length one
-    removeCycles :: [(Type, Type)] -> [(Type, Type)]
-    removeCycles cs = 
+    removeCycles :: ([(Type, Type)], [(Type, Type)]) -> ([(Type, Type)], [(Type, Type)])
+    removeCycles (m, cs) = 
       let diff = [(a,  b) |
                   (a,  b)  <- cs,
                   (b', a') <- cs,
                   a == a',
                   b == b'] -- New cycles
       in
-        [(if x == a then b else x, if y == a then b else y) | (a, b) <- diff, (x, y) <- cs, x /= y] -- make substitutions
+        (diff `unionUM` m, [(if x == a then b else x, if y == a then b else y) | (a, b) <- diff, (x, y) <- cs, x /= y])
 
 
     -- Remove intermediate nodes in sequence
-    saturate' :: [Int] -> [(Type, Type)] -> InferM [(Type, Type)]
+    saturate' :: [Int] -> ([(Type, Type)], [(Type, Type)]) -> InferM ([(Type, Type)], [(Type, Type)])
     saturate' [] cs     = return $ saturate'' cs
-    saturate' (n:ns) cs = do
+    saturate' (n:ns) (m, cs) = do
       (_, rt, _) <- get
       let cs' = L.nub [(V x d' as, V x' d' as) | 
                        (V x d  as, V x' _  _ ) <- cs,
@@ -313,16 +316,16 @@ saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate 
                    (d1', d2') `notElem` cs']
       if null diff
         then 
-          saturate' ns [(a, b) | (a, b) <- cs', n `notElem` (stems a ++ stems b)]
+          saturate' ns (m, [(a, b) | (a, b) <- cs', n `notElem` (stems a ++ stems b)])
         else do
           -- Add new edges
           let cs'' = L.nub diff ++ cs'
 
           -- Until a fixed point is reached
-          saturate' (n:ns) cs''
+          saturate' (n:ns) (m, cs'')
 
     -- Saturate remaining interface nodes
-    saturate'' cs =
+    saturate'' (m, cs) =
       -- Normalise all transitive edges in cs and apply substitutions 
       let diff = [(d1', d2') | (a, b) <-cs, (b', c) <- cs,
                    b == b',
@@ -332,13 +335,13 @@ saturate interface intermediate cg@ConGraph{subs = sb} = saturate' intermediate 
                    (d1', d2') `notElem` cs]
 
       in if null diff
-          then removeCycles cs -- Remove trivial constraints
+          then removeCycles (m, cs) -- Remove trivial constraints
           else 
             -- Add new edges
             let cs' = L.nub diff ++ cs
 
             -- Until a fixed point is reached
-            in saturate'' cs'
+            in saturate'' (m, cs')
 
 -- Unsound/experimental optimisation:
 -- Eagerly remove properly scoped bounded (intermediate) nodes

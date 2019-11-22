@@ -24,6 +24,8 @@ module Types (
   -- upArrow,
 
   TypeVars (subTypeVar),
+  subTypesType,
+  subTypesRVar,
   subTypeVars,
   subRefinementVar,
   subRefinementVars,
@@ -243,6 +245,17 @@ toType (SLit l)       = Lit l
 
 
 
+
+subTypesType :: [(Type, Type)] -> Type -> Type
+subTypesType  [] x = x
+subTypesType  ((x, y):xys) x' | x == x'   = y
+                              | otherwise = subTypesType xys x'
+
+subTypesRVar :: [(Type, Type)] -> RVar -> Maybe RVar
+subTypesRVar  [] x = Just x
+subTypesRVar  ((Var x, Var y):xys) x' | x == x' = Just y
+subTypesRVar  ((Var x, _):xys) x' | x == x' = Nothing
+subTypesRVar  (_:xys) x = subTypesRVar xys x
 
 -- Substitute type variables into a type-like structure
 class TypeVars a t where

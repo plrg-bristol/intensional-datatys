@@ -43,5 +43,8 @@ instance Outputable TypeScheme where
       header = (if null as then empty else forAllLit <> space <> interppSP as <> dot <> space) <> (if null xs then empty else forAllLit <> space <> interppSP xs <> dot <> space) <> ppr t
       body   = vcat (ppr <$> cs)
 
+instance Outputable Guard where
+  ppr (Guard g) = ppr g
+
 format :: Core.Name -> TypeScheme -> SDoc
 format v ts = ppr v <> space <> dcolon <> space <> ppr ts

@@ -1,6 +1,12 @@
 {-# LANGUAGE FlexibleInstances, PatternSynonyms, MultiParamTypeClasses #-}
 
 module Types (
+  Guard (Guard, Eps, Dom),
+  (&&&),
+  domain,
+  guardStems,
+  subGuard,
+
   Sort (SVar, SData, SArrow, SApp, SLit, SBase),
   RVar (RVar),
   Type (Var, V, Sum, Con, Dot, TVar, (:=>), App, Lit, Base),
@@ -32,12 +38,40 @@ module Types (
   subRefinementMap
 ) where
 
+import Control.Monad
+
 import Data.Bifunctor
+import qualified Data.List as L
 import qualified Data.Map as M
 
 import IfaceType
 import qualified GhcPlugins as Core
 import qualified TyCoRep as Tcr
+
+-- Conjunction of all side conditions that must be met for a constraint to be active
+newtype Guard = Guard [(Core.Name, RVar)]
+  deriving Eq
+
+pattern Eps :: Guard
+pattern Eps = Guard []
+
+pattern Dom :: Core.Name -> RVar -> Guard
+pattern Dom tc r = Guard [(tc, r)]
+
+domain :: Guard -> [RVar]
+domain (Guard g) = [x | (_, x) <- g]
+
+(&&&) :: Guard -> Guard -> Guard
+(&&&) (Guard g) (Guard g') = Guard (L.union (L.nub g) g')
+
+guardStems :: Guard -> [Int]
+guardStems (Guard g) = [x | (_, RVar (x, _, _)) <- g]
+
+subGuard :: RVar -> Type -> Guard -> Guard -> Type -> Type -> [(Guard, Type, Type)]
+subGuard n (Sum _ _ _ cs) (Guard g) g' a b = do
+  guard $ all (`elem` [k' | (DataCon (k', _, _), _) <- cs]) [k | (k, n') <- g, n == n']
+  return (Guard [(k, n') | (k, n') <- g, n /= n'] &&& g', a, b)
+subGuard n (Var n') (Guard g) g' a b = [(Guard [if x == n then (k, n') else (k, x) | (k, x) <- g] &&& g', a, b)]
 
 -- For tracking the origin of sums, used in error messages
 type Origin = Either (Core.Expr Core.Var) Core.ModuleName
@@ -121,7 +155,7 @@ pattern V x d as = Var (RVar (x, d, as))
 data SortScheme = SForall [Core.Name] Sort
 
 -- Refinement quantified sort scheme
-data TypeScheme = Forall [Core.Name] [RVar] [(Type, Type)] Type
+data TypeScheme = Forall [Core.Name] [RVar] [(Guard, Type, Type)] Type
 
 -- Associate Sum types with their module of origin
 tagSumsWith :: Core.ModuleName -> TypeScheme -> TypeScheme
@@ -260,6 +294,10 @@ subTypesRVar  (_:xys) x = subTypesRVar xys x
 -- Substitute type variables into a type-like structure
 class TypeVars a t where
   subTypeVar :: Core.Name -> t -> a -> a
+
+instance (Functor f, TypeVars a t) => TypeVars (f a) t where
+  subTypeVar as ts = fmap $ subTypeVar as ts
+
 
 -- Substitute many type variables
 subTypeVars :: TypeVars a t => [Core.Name] -> [t] -> a -> a

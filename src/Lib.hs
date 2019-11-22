@@ -35,9 +35,9 @@ interfaceName = ("interface/" ++) . moduleNameString
 inferGuts :: ModGuts -> CoreM ModGuts
 inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
 
-  !start <- liftIO $ getCurrentTime
-  !() <- pprTraceM "Mod name: " (ppr m)
-  !() <- pprTraceM "Def count" $ (ppr $ length $ concatMap (\b -> getName <$> (filter (not . isPredTy . varType) $ bindersOf b)) p)
+  -- !start <- liftIO $ getCurrentTime
+  -- !() <- pprTraceM "Mod name: " (ppr m)
+  -- !() <- pprTraceM "Def count" $ (ppr $ length $ concatMap (\b -> getName <$> (filter (not . isPredTy . varType) $ bindersOf b)) p)
 
   -- pprTraceM "" (ppr p)
 
@@ -53,13 +53,13 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     ) Context{var = M.empty} deps
 
   -- Infer constraints
-  !tss <- runInferM (inferProg p) env
+  tss <- runInferM (inferProg p) env
 
   -- Display typeschemes
-  liftIO $ mapM_ (\(v, ts) -> return () --do
-      -- putStrLn ""
-      -- putStrLn $ showSDocUnsafe $ format v ts
-      -- putStrLn ""
+  liftIO $ mapM_ (\(v, ts) -> do
+      putStrLn ""
+      putStrLn $ showSDocUnsafe $ format v ts
+      putStrLn ""
     ) tss
 
   let tss' = globalise m tss
@@ -71,7 +71,7 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   liftIO $ putWithUserData (const $ return ()) bh tss'
   liftIO $ writeBinMem bh $ interfaceName $ moduleName m
 
-  stop <- liftIO $ getCurrentTime
-  liftIO $ print $ diffUTCTime stop start
+  -- stop <- liftIO $ getCurrentTime
+  -- liftIO $ print $ diffUTCTime stop start
 
   return guts

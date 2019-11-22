@@ -41,7 +41,7 @@ instance Core.Uniquable IfaceTyCon where
 -- The inference monad;
 -- a local context
 -- a global expr stack for nested pattern matching, datatype reachability tree, and a fresh int
-type InferM = RWST Context () ([Core.Expr Core.Var], Core.UniqFM [IfaceTyCon], Int) IO
+type InferM = RWST Context () ([Core.Expr Core.Var], Core.UniqFM [(Core.Name, IfaceTyCon)], Int) IO
 runInferM p env = do 
   (tss, _, _) <- liftIO $ runRWST p env ([], Core.emptyUFM, 0)
   return tss
@@ -66,7 +66,7 @@ topLevel e = do
   return (e `notElem` cs)
 
 -- Used to track the expression in which errors arrise
-type InferME = RWST (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Core.UniqFM [IfaceTyCon], Int) IO
+type InferME = RWST (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Core.UniqFM [(Core.Name, IfaceTyCon)], Int) IO
 
 -- Attach an expression to an erroneous computation
 inExpr :: InferME a -> Core.Expr Core.Var -> InferM a
@@ -123,7 +123,7 @@ expand :: Core.TyCon -> InferM ()
 expand tc = do
   (stack, rt, i) <- get
   unless (Core.elemUFM tc rt) $ do
-    let rt' = Core.addToUFM rt tc [toIfaceTyCon tc' | dc <- Core.tyConDataCons tc, (Tcr.TyConApp tc' _) <- Core.dataConOrigArgTys dc, length (Core.tyConDataCons tc') > 1]
+    let rt' = Core.addToUFM rt tc [(Core.getName dc, toIfaceTyCon tc') | dc <- Core.tyConDataCons tc, (Tcr.TyConApp tc' _) <- Core.dataConOrigArgTys dc, length (Core.tyConDataCons tc') > 1]
     put (stack, rt', i)
 
 -- Instantiated constructor

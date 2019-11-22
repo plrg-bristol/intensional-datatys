@@ -36,15 +36,15 @@ quantifyWith cg@ConGraph{subs = sb} ts = do
   -- !() <- Core.pprTraceM "Stems of: " (Core.ppr (interfaceStems, ts'))
 
   -- Intermediate nodes
-  let intermediateStems = L.nub ([s | (t1, _) <- toList cg, s <- stems t1, s `notElem` interfaceStems] 
-                              ++ [s | (_, t1) <- toList cg, s <- stems t1, s `notElem` interfaceStems])
+  let intermediateStems = L.nub ([s | (_, t1, _) <- toList cg, s <- stems t1, s `notElem` interfaceStems] 
+                              ++ [s | (_, _, t1) <- toList cg, s <- stems t1, s `notElem` interfaceStems])
 
   -- Take the full transitive closure of the graph using rewriting rules
   (m, lcg) <- saturate interfaceStems intermediateStems cg
 
   -- Quantify over all refinement variables that have stems from the inferface
-  let nodes = L.nub ([x1 | (Var x1, _) <- lcg] 
-                  ++ [x2 | (_, Var x2) <- lcg] 
+  let nodes = L.nub ([x1 | (_, Var x1, _) <- lcg] 
+                  ++ [x2 | (_, _, Var x2) <- lcg] 
                   ++ catMaybes [subTypesRVar m v | Forall _ _ _ u <- ts', v <- vars u])
 
   -- Quantify over all type variables appearing in the constraint graph
@@ -123,7 +123,7 @@ inferProg p = do
 
     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
     -- Type/refinement variables bound in match those bound in t'
-    bcg' <- foldM (\bcg' (rhs, t', Forall _ _ _ t) -> insert t' t bcg' `inExpr` rhs) bcg (zip3 rhss ts' ts)
+    bcg' <- foldM (\bcg' (rhs, t', Forall _ _ _ t) -> insert Eps t' t bcg' `inExpr` rhs) bcg (zip3 rhss ts' ts)
 
     -- Restrict constraints to the interface
     ts'' <- quantifyWith bcg' ts
@@ -160,7 +160,7 @@ inferVar x ts e =
           -- Infer refinable constructor
           args' <- mapM (fresh . subTypeVars as ts) args
           x     <- fresh $ SData d ts'
-          cg    <- insert (Con (Left e) d (toDataCon k) ts' args') x empty `inExpr` e
+          cg    <- insert Eps (Con (Left e) d (toDataCon k) ts' args') x empty `inExpr` e
           return (foldr (:=>) x args', cg)
           
         else do
@@ -189,7 +189,7 @@ inferVar x ts e =
       -- Import variables constraints at type
       cg' <- substituteMany xs' ys (subTypeVars as ts' cg) `inExpr` e
 
-      cg'' <- insert u' v cg' `inExpr` e
+      cg'' <- insert Eps u' v cg' `inExpr` e
 
       return (v, cg'')
 
@@ -217,7 +217,7 @@ infer e@(Core.App e1 e2) =
       case t1 of
         t3 :=> t4 -> do
           cg  <- union c1 c2 `inExpr` e
-          cg' <- insert t2 t3 cg `inExpr` e
+          cg' <- insert Eps t2 t3 cg `inExpr` e
           return (t4, cg')
         _ -> Core.pprPanic "Application to a non-function expression!" (Core.ppr (t1, e1))
   where
@@ -263,7 +263,7 @@ infer e'@(Core.Let b e) = do
     ) ([], empty) rhss
 
   --  Insure fresh types are quantified by infered constraint (t' < t)
-  cg' <- foldM (\cg (rhs, t', Forall _ _ _ t) -> insert t' t cg `inExpr` rhs) cg (zip3 rhss ts' ts)
+  cg' <- foldM (\cg (rhs, t', Forall _ _ _ t) -> insert Eps t' t cg `inExpr` rhs) cg (zip3 rhss ts' ts)
 
   -- Restrict constraints to the interface
   ts'' <- quantifyWith cg' ts
@@ -285,7 +285,7 @@ infer e'@(Core.Case e b rt as) = do
   -- b @ e
   let es = toSort $ Core.exprType e
   et <- fresh es
-  c0' <- insert et t0 c0 `inExpr` e
+  c0' <- insert Eps et t0 c0 `inExpr` e
 
   (caseType, cg) <- local (insertVar (Core.getName b) $ Forall [] [] [] et) (pushCase e >> foldM (\(caseType, cg) (a, bs, rhs) ->
     if Core.exprIsBottom rhs
@@ -296,21 +296,21 @@ infer e'@(Core.Case e b rt as) = do
 
         -- Ensure return type is valid
         (ti', cgi) <- local (insertMany (Core.getName <$> bs) $ fmap (Forall [] [] []) ts) (infer rhs)
-        cgi'       <- insert ti' t cgi `inExpr` e'
-        cg'        <- union cg cgi' `inExpr` e'
+        cgi'       <- insert Eps ti' t cgi`inExpr` e'
 
         -- Track the occurance of a constructors/default case
-        let caseType' = case a of {
-          Core.DataAlt d -> do
+        let (cgi'', caseType') = case a of {
+          Core.DataAlt d -> (guardWith (Core.getName d) t0 cgi', do
               let SData _ ss' = es
               let tc' = toIfaceTyCon $ Core.dataConTyCon d
               (_, _, s) <- caseType
-              return (Just tc', Just ss', (toDataCon d, ts):s)
+              return (Just tc', Just ss', (toDataCon d, ts):s))
             ;
           -- Default/literal cases
-          _ -> Nothing
+          _ -> (cgi', Nothing)
           }
         
+        cg' <- union cg cgi' `inExpr` e'
         return (caseType', cg')
     ) (Just (Nothing, Nothing, []), c0') as)
 
@@ -321,7 +321,7 @@ infer e'@(Core.Case e b rt as) = do
   -- Ensure destructor is total, GHC will conservatively insert defaults
   cg <- case caseType of
     Nothing  -> return cg -- Literal cases must have a default
-    Just (Just tc, Just ss, cs) -> if tl then insert t0 (Sum (Left e') tc ss cs) cg `inExpr` e' else return cg
+    Just (Just tc, Just ss, cs) -> if tl then insert Eps t0 (Sum (Left e') tc ss cs) cg `inExpr` e' else return cg
     _ -> Core.pprPanic "Inconsistent data constructors arguments!" (Core.ppr ())
 
   return (t, cg)

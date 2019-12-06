@@ -9,7 +9,7 @@ import Binary
 import TyCoRep hiding (Type)
 import GhcPlugins hiding (Type, Var, App, DataCon)
 
-import Types as Types
+import Type as Types
 import PrettyPrint
 
 instance Binary Sort where
@@ -159,12 +159,12 @@ instance Binary TypeScheme where
     u   <- get bh
     return $ Forall tvs rvs cs u
   
-instance Binary Guard where
-  put_ bh (Guard g) = do
-    put_ bh g
-  get bh = do
-    g <- get bh
-    return $ Guard g
+-- instance Binary Guard where
+--   put_ bh (Guard g) = do
+--     put_ bh g
+--   get bh = do
+--     g <- get bh
+--     return $ Guard g
   
 -- Globalise a bind ready to serialize
 globalise :: Module -> [(Name, TypeScheme)] -> [(Name, TypeScheme)]
@@ -230,9 +230,9 @@ instance NameSub DataCon where
     where
       ns' = globaliseName m <$> ns
 
-instance NameSub Guard where
-  {-# SPECIALIZE instance NameSub Guard #-}
-  subName m n n' (Guard g) = Guard $ subName m n n' <$> g
+-- instance NameSub Guard where
+--   {-# SPECIALIZE instance NameSub Guard #-}
+--   subName m n n' (Guard g) = Guard $ subName m n n' <$> g
 
 instance (NameSub a, NameSub b) => NameSub (a, b) where
   subName m n n' (a, b) = (subName m n n' a, subName m n n' b)

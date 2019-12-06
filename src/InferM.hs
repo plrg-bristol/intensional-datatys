@@ -1,4 +1,4 @@
-{-#  LANGUAGE FlexibleInstances, MultiParamTypeClasses #-}
+{-#  LANGUAGE FlexibleInstances, MultiParamTypeClasses, PatternSynonyms #-}
 
 module InferM (
   InferM,
@@ -6,10 +6,8 @@ module InferM (
   pushCase,
   popCase,
   topLevel,
+  quantifyWith,
 
-  InferME,
-  inExpr,
-  
   Context (Context, var),
   safeVar,
   safeCon,
@@ -33,44 +31,35 @@ import ToIface
 import qualified GhcPlugins as Core
 import qualified TyCoRep as Tcr
 
-import Types
+import Type
+import Constraint
 
 instance Core.Uniquable IfaceTyCon where
   getUnique (IfaceTyCon n _) = Core.getUnique n
 
 -- The inference monad;
 -- a local context
--- a global expr stack for nested pattern matching, datatype reachability tree, and a fresh int
-type InferM = RWST Context () ([Core.Expr Core.Var], Core.UniqFM [(Core.Name, IfaceTyCon)], Int) IO
+-- a global expr stack for nested pattern matching, and a fresh int
+type InferM = RWST Context () ([Core.Unique], Int) IO
 runInferM p env = do 
-  (tss, _, _) <- liftIO $ runRWST p env ([], Core.emptyUFM, 0)
+  (tss, _, _) <- liftIO $ runRWST p env ([], 0)
   return tss
 
--- TODO: better comparison for top-level
-instance Eq (Core.Expr Core.Var) where
-  Core.Var i == Core.Var i' = Core.getUnique i == Core.getUnique i'
-  _ == _ = False
-
 -- Enter a new case statement
+-- Not total!
 pushCase :: Core.Expr Core.Var-> InferM ()
-pushCase c = modify (\(cs, rt, i) -> (c:cs, rt, i))
+pushCase (Core.Var v) = modify (\(us, i) -> (Core.getUnique v:us, i))
 
 -- Exit a case statement
 popCase :: InferM ()
-popCase = modify (\(c:cs, rt, i) -> (cs, rt, i))
+popCase = modify (\(u:us, i) -> (us, i))
 
 -- Is the current case statement at the top level
+-- Not total!
 topLevel :: Core.Expr Core.Var -> InferM Bool
-topLevel e = do
-  (cs, _, _) <- get
-  return (e `notElem` cs)
-
--- Used to track the expression in which errors arrise
-type InferME = RWST (Core.Expr Core.Var, Context) () ([Core.Expr Core.Var], Core.UniqFM [(Core.Name, IfaceTyCon)], Int) IO
-
--- Attach an expression to an erroneous computation
-inExpr :: InferME a -> Core.Expr Core.Var -> InferM a
-inExpr ma e = withRWST (\ctx (s, rt, i) -> ((e, ctx), (s, rt, i))) ma
+topLevel (Core.Var v) = do
+  (us, _) <- get
+  return (Core.getUnique v `notElem` us)
   
 -- The variables in scope and their type
 newtype Context = Context {
@@ -88,7 +77,11 @@ insertMany (x:xs) (f:fs) ctx = insertVar x f $ insertMany xs fs ctx
 
 
 
-
+quantifyWith
+        :: ConGraph
+           -> [TypeScheme]
+           -> RWST Context () ([Core.Unique], Int) IO [TypeScheme]
+quantifyWith = undefined
 
 -- Extract a variable from (local/global) context
 safeVar :: Core.Var -> InferM TypeScheme
@@ -101,10 +94,6 @@ safeVar v = do
       -- Assume all externally defined terms are unrefined
       let t = Core.varType v
 
-      case t of
-        Tcr.TyConApp tc _ -> expand tc
-        _ -> return ()
-
       freshScheme $ toSortScheme t
 
 -- Extract a constructor from (local/global) context and fillout the reachability tree
@@ -114,17 +103,7 @@ safeCon k = do
       as   = Core.getName <$> Core.dataConUnivAndExTyVars k
       args = toSort <$> Core.dataConOrigArgTys k -- Ignore evidence
 
-  expand tc
-
   return (toIfaceTyCon tc, as, args)
-
- -- Construct reachability tree for TyCon
-expand :: Core.TyCon -> InferM ()
-expand tc = do
-  (stack, rt, i) <- get
-  unless (Core.elemUFM tc rt) $ do
-    let rt' = Core.addToUFM rt tc [(Core.getName dc, toIfaceTyCon tc') | dc <- Core.tyConDataCons tc, (Tcr.TyConApp tc' _) <- Core.dataConOrigArgTys dc, length (Core.tyConDataCons tc') > 1]
-    put (stack, rt', i)
 
 -- Instantiated constructor
 upArrowDataCon :: Int -> DataCon -> [Sort] -> [Type]
@@ -133,7 +112,7 @@ upArrowDataCon x (Data d as (t:ts)) as' = upArrow x (subTypeVars as as' t) : upA
 
 -- Refinement a data type at a stem 
 upArrow :: Int -> Sort -> Type
-upArrow x (SData d as)   = V x d as
+upArrow x (SData d as)   = Inj x d as
 upArrow x (SArrow t1 t2) = upArrow x t1 :=> upArrow x t2
 upArrow _ (SVar a)       = TVar a
 upArrow x (SApp s1 s2)   = App (upArrow x s1) s2
@@ -141,7 +120,18 @@ upArrow _ (SLit l)       = Lit l
 upArrow _ (SBase b as)   = Base b as
 
 
+-- Lightweight representation of Core.DataCon:
+-- DataCon n as args ~~ n :: forall as . args_0 -> ... -> args_n
+newtype DataCon = DataCon (Core.Name, [Core.Name], [Sort])
 
+-- DataCons are uniquely determined by their constructor's name
+instance Eq DataCon where
+  {-# SPECIALIZE instance Eq DataCon #-}
+  DataCon (n, _, _) == DataCon (n', _, _) = n == n'
+
+  -- DataCon constructor
+pattern Data :: Core.Name -> [Core.Name] -> [Sort] -> DataCon
+pattern Data n ns ss = DataCon (n, ns, ss)
 
 
 -- Extract relevant information from Core.DataCon
@@ -158,7 +148,7 @@ toSort (Tcr.AppTy t1 t2) =
 toSort (Tcr.TyConApp t args) | Core.isTypeSynonymTyCon t =
   case Core.synTyConDefn_maybe t of
     Just (as, u) -> subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
-toSort (Tcr.TyConApp t args) = SData (toIfaceTyCon t) (toSort <$> args)
+toSort (Tcr.TyConApp t args) = SData (Core.getName t) (toSort <$> args)
 toSort (Tcr.FunTy t1 t2) = 
   let s1 = toSort t1
       s2 = toSort t2
@@ -174,7 +164,7 @@ toSortScheme (Tcr.AppTy t1 t2)     = SForall [] $ SApp (toSort t1) (toSort t2)
 toSortScheme (Tcr.TyConApp t args) | Core.isTypeSynonymTyCon t =
   case Core.synTyConDefn_maybe t of
     Just (as, u) -> SForall [] $ subTypeVars (Core.getName <$> as) (toSort <$> args) (toSort u)
-toSortScheme (Tcr.TyConApp t args) = SForall [] $ SData (toIfaceTyCon t) (toSort <$> args)
+toSortScheme (Tcr.TyConApp t args) = SForall [] $ SData (Core.getName t) (toSort <$> args)
 toSortScheme (Tcr.ForAllTy b t) =
   let (SForall as st) = toSortScheme t
       a = Core.getName $ Core.binderVar b
@@ -188,9 +178,9 @@ toSortScheme t = Core.pprPanic "Core type is not a valid sort!" (Core.ppr t) -- 
 fresh :: Sort -> InferM Type
 fresh (SVar a)       = return $ TVar a
 fresh (SData d as) = do
-  (stack, rt, i) <- get
-  put (stack, rt, i + 1)
-  return $ V i d as
+  (stack, i) <- get
+  put (stack, i + 1)
+  return $ Inj i d as
 fresh (SArrow s1 s2) = do
   t1 <- fresh s1
   t2 <- fresh s2
@@ -204,10 +194,10 @@ fresh (SBase b as) = return $ Base b as
 -- A fresh refinement scheme for module/let bindings
 freshScheme :: SortScheme -> InferM TypeScheme
 freshScheme (SForall as (SVar a))       = return $ Forall as [] [] $ TVar a
-freshScheme (SForall as s@(SData _ ss)) = do
+freshScheme (SForall as s@(SData _ _)) = do
   t <- fresh s
   case t of
-    V x d _ -> return $ Forall as [RVar (x, d, ss)] [] t
+    Inj x d _ -> return $ Forall as [x] [] t
 freshScheme (SForall as (SArrow s1 s2)) = do
   Forall _ v1 _ t1 <- freshScheme (SForall [] s1)
   Forall _ v2 _ t2 <- freshScheme (SForall [] s2)

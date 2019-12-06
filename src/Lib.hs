@@ -11,7 +11,7 @@ import Control.Monad.RWS hiding (get)
 import Data.Time
 import qualified Data.Map as M
 
-import Types
+import Type
 import InferM
 import PrettyPrint
 import Serialization

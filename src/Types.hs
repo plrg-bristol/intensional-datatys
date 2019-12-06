@@ -1,8 +1,7 @@
 {-# LANGUAGE FlexibleInstances, PatternSynonyms, MultiParamTypeClasses #-}
 
 module Types (
-  Guard (Guard, Eps, Dom),
-  (&&&),
+  Guard,
   domain,
   guardStems,
   subGuard,
@@ -10,7 +9,10 @@ module Types (
   Sort (SVar, SData, SArrow, SApp, SLit, SBase),
   RVar (RVar),
   Type (Var, V, Sum, Con, Dot, TVar, (:=>), App, Lit, Base),
+  toType,
+
   DataCon (Data),
+
   SortScheme (SForall),
   TypeScheme (Forall), 
   tagSumsWith,
@@ -18,24 +20,12 @@ module Types (
   incomparable,
   refinable,
 
-  toType,
-  tvars,
-  tvarsR,
-  tvarsS,
-  vars,
-  stems,
-
-  -- PType,
-  -- polarise,
-  -- upArrow,
-
   TypeVars (subTypeVar),
   subTypesType,
   subTypesRVar,
   subTypeVars,
   subRefinementVar,
-  subRefinementVars,
-  subRefinementMap
+  subRefinementVars
 ) where
 
 import Control.Monad
@@ -49,29 +39,23 @@ import qualified GhcPlugins as Core
 import qualified TyCoRep as Tcr
 
 -- Conjunction of all side conditions that must be met for a constraint to be active
-newtype Guard = Guard [(Core.Name, RVar)]
-  deriving Eq
-
-pattern Eps :: Guard
-pattern Eps = Guard []
-
-pattern Dom :: Core.Name -> RVar -> Guard
-pattern Dom tc r = Guard [(tc, r)]
+type Guard = [(Core.Name, RVar)]
 
 domain :: Guard -> [RVar]
-domain (Guard g) = [x | (_, x) <- g]
-
-(&&&) :: Guard -> Guard -> Guard
-(&&&) (Guard g) (Guard g') = Guard (L.union (L.nub g) g')
+domain g = [x | (_, x) <- g]
 
 guardStems :: Guard -> [Int]
-guardStems (Guard g) = [x | (_, RVar (x, _, _)) <- g]
+guardStems g = [x | (_, RVar (x, _, _)) <- g]
 
-subGuard :: RVar -> Type -> Guard -> Guard -> Type -> Type -> [(Guard, Type, Type)]
-subGuard n (Sum _ _ _ cs) (Guard g) g' a b = do
+subGuard :: RVar -> Type -> Guard -> Guard -> Type -> Type -> Maybe (Guard, Type, Type)
+subGuard n (Sum _ _ _ cs) g g' a b = do
   guard $ all (`elem` [k' | (DataCon (k', _, _), _) <- cs]) [k | (k, n') <- g, n == n']
-  return (Guard [(k, n') | (k, n') <- g, n /= n'] &&& g', a, b)
-subGuard n (Var n') (Guard g) g' a b = [(Guard [if x == n then (k, n') else (k, x) | (k, x) <- g] &&& g', a, b)]
+  return ([(k, n') | (k, n') <- g, n /= n'] <> g', a, b)
+subGuard n (Var n') g g' a b = Just ([if x == n then (k, n') else (k, x) | (k, x) <- g] <> g', a, b)
+
+
+
+
 
 -- For tracking the origin of sums, used in error messages
 type Origin = Either (Core.Expr Core.Var) Core.ModuleName
@@ -84,17 +68,7 @@ data Sort =
   | SApp Sort Sort 
   | SLit Tcr.TyLit
   | SBase IfaceTyCon [Sort] -- Unrefinable datatypes
-
-instance Eq Sort where
-  {-# SPECIALIZE instance Eq Sort #-}
-  (SVar a) == (SVar a') = a == a'
-  (SData tc as) == (SData tc' as') = tc == tc' && as == as'
-  (SArrow s1 s2) == (SArrow s1' s2') = s1 == s1' && s2 == s2'
-  (SApp s1 s2) == (SApp s1' s2') = s1 == s1' && s2 == s2'
-  (SLit l) == (SLit l') = l == l'
-  (SBase tc as) == (SBase tc' as') = tc == tc' && as == as'
-  _ == _ = False
-
+  deriving Eq
 
 -- Refinement variables
 newtype RVar = RVar (Int, IfaceTyCon, [Sort]) deriving Eq
@@ -119,6 +93,7 @@ instance Eq Type where
   {-# SPECIALIZE instance Eq Type #-}
   Dot == t = True
   t == Dot = True
+
   Var r == Var r' = r == r'
   Sum _ tc as cs == Sum _ tc' as' cs' = tc == tc' && as == as' && all (`elem` cs') cs && all (`elem` cs) cs'
   TVar a == TVar a' = a == a'
@@ -132,6 +107,14 @@ instance Eq Type where
   (Base tc as) == (Base tc' as') = tc == tc' && as == as'
   _ == _ = False
 
+-- Singleton sum constructor
+pattern Con :: Origin -> IfaceTyCon -> DataCon -> [Sort] -> [Type] -> Type
+pattern Con e tc k as args = Sum e tc as [(k, args)]
+
+-- Refinement variable pattern
+pattern V :: Int -> IfaceTyCon -> [Sort] -> Type
+pattern V x d as = Var (RVar (x, d, as))
+
 -- Lightweight representation of Core.DataCon:
 -- DataCon n as args ~~ n :: forall as . args_0 -> ... -> args_n
 newtype DataCon = DataCon (Core.Name, [Core.Name], [Sort])
@@ -141,16 +124,23 @@ instance Eq DataCon where
   {-# SPECIALIZE instance Eq DataCon #-}
   DataCon (n, _, _) == DataCon (n', _, _) = n == n'
 
+-- DataCon constructor
 pattern Data :: Core.Name -> [Core.Name] -> [Sort] -> DataCon
 pattern Data n ns ss = DataCon (n, ns, ss)
 
--- Singleton sum constructor
-pattern Con :: Origin -> IfaceTyCon -> DataCon -> [Sort] -> [Type] -> Type
-pattern Con e tc k as args = Sum e tc as [(k, args)]
+-- Lift a sort to a type without taking fresh refinement variables
+toType :: Sort -> Type
+toType (SData d as)   = Base d as
+toType (SBase d as)   = Base d as
+toType (SVar a)       = TVar a
+toType (SArrow s1 s2) = (toType s1) :=> (toType s2)
+toType (SApp s1 s2)   = (toType s1) `applySort` s2
+toType (SLit l)       = Lit l
 
--- Refinement variable pattern
-pattern V :: Int -> IfaceTyCon -> [Sort] -> Type
-pattern V x d as = Var (RVar (x, d, as))
+
+
+
+
 
 data SortScheme = SForall [Core.Name] Sort
 
@@ -169,7 +159,7 @@ tagSumsWith m (Forall xs rs cs u) = Forall xs rs (fmap (bimap tagSumsWith' tagSu
 
 
 
--- Do the two types refine different sorts
+-- Do the two types refine different sorts?
 incomparable :: Type -> Type -> Bool
 incomparable Dot _                       = False
 incomparable _ Dot                       = False
@@ -192,7 +182,7 @@ incomparable (App t s) (App t' s')     = incomparable t t' || s /= s'
 incomparable (Lit l) (Lit l')          = l /= l'
 incomparable _ _                       = True
 
--- Decides whether a datatypes does not occur negatively
+-- Decides whether a datatypes only occurs positively
 refinable :: Core.DataCon -> Bool
 refinable d = (length (Core.tyConDataCons tc) > 1) && all pos (concatMap Core.dataConOrigArgTys $ Core.tyConDataCons tc)
     where
@@ -207,74 +197,10 @@ refinable d = (length (Core.tyConDataCons tc) > 1) && all pos (concatMap Core.da
       neg (Tcr.TyConApp tc' _)             | tc == tc' = False
       neg (Tcr.AppTy (Tcr.TyConApp tc' _) _) | tc == tc' = False 
       neg (Tcr.TyVarTy a)   = False -- Type variables may be substituted with the type itself
-                                  -- Perhaps it is possible to record whether a type variable occurs +/-
+                                    -- Perhaps it is possible to record whether a type variable occurs +/-
       neg (Tcr.FunTy t1 t2) = pos t1 && neg t2
       neg _               = True
 
-
-
-
-      
--- Type variables present in a types
-tvars :: Type -> [Core.Name]
-tvars (Var v)         = tvarsR v
-tvars (Sum _ _ _ cs)  = [v | (_, args) <- cs, a <- args, v <- tvars a]
-tvars (TVar a)        = [a]
-tvars (Base _ ss)     = concatMap tvarsS ss
-tvars (t1 :=> t2)     = tvars t1 ++ tvars t2
-tvars (App t s)       = tvars t ++ tvarsS s
-tvars _               = []
-
-tvarsR :: RVar -> [Core.Name]
-tvarsR (RVar (_, _, as)) = concatMap tvarsS as
-
-tvarsS :: Sort -> [Core.Name]
-tvarsS (SVar a) = [a]
-tvarsS (SData _ as) = concatMap tvarsS as
-tvarsS (SArrow s1 s2) = tvarsS s1 ++ tvarsS s2
-tvarsS (SApp s1 s2) = tvarsS s1 ++ tvarsS s2
-tvarsS (SBase _ as) = concatMap tvarsS as
-
-
--- The refinement variables present in a type
-vars :: Type -> [RVar]
-vars (Var v)         = [v]
-vars (Sum _ _ _ cs)  = [v | (_, args) <- cs, a <- args, v <- vars a]
-vars (t1 :=> t2)     = vars t1 ++ vars t2
-vars (App t s)       = vars t
-vars _               = []
-
--- The stems of refinement variables present in a type
-stems :: Type -> [Int]
-stems t = [x | RVar (x, _, _) <- vars t]
-
--- Lift a sort to a type without taking fresh refinement variables
-toType :: Sort -> Type
-toType (SData d as)   = Base d as
-toType (SBase d as)   = Base d as
-toType (SVar a)       = TVar a
-toType (SArrow s1 s2) = (toType s1) :=> (toType s2)
-toType (SApp s1 s2)   = (toType s1) `applySort` s2
-toType (SLit l)       = Lit l
-
-
-
-
-
--- -- Polarised data types (sort)
--- data PType = 
---     PVar Core.Name 
---   | PData Bool IfaceTyCon [Sort] 
---   | PArrow PType PType  
---   | PApp PType Sort
---   | PLit Tcr.TyLit
-
--- -- Polarise a sort, i.e. Ty(+, -)(s) or Ty(-, +)(s)
--- polarise :: Bool -> Sort -> PType
--- polarise p (SVar a)       = PVar a
--- polarise p (SData d args) = PData p d args
--- polarise p (SArrow s1 s2) = PArrow (polarise (not p) s1) (polarise p s2)
--- polarise p (SApp s1 s2)   = PApp (polarise p s1) s2
 
 
 
@@ -297,7 +223,6 @@ class TypeVars a t where
 
 instance (Functor f, TypeVars a t) => TypeVars (f a) t where
   subTypeVar as ts = fmap $ subTypeVar as ts
-
 
 -- Substitute many type variables
 subTypeVars :: TypeVars a t => [Core.Name] -> [t] -> a -> a
@@ -372,10 +297,3 @@ subRefinementVar _ _ t = t
 subRefinementVars :: [RVar] -> [Type] -> Type -> Type
 subRefinementVars [] [] = id
 subRefinementVars (a:as) (t:ts) = subRefinementVar a t . subRefinementVars as ts
-
--- Substitute refinement variables from a map
-subRefinementMap :: M.Map RVar Type -> Type -> Type
-subRefinementMap m = subRefinementVars as ts
-  where
-    as = M.keys m
-    ts = M.elems m

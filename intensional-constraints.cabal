@@ -28,10 +28,10 @@ source-repository head
 library
   exposed-modules:
       Types
+      Constraint
       InferM
-      ConGraph
-      PrettyPrint
       InferCoreExpr
+      PrettyPrint
       Serialization
       Lib
   other-modules:

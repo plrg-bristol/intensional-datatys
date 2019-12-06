@@ -27,12 +27,12 @@ source-repository head
 
 library
   exposed-modules:
-      Types
+      -- Types
       Constraint
       InferM
       InferCoreExpr
-      PrettyPrint
-      Serialization
+      -- PrettyPrint
+      -- Serialization
       Lib
   other-modules:
       Paths_intensional_constraints

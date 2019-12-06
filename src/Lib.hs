@@ -11,11 +11,12 @@ import Control.Monad.RWS hiding (get)
 import Data.Time
 import qualified Data.Map as M
 
-import Type
+-- import Type
 import InferM
-import PrettyPrint
-import Serialization
-import InferCoreExpr
+import Constraint
+-- import PrettyPrint
+-- import Serialization
+-- import InferCoreExpr
 
 import Name
 import Binary
@@ -50,7 +51,7 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     tss   <- liftIO (getWithUserData cache bh :: IO [(Name, TypeScheme)])
     let tss' = [(n, tagSumsWith m ts) | (n, ts) <- tss]
     return $ foldr (\(x, ts) env' -> insertVar x ts env') env tss'
-    ) Context{var = M.empty} deps
+    ) M.empty deps
 
   -- Infer constraints
   tss <- runInferM (inferProg p) env

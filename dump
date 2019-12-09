@@ -1,0 +1,568 @@
+Build profile: -w ghc-8.6.5 -O1
+In order, the following will be built (use -v for more details):
+ - intensional-constraints-0.1.0.0 (lib) (file src/InferM.hs changed)
+ - intensional-constraints-0.1.0.0 (test:intensional-constraints-test) (dependency rebuilt)
+Preprocessing library for intensional-constraints-0.1.0.0..
+Building library for intensional-constraints-0.1.0.0..
+[2 of 6] Compiling Constraint       ( src/Constraint.hs, /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/build/Constraint.o )
+
+src/Constraint.hs:30:1: warning: [-Wunused-imports]
+    The import of ‘Debug.Trace’ is redundant
+      except perhaps to import instances from ‘Debug.Trace’
+    To import instances alone, use: import Debug.Trace()
+   |
+30 | import Debug.Trace
+   | ^^^^^^^^^^^^^^^^^^
+
+src/Constraint.hs:67:12: warning: [-Wunused-matches]
+    Defined but not used: ‘d’
+   |
+67 |   ppr (Con d k)         = O.ppr k
+   |            ^
+
+src/Constraint.hs:68:12: warning: [-Wunused-matches]
+    Defined but not used: ‘d’
+   |
+68 |   ppr (Sum d ks)        = O.char 'Σ' O.<> O.brackets (O.pprWithBars id (O.ppr <$> ks))
+   |            ^
+
+src/Constraint.hs:82:1: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In an equation for ‘sort’: Patterns not matched: Dot
+   |
+82 | sort (Base b)     = SBase b
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^...
+
+src/Constraint.hs:103:14: warning: [-Wunused-matches]
+    Defined but not used: ‘d’
+    |
+103 | stems (Inj i d)   = [i]
+    |              ^
+
+src/Constraint.hs:116:3: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In an equation for ‘ppr’: Patterns not matched: _
+    |
+116 |   ppr (Forall as cg t) = O.hang header 3 (O.hang (O.keyword $ O.text "where") 3 body)
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...
+
+src/Constraint.hs:178:19: warning: [-Wname-shadowing]
+    This binding for ‘g’ shadows the existing binding
+      bound at src/Constraint.hs:172:13
+    |
+178 |     subsume (Just g) (Just g') = all (`elem` g') g
+    |                   ^
+
+src/Constraint.hs:178:28: warning: [-Wname-shadowing]
+    This binding for ‘g'’ shadows the existing binding
+      bound at src/Constraint.hs:172:16
+    |
+178 |     subsume (Just g) (Just g') = all (`elem` g') g
+    |                            ^^
+
+src/Constraint.hs:244:27: warning: [-Wunused-matches]
+    Defined but not used: ‘e’
+    |
+244 | simplify Con{} (Sum _ []) e    = error "Unsatisfiable!" -- Throw e related error
+    |                           ^
+
+src/Constraint.hs:325:1: warning: [-Wmissing-signatures]
+    Top-level binding with no type signature:
+      transitive' :: ConGraph -> ConGraph
+    |
+325 | transitive' cg = cg{cons = M.foldlWithKey go (cons cg) (cons cg)}
+    | ^^^^^^^^^^^
+
+src/Constraint.hs:328:8: warning: [-Wname-shadowing]
+    This binding for ‘cons’ shadows the existing binding
+      defined at src/Constraint.hs:193:3
+    |
+328 |     go cons c g = M.foldlWithKey (go' c g) cons cons
+    |        ^^^^
+
+src/Constraint.hs:355:1: warning: [-Wunused-top-binds]
+    Defined but not used: ‘resGuard’
+    |
+355 | resGuard cg
+    | ^^^^^^^^
+
+src/Constraint.hs:363:8: warning: [-Wname-shadowing]
+    This binding for ‘cons’ shadows the existing binding
+      defined at src/Constraint.hs:193:3
+    |
+363 |     go cons c g = M.foldlWithKey (go' c g) cons cons
+    |        ^^^^
+
+src/Constraint.hs:367:11: warning: [-Wunused-matches]
+    Defined but not used: ‘g’
+    |
+367 |     go' c g cons' c' g' = mergeInsertMany cons' g'' c'
+    |           ^
+
+src/Constraint.hs:378:15: warning: [-Wunused-matches]
+    Defined but not used: ‘k’
+    |
+378 |     f (ConDom k x d) gs
+    |               ^
+
+src/Constraint.hs:378:19: warning: [-Wunused-matches]
+    Defined but not used: ‘d’
+    |
+378 |     f (ConDom k x d) gs
+    |                   ^
+
+src/Constraint.hs:381:20: warning: [-Wunused-matches]
+    Defined but not used: ‘d’
+    |
+381 |     f (DomConSet x d ks) gs
+    |                    ^
+
+src/Constraint.hs:381:22: warning: [-Wunused-matches]
+    Defined but not used: ‘ks’
+    |
+381 |     f (DomConSet x d ks) gs
+    |                      ^^
+
+src/Constraint.hs:387:27: warning: [-Wunused-matches]
+    Defined but not used: ‘k’
+    |
+387 |     f' (Just gs) = all (\(k, x, d) -> x `elem` xs) gs
+    |                           ^
+
+src/Constraint.hs:387:33: warning: [-Wunused-matches]
+    Defined but not used: ‘d’
+    |
+387 |     f' (Just gs) = all (\(k, x, d) -> x `elem` xs) gs
+    |                                 ^
+[3 of 6] Compiling InferM           ( src/InferM.hs, /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/build/InferM.o )
+
+src/InferM.hs:31:1: warning: [-Wunused-imports]
+    The import of ‘IfaceType’ is redundant
+      except perhaps to import instances from ‘IfaceType’
+    To import instances alone, use: import IfaceType()
+   |
+31 | import IfaceType
+   | ^^^^^^^^^^^^^^^^
+
+src/InferM.hs:32:1: warning: [-Wunused-imports]
+    The import of ‘ToIface’ is redundant
+      except perhaps to import instances from ‘ToIface’
+    To import instances alone, use: import ToIface()
+   |
+32 | import ToIface
+   | ^^^^^^^^^^^^^^
+
+src/InferM.hs:33:1: warning: [-Wunused-imports]
+    The import of ‘Debug.Trace’ is redundant
+      except perhaps to import instances from ‘Debug.Trace’
+    To import instances alone, use: import Debug.Trace()
+   |
+33 | import Debug.Trace
+   | ^^^^^^^^^^^^^^^^^^
+
+src/InferM.hs:45:1: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In an equation for ‘insertMany’:
+        Patterns not matched:
+            [] (_:_) _
+            (_:_) [] _
+   |
+45 | insertMany [] [] ctx = ctx
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^...
+
+src/InferM.hs:57:1: warning: [-Wmissing-signatures]
+    Top-level binding with no type signature:
+      runInferM :: (MonadIO m, Num b1) =>
+                   RWST r w ([a], b1) IO b2 -> r -> m b2
+   |
+57 | runInferM p env = do 
+   | ^^^^^^^^^
+
+src/InferM.hs:69:1: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In an equation for ‘pushCase’:
+        Patterns not matched:
+            (Core.Lit _)
+            (Core.App _ _)
+            (Core.Lam _ _)
+            (Core.Let _ _)
+            ...
+   |
+69 | pushCase (Core.Var v) = modify $ first ((:) $ Core.getUnique v)
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+src/InferM.hs:73:21: warning: [-Wunused-matches]
+    Defined but not used: ‘u’
+   |
+73 | popCase = modify (\(u:us, i) -> (us, i))
+   |                     ^
+
+src/InferM.hs:98:3: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In a case alternative: Patterns not matched: (Just _)
+   |
+98 |   case ctx M.!? Core.getName v of
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...
+
+src/InferM.hs:124:11: warning: [-Wunused-matches]
+    Defined but not used: ‘as’
+    |
+124 | subTyVars as ts t = t
+    |           ^^
+
+src/InferM.hs:124:14: warning: [-Wunused-matches]
+    Defined but not used: ‘ts’
+    |
+124 | subTyVars as ts t = t
+    |              ^^
+
+src/InferM.hs:140:24: warning: [-Wunused-matches]
+    Defined but not used: ‘a’
+    |
+140 |       neg (Tcr.TyVarTy a)   = False -- Type variables may be substituted with the type itself
+    |                        ^
+
+src/InferM.hs:197:1: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In an equation for ‘freshScheme'’: Patterns not matched: _
+    |
+197 | freshScheme' (SForall as (SVar a))       = return $ Forall as empty $ TVar a
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...
+
+src/InferM.hs:200:3: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In a case alternative:
+        Patterns not matched:
+            (Base _)
+            (TVar _)
+            (_ :=> _)
+            (Constraint.Sum _ _)
+            ...
+    |
+200 |   case t of
+    |   ^^^^^^^^^...
+[4 of 6] Compiling InferCoreExpr    ( src/InferCoreExpr.hs, /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/build/InferCoreExpr.o ) [Constraint changed]
+
+src/InferCoreExpr.hs:30:1: warning: [-Worphans]
+    Orphan instance: instance Eq Core.CoreBind
+    To avoid this
+        move the instance declaration to the module of the class or of the type, or
+        wrap the type with a newtype and declare the instance on the new type.
+   |
+30 | instance Eq Core.CoreBind where
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...
+
+src/InferCoreExpr.hs:79:48: warning: [-Wname-shadowing]
+    This binding for ‘bcg'’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:79:9
+   |
+79 |     let bcg' = foldr (\(rhs, t', Forall _ _ t) bcg' -> emit t' t (Just []) bcg' rhs) bcg (zip3 rhss ts' ts)
+   |                                                ^^^^
+
+src/InferCoreExpr.hs:102:15: warning: [-Wname-shadowing]
+    This binding for ‘x’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:93:10
+    |
+102 |           let x = Inj i d
+    |               ^
+
+src/InferCoreExpr.hs:104:37: warning: [-Wname-shadowing]
+    This binding for ‘cg’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:104:15
+    |
+104 |           let cg = foldr (\(t1, t2) cg -> emit t1 t2 (Just []) cg e) empty (zip args xargs)
+    |                                     ^^
+
+src/InferCoreExpr.hs:119:7: warning: [-Wunused-matches]
+    Defined but not used: ‘ts'’
+    |
+119 |       ts' <- mapM fresh ts
+    |       ^^^
+
+src/InferCoreExpr.hs:151:7: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In a case alternative:
+        Patterns not matched:
+            (Base _)
+            (TVar _)
+            (Inj _ _)
+            (Sum _ _)
+            ...
+    |
+151 |       case t1 of
+    |       ^^^^^^^^^^...
+
+src/InferCoreExpr.hs:159:27: warning: [-Wname-shadowing]
+    This binding for ‘e1’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:142:19
+    |
+159 |     fromPolyVar (Core.App e1 (Core.Type t)) = do
+    |                           ^^
+
+src/InferCoreExpr.hs:162:27: warning: [-Wname-shadowing]
+    This binding for ‘e1’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:142:19
+    |
+162 |     fromPolyVar (Core.App e1 e2) | Core.isPredTy (Core.exprType e2) = fromPolyVar e1 --For typeclass evidence
+    |                           ^^
+
+src/InferCoreExpr.hs:162:30: warning: [-Wname-shadowing]
+    This binding for ‘e2’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:142:22
+    |
+162 |     fromPolyVar (Core.App e1 e2) | Core.isPredTy (Core.exprType e2) = fromPolyVar e1 --For typeclass evidence
+    |                              ^^
+
+src/InferCoreExpr.hs:182:7: warning: [-Wunused-matches]
+    Defined but not used: ‘e'’
+    |
+182 | infer e'@(Core.Let b e) = do
+    |       ^^
+
+src/InferCoreExpr.hs:191:25: warning: [-Wname-shadowing]
+    This binding for ‘ts’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:188:3
+    |
+191 |   (ts', cg) <- foldM (\(ts, cg) rhs -> do
+    |                         ^^
+
+src/InferCoreExpr.hs:198:45: warning: [-Wname-shadowing]
+    This binding for ‘cg’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:191:9
+    |
+198 |   let cg' = foldr (\(rhs, t', Forall _ _ t) cg-> emit t' t (Just []) cg rhs) cg (zip3 rhss ts' ts)
+    |                                             ^^
+
+src/InferCoreExpr.hs:214:11: warning: [-Wincomplete-patterns]
+    Pattern match(es) are non-exhaustive
+    In a case alternative:
+        Patterns not matched:
+            (SVar _)
+            (SArrow _ _)
+            (SApp _ _)
+            (SLit _)
+    |
+214 |   let d = case sort t0 of { SBase d -> d; SData d -> d }
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+src/InferCoreExpr.hs:214:35: warning: [-Wname-shadowing]
+    This binding for ‘d’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:214:7
+    |
+214 |   let d = case sort t0 of { SBase d -> d; SData d -> d }
+    |                                   ^
+
+src/InferCoreExpr.hs:214:49: warning: [-Wname-shadowing]
+    This binding for ‘d’ shadows the existing binding
+      bound at src/InferCoreExpr.hs:214:7
+    |
+214 |   let d = case sort t0 of { SBase d -> d; SData d -> d }
+    |                                                 ^
+
+src/InferCoreExpr.hs:249:5: warning: [-Woverlapping-patterns]
+    Pattern match is redundant
+    In a case alternative: _ -> ...
+    |
+249 |     _ -> Core.pprPanic "Inconsistent data constructors arguments!" (Core.ppr ())
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[5 of 6] Compiling PrettyPrint      ( src/PrettyPrint.hs, /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/build/PrettyPrint.o ) [Constraint changed]
+
+src/PrettyPrint.hs:9:1: warning: [-Wunused-imports]
+    The import of ‘Data.List’ is redundant
+      except perhaps to import instances from ‘Data.List’
+    To import instances alone, use: import Data.List()
+  |
+9 | import Data.List
+  | ^^^^^^^^^^^^^^^^
+Preprocessing test suite 'intensional-constraints-test' for intensional-constraints-0.1.0.0..
+Building test suite 'intensional-constraints-test' for intensional-constraints-0.1.0.0..
+[1 of 2] Compiling Paths_intensional_constraints ( /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/t/intensional-constraints-test/build/intensional-constraints-test/autogen/Paths_intensional_constraints.hs, /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/t/intensional-constraints-test/build/intensional-constraints-test/intensional-constraints-test-tmp/Paths_intensional_constraints.o ) [Plugin forced recompilation]
+
+catchIO :: forall a. forall 0
+                            1
+                            2
+                            3. (0IO -> ((1IOException -> 2IO) -> 3IO))
+              where []
+
+
+version :: forall 13. 13Version where []
+
+
+bindir :: forall 38. 38[] where []
+
+
+libdir :: forall 44. 44[] where []
+
+
+dynlibdir :: forall 50. 50[] where []
+
+
+datadir :: forall 56. 56[] where []
+
+
+libexecdir :: forall 62. 62[] where []
+
+
+sysconfdir :: forall 68. 68[] where []
+
+
+$trModule :: forall 74. 74Module where []
+
+
+getBinDir :: forall 83. 83IO where []
+
+
+getLibDir :: forall 112. 112IO where []
+
+
+getDynLibDir :: forall 141. 141IO where []
+
+
+getDataDir :: forall 170. 170IO where []
+
+
+getDataFileName :: forall 199 200. (199[] -> 200IO) where []
+
+
+getLibexecDir :: forall 243. 243IO where []
+
+
+getSysconfDir :: forall 272. 272IO where []
+
+[2 of 2] Compiling SimpleTest       ( test/SimpleTest.hs, /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/t/intensional-constraints-test/build/intensional-constraints-test/intensional-constraints-test-tmp/SimpleTest.o ) [Plugin forced recompilation]
+
+odd :: forall 0 1 2 3. (0Nat -> 1Bool)
+          where
+             [(1<3, [Just []]), (3<1, [Just []]), (False<1Bool, [Just []]),
+              (False<3Bool, [Just []]), (True<1Bool, [Just []]),
+              (True<3Bool, [Just []]), (0Nat<[Succ, Zero], [Just []]),
+              (2Nat<[Succ, Zero], [Just []])]
+
+
+even :: forall 0 1 2 3. (2Nat -> 3Bool)
+           where
+              [(1<3, [Just []]), (3<1, [Just []]), (False<1Bool, [Just []]),
+               (False<3Bool, [Just []]), (True<1Bool, [Just []]),
+               (True<3Bool, [Just []]), (0Nat<[Succ, Zero], [Just []]),
+               (2Nat<[Succ, Zero], [Just []])]
+
+
+$trModule :: forall 26. 26Module where []
+
+
+$tcNat :: forall 35. 35TyCon where []
+
+
+$krep_a1Ud :: forall 52. 52KindRep
+                 where
+                    [([]<52[], [Just []]), (KindRepTyConApp<52KindRep, [Just []])]
+
+
+$tc'Zero :: forall 59. 59TyCon where []
+
+
+$krep_a1Ue :: forall 76. 76KindRep
+                 where
+                    [([]<76[], [Just []]), (KindRepTyConApp<76KindRep, [Just []]),
+                     (KindRepFun<76KindRep, [Just []])]
+
+
+$tc'Succ :: forall 84. 84TyCon where []
+
+[1 of 2] Compiling Paths_intensional_constraints ( /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/t/intensional-constraints-test/build/intensional-constraints-test/autogen/Paths_intensional_constraints.hs, /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/t/intensional-constraints-test/build/intensional-constraints-test/intensional-constraints-test-tmp/Paths_intensional_constraints.o ) [Plugin forced recompilation]
+
+catchIO :: forall a. forall 0
+                            1
+                            2
+                            3. (0IO -> ((1IOException -> 2IO) -> 3IO))
+              where []
+
+
+version :: forall 13. 13Version where []
+
+
+bindir :: forall 38. 38[] where []
+
+
+libdir :: forall 44. 44[] where []
+
+
+dynlibdir :: forall 50. 50[] where []
+
+
+datadir :: forall 56. 56[] where []
+
+
+libexecdir :: forall 62. 62[] where []
+
+
+sysconfdir :: forall 68. 68[] where []
+
+
+$trModule :: forall 74. 74Module where []
+
+
+getBinDir :: forall 83. 83IO where []
+
+
+getLibDir :: forall 112. 112IO where []
+
+
+getDynLibDir :: forall 141. 141IO where []
+
+
+getDataDir :: forall 170. 170IO where []
+
+
+getDataFileName :: forall 199 200. (199[] -> 200IO) where []
+
+
+getLibexecDir :: forall 243. 243IO where []
+
+
+getSysconfDir :: forall 272. 272IO where []
+
+[2 of 2] Compiling SimpleTest       ( test/SimpleTest.hs, /home/eddie/Documents/Intensional Constriants/prototype/dist-newstyle/build/x86_64-linux/ghc-8.6.5/intensional-constraints-0.1.0.0/t/intensional-constraints-test/build/intensional-constraints-test/intensional-constraints-test-tmp/SimpleTest.o ) [Plugin forced recompilation]
+
+odd :: forall 0 1 2 3. (0Nat -> 1Bool)
+          where
+             [(1<3, [Just []]), (3<1, [Just []]), (False<1Bool, [Just []]),
+              (False<3Bool, [Just []]), (True<1Bool, [Just []]),
+              (True<3Bool, [Just []]), (0Nat<[Succ, Zero], [Just []]),
+              (2Nat<[Succ, Zero], [Just []])]
+
+
+even :: forall 0 1 2 3. (2Nat -> 3Bool)
+           where
+              [(1<3, [Just []]), (3<1, [Just []]), (False<1Bool, [Just []]),
+               (False<3Bool, [Just []]), (True<1Bool, [Just []]),
+               (True<3Bool, [Just []]), (0Nat<[Succ, Zero], [Just []]),
+               (2Nat<[Succ, Zero], [Just []])]
+
+
+$trModule :: forall 26. 26Module where []
+
+
+$tcNat :: forall 35. 35TyCon where []
+
+
+$krep_a1Ud :: forall 52. 52KindRep
+                 where
+                    [([]<52[], [Just []]), (KindRepTyConApp<52KindRep, [Just []])]
+
+
+$tc'Zero :: forall 59. 59TyCon where []
+
+
+$krep_a1Ue :: forall 76. 76KindRep
+                 where
+                    [([]<76[], [Just []]), (KindRepTyConApp<76KindRep, [Just []]),
+                     (KindRepFun<76KindRep, [Just []])]
+
+
+$tc'Succ :: forall 84. 84TyCon where []
+
+
+<no location info>: error:
+    output was redirected with -o, but no output will be generated
+because there is no Main module.

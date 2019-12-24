@@ -1,11 +1,3 @@
-.stack-work
-dist-newstyle
-dist-newstyle/*
-dist-newstyle/
-.ghc.environment.x86_64-linux-8.6.5
-hie.yaml
-.vscode
-interface/*
+*.log
 interface/
-interface
-log*
+stack.yaml*

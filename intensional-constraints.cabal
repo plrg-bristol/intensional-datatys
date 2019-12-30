@@ -31,7 +31,7 @@ library
       Utils
       Constraint
       InferM
-      --InferCoreExpr
+      InferCoreExpr
       --PrettyPrint
       -- Serialization
       --Lib
@@ -42,10 +42,8 @@ library
   ghc-options: -O2
   build-depends:
       base >=4.7
-    , singletons
-    , directory
+    , transformers
     , containers
-    , time
     , mtl
     , ghc
   default-language: Haskell2010

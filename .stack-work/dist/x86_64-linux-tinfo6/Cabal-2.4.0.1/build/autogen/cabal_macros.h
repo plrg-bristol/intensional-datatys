@@ -33,17 +33,6 @@
   (major1) == 0 && (major2) == 6 && (minor) <= 0)
 #endif /* MIN_VERSION_containers */
 
-/* package directory-1.3.3.0 */
-#ifndef VERSION_directory
-#define VERSION_directory "1.3.3.0"
-#endif /* VERSION_directory */
-#ifndef MIN_VERSION_directory
-#define MIN_VERSION_directory(major1,major2,minor) (\
-  (major1) <  1 || \
-  (major1) == 1 && (major2) <  3 || \
-  (major1) == 1 && (major2) == 3 && (minor) <= 3)
-#endif /* MIN_VERSION_directory */
-
 /* package ghc-8.6.5 */
 #ifndef VERSION_ghc
 #define VERSION_ghc "8.6.5"
@@ -66,27 +55,16 @@
   (major1) == 2 && (major2) == 2 && (minor) <= 2)
 #endif /* MIN_VERSION_mtl */
 
-/* package singletons-2.5.1 */
-#ifndef VERSION_singletons
-#define VERSION_singletons "2.5.1"
-#endif /* VERSION_singletons */
-#ifndef MIN_VERSION_singletons
-#define MIN_VERSION_singletons(major1,major2,minor) (\
-  (major1) <  2 || \
-  (major1) == 2 && (major2) <  5 || \
-  (major1) == 2 && (major2) == 5 && (minor) <= 1)
-#endif /* MIN_VERSION_singletons */
-
-/* package time-1.8.0.2 */
-#ifndef VERSION_time
-#define VERSION_time "1.8.0.2"
-#endif /* VERSION_time */
-#ifndef MIN_VERSION_time
-#define MIN_VERSION_time(major1,major2,minor) (\
-  (major1) <  1 || \
-  (major1) == 1 && (major2) <  8 || \
-  (major1) == 1 && (major2) == 8 && (minor) <= 0)
-#endif /* MIN_VERSION_time */
+/* package transformers-0.5.6.2 */
+#ifndef VERSION_transformers
+#define VERSION_transformers "0.5.6.2"
+#endif /* VERSION_transformers */
+#ifndef MIN_VERSION_transformers
+#define MIN_VERSION_transformers(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  5 || \
+  (major1) == 0 && (major2) == 5 && (minor) <= 6)
+#endif /* MIN_VERSION_transformers */
 
 /* tool gcc-9 */
 #ifndef TOOL_VERSION_gcc
@@ -188,10 +166,10 @@
 #endif /* MIN_TOOL_VERSION_strip */
 
 #ifndef CURRENT_PACKAGE_KEY
-#define CURRENT_PACKAGE_KEY "intensional-constraints-0.1.0.0-Eo9FJNupPZy2SEI3dfRu2a"
+#define CURRENT_PACKAGE_KEY "intensional-constraints-0.1.0.0-BGh4WOwjv8P3bet8cid0mX"
 #endif /* CURRENT_PACKAGE_KEY */
 #ifndef CURRENT_COMPONENT_ID
-#define CURRENT_COMPONENT_ID "intensional-constraints-0.1.0.0-Eo9FJNupPZy2SEI3dfRu2a"
+#define CURRENT_COMPONENT_ID "intensional-constraints-0.1.0.0-BGh4WOwjv8P3bet8cid0mX"
 #endif /* CURRENT_COMPONENT_ID */
 #ifndef CURRENT_PACKAGE_VERSION
 #define CURRENT_PACKAGE_VERSION "0.1.0.0"

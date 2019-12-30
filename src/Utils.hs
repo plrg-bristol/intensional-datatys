@@ -1,6 +1,7 @@
 module Utils (
   slice,
-  refinable
+  refinable,
+  dequantify
 ) where
 
 import qualified Data.List as L
@@ -33,3 +34,13 @@ refinable tc = (length (Core.tyConDataCons tc) > 1) && all pos (concatMap Core.d
                                     -- Perhaps it is possible to record whether a type variable occurs +/-
       neg (Tcr.FunTy t1 t2) = pos t1 && neg t2
       neg _                 = True
+
+-- Splinter a core type (scheme) into its type variables and underlying type
+dequantify :: Core.Type -> ([Core.TyVar], Core.Type)
+dequantify (Tcr.ForAllTy b t) =
+  let (as, st) = dequantify t
+      a = Core.binderVar b
+  in (a:as, st)
+dequantify (Tcr.FunTy t1@(Tcr.TyConApp _ _) t2)
+  | Core.isPredTy t1 = dequantify t2 -- Ignore evidence of typeclasses and implicit parameters
+dequantify t = ([], t)

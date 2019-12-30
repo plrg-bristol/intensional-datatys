@@ -30,7 +30,7 @@ version = Version [0,1,0,0] []
 bindir, libdir, dynlibdir, datadir, libexecdir, sysconfdir :: FilePath
 
 bindir     = "/home/eddie/Documents/work/intensional/intensional-constraints/.stack-work/install/x86_64-linux-tinfo6/2a9efc81d20be8a99a756d7cb7103bb3410e46e6776c3c1927ae1f4d297d58cf/8.6.5/bin"
-libdir     = "/home/eddie/Documents/work/intensional/intensional-constraints/.stack-work/install/x86_64-linux-tinfo6/2a9efc81d20be8a99a756d7cb7103bb3410e46e6776c3c1927ae1f4d297d58cf/8.6.5/lib/x86_64-linux-ghc-8.6.5/intensional-constraints-0.1.0.0-Eo9FJNupPZy2SEI3dfRu2a"
+libdir     = "/home/eddie/Documents/work/intensional/intensional-constraints/.stack-work/install/x86_64-linux-tinfo6/2a9efc81d20be8a99a756d7cb7103bb3410e46e6776c3c1927ae1f4d297d58cf/8.6.5/lib/x86_64-linux-ghc-8.6.5/intensional-constraints-0.1.0.0-BGh4WOwjv8P3bet8cid0mX"
 dynlibdir  = "/home/eddie/Documents/work/intensional/intensional-constraints/.stack-work/install/x86_64-linux-tinfo6/2a9efc81d20be8a99a756d7cb7103bb3410e46e6776c3c1927ae1f4d297d58cf/8.6.5/lib/x86_64-linux-ghc-8.6.5"
 datadir    = "/home/eddie/Documents/work/intensional/intensional-constraints/.stack-work/install/x86_64-linux-tinfo6/2a9efc81d20be8a99a756d7cb7103bb3410e46e6776c3c1927ae1f4d297d58cf/8.6.5/share/x86_64-linux-ghc-8.6.5/intensional-constraints-0.1.0.0"
 libexecdir = "/home/eddie/Documents/work/intensional/intensional-constraints/.stack-work/install/x86_64-linux-tinfo6/2a9efc81d20be8a99a756d7cb7103bb3410e46e6776c3c1927ae1f4d297d58cf/8.6.5/libexec/x86_64-linux-ghc-8.6.5/intensional-constraints-0.1.0.0"

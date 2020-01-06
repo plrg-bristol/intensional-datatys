@@ -50,6 +50,7 @@ instance Rename Constraint where
     | x == x'  = ConDom k y d
   rename x y (DomSet x' d ks)
     | x == x'  = DomSet y d ks
+  rename _ _ c = c
 
 -- Sets of constructors 
 data K where

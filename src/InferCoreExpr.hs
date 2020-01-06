@@ -62,45 +62,32 @@ inferProg :: Monad m => Core.CoreProgram -> InferM m [(Core.Name, ([Int], ConSet
 inferProg p = do
  
   -- Reorder program with dependancies
-  let !p' = dependancySort p
+  let p' = dependancySort p
 
-  !bs <- foldM (\l bg -> do
-    !() <- Core.pprTraceM "l" (Core.ppr l)
-    !() <- Core.pprTraceM "I'm here" (Core.ppr ())
+  foldM (\l bg -> do
     -- Add each binds within the group to context with a fresh type (t) and no constraints
-    !binds <- mapM (\(Core.getName -> x, Core.exprType -> t) -> do 
-      !t' <- fromCore t
+    binds <- mapM (\(Core.getName -> x, Core.exprType -> t) -> do 
+      t' <- fromCore t
       return (x, t')
       ) $ Core.flattenBinds [bg]
 
-    !ts <- withVars' binds $ mapM (\(!x, !rhs) -> do
-
-      !() <- Core.pprTraceM "I should have tested more" (Core.ppr rhs)
+    ts <- withVars l $ withVars' binds $ mapM (\(x, rhs) -> do
 
       -- Infer each bind within the group, compiling constraints
-      !t <- infer rhs
+      t <- infer rhs
 
       -- Insure fresh types are quantified by infered constraint (t < t')
-      !t' <- safeVar x
-      !() <- Core.pprTraceM "Done with - 1" (Core.ppr t') 
-      !() <- emitT t t' rhs
-
-      !() <- Core.pprTraceM "Done with" (Core.ppr (rhs, t, t')) 
+      t' <- safeVar x
+      emitT t t' rhs
 
       return t
       ) $ Core.flattenBinds [bg]
-    
-    !() <- Core.pprTraceM "I'm here2" (Core.ppr ())
 
     -- Restrict constraints to the interface
-    !ts' <- restrict ts
-
-    !() <- Core.pprTraceM "I'm here3" (Core.ppr ())
+    ts' <- restrict ts
   
     return $ zip (Core.getName <$> Core.bindersOf bg) ts' ++ l
     ) [] p'
-  !() <- Core.pprTraceM "I'm here 4" (Core.ppr ())
-  return bs
 
 infer :: Monad m => Core.Expr Core.Var -> InferM m (Type T)
 infer (Core.Var x) =

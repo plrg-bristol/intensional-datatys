@@ -154,4 +154,4 @@ restrict ts = get >>= (\(xs, cs) -> return $ restrict' xs cs)
 
     restrict' xs cs = fmap (domain cs', cs',) ts
       where
-        cs' = filterToSet xs $ resolve cs
+        cs' = M.empty -- filterToSet xs $ resolve cs

@@ -59,7 +59,7 @@ instance Outputable (Type e) where
 shape :: Type e -> Type S
 {-# INLINE shape #-}
 shape (Var a)       = Var a
-shape (App a b)     = App a b
+shape (App a b)     = a -- EXPERIMENTAL
 shape (Base b)      = Base b
 shape (Data d)      = Base d
 shape (Inj _ d)     = Base d
@@ -129,7 +129,7 @@ fromCore (Tcr.TyConApp t args)
   = dataType t
 
   | otherwise
-  = return $ Base t
+  = return (Base t)
 fromCore (Tcr.FunTy t1 t2) = do
   s1 <- fromCore t1
   s2 <- fromCore t2

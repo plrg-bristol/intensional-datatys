@@ -13,11 +13,13 @@ import qualified TyCoRep as Tcr
 slice :: Core.TyCon -> [Core.TyCon]
 slice d = sliceClose [d]
 
+sliceClose :: [Core.TyCon] -> [Core.TyCon]
 sliceClose s
+  | null s    = s
   | s' == s   = s
   | otherwise = sliceClose s'
   where
-    s' = L.nub $ [s'' | t <- s, d <- Core.tyConDataCons t, (Tcr.TyConApp tc _) <- Core.dataConOrigArgTys d, refinable tc, s'' <- slice tc]
+    s' = L.nub ([tc | t <- s, dc <- Core.tyConDataCons t, (Tcr.TyConApp tc _) <- Core.dataConOrigArgTys dc, refinable tc] ++ s)
 
 -- Decides whether a datatypes only occurs positively
 refinable :: Core.TyCon -> Bool

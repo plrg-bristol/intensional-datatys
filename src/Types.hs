@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 
 module Types (
@@ -11,6 +12,7 @@ module Types (
   inj,
 
   Rename(..),
+  Domain(..),
 
   FromCore (..),
   fromCore,
@@ -95,6 +97,18 @@ instance Rename (Type e) where
   rename x y (a :=> b) = rename x y a :=> rename x y b
   rename x y (Lit l) = Lit l
   rename x y (Forall as t) = Forall as (rename x y t)
+
+class Domain t where
+  domain :: t -> [Int]
+
+instance Domain (Type T) where
+  domain (Var a) = []
+  domain (App a b) = []
+  domain (Base b) = []
+  domain (Inj x d) = [x]
+  domain (a :=> b) = domain a ++ domain b
+  domain (Lit l) = []
+  domain (Forall as t) = domain t
 
 
 

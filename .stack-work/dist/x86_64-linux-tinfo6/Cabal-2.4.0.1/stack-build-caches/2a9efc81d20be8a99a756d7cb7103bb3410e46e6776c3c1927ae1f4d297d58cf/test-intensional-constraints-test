@@ -1,7 +1,7 @@
 ? /home/eddie/Documents/work/intensional/intensional-constraints/.stack-work/dist/x86_64-linux-tinfo6/Cabal-2.4.0.1/build/libHSintensional-constraints-0.1.0.0-BGh4WOwjv8P3bet8cid0mX-ghc8.6.5.so
-: hash: 37d492a090b56c9d79e2b297bac5d5cf1f69b2f95a8facb5c8a6102dcd79e25d
-  size: 594280
-  modtime: 1578309138
+: hash: 3f773066475f96237219dac838aa07203beefa5c6f082435611eb727f49208ca
+  size: 581872
+  modtime: 1578314186
 /home/eddie/Documents/work/intensional/intensional-constraints/ChangeLog.md:
   hash: 9772e09830a0f2c60923e2cf9e536719742deaf2df94f25bf0e056ac3233f85e
   size: 52
@@ -15,9 +15,9 @@
   size: 205
   modtime: 1577097425
 ? /home/eddie/Documents/work/intensional/intensional-constraints/.stack-work/dist/x86_64-linux-tinfo6/Cabal-2.4.0.1/build/libHSintensional-constraints-0.1.0.0-BGh4WOwjv8P3bet8cid0mX.a
-: hash: 155a0c276d193fbe67fe0b6aee8d7e7f78a93fdc297b51b9de5ec77d71d463d5
-  size: 719130
-  modtime: 1578309138
+: hash: 5d5bbda0ed7c54f0d0f1287e2f0c818e4d9450997a5bb111af43131dae435976
+  size: 703054
+  modtime: 1578314185
 /home/eddie/Documents/work/intensional/intensional-constraints/intensional-constraints.cabal:
   hash: 55f44eeb8019964b12236e8723f19369212835bf4ec7647242df4025765eabe8
   size: 1562

@@ -71,6 +71,8 @@ inferProg p = do
       return (x, t')
       ) $ Core.flattenBinds [bg]
 
+    restrict [] -- Clear any refinement variables
+
     ts <- withVars l $ withVars' binds $ mapM (\(x, rhs) -> do
 
       -- Infer each bind within the group, compiling constraints

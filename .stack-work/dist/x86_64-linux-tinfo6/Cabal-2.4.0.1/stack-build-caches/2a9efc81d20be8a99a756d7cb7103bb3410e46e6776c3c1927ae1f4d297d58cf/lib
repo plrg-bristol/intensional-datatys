@@ -1,7 +1,7 @@
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Types.hs:
-  hash: fa5f7511c87301578292f874e8da81f25587d82b200c0254b7ff05be0749fa49
-  size: 4645
-  modtime: 1578308998
+  hash: c2621cc17d58e66c407881aac8dc7d13e41735239c67d073cdf5d46edcf1e136
+  size: 4963
+  modtime: 1578314065
 /home/eddie/Documents/work/intensional/intensional-constraints/ChangeLog.md:
   hash: 9772e09830a0f2c60923e2cf9e536719742deaf2df94f25bf0e056ac3233f85e
   size: 52
@@ -15,17 +15,17 @@
   size: 1693
   modtime: 1578308252
 /home/eddie/Documents/work/intensional/intensional-constraints/src/InferM.hs:
-  hash: c1c1e68f845faeaaf45f25d3c694ceddd52ba4dcc9c974afac81a6edca8b8fad
-  size: 6241
-  modtime: 1578309129
+  hash: 1f943370ed4b582b7c5b1f484a3baa975861a7e0d48724148aa6f8846bf90274
+  size: 6085
+  modtime: 1578314125
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Constraint.hs:
-  hash: b980aca2b6f85aeb6b98c1296c44120ca9b0efebdb8c5c1c9b01843d8cd893d8
-  size: 5644
-  modtime: 1578309051
+  hash: 7b5f251b8d11e69cf091a56dad6cc869b2e78fb232d9e77d3036abe5cf462a1b
+  size: 5673
+  modtime: 1578314302
 /home/eddie/Documents/work/intensional/intensional-constraints/src/InferCoreExpr.hs:
-  hash: 00058fcb2d0fc7ad20d0d34c63b8d3a8daa1b6f29ef7929289ffbd027f6beaea
-  size: 6414
-  modtime: 1578308372
+  hash: 9a088514f9b693a89674540ea57ac6d82ef5f99df4eb8e36ec09cbb11eb37108
+  size: 6465
+  modtime: 1578313354
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Lib.hs:
   hash: cd4a0611382e33c85652b4d0ec539637d19b5c64d5fd98310d6a74ef5bf5d7d6
   size: 1985

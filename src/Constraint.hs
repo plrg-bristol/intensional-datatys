@@ -38,9 +38,9 @@ data Constraint where
   deriving (Eq, Ord)
 
 instance Outputable Constraint where
-  ppr (DomDom x y d) = ppr x <> ppr y <> ppr d
-  ppr (ConDom k x d) = ppr k <> ppr x <> ppr d
-  ppr (DomSet x d ks) = ppr x <> ppr d <> ppr ks
+  ppr (DomDom x y d) = ppr (x, y, d)
+  ppr (ConDom k x d) = ppr (k, x, d)
+  ppr (DomSet x d ks) = ppr (x, d, ks)
 
 instance Rename Constraint where
   rename x y (DomDom x' x'' d)
@@ -71,16 +71,17 @@ rhs (DomDom _ y d) = Dom y d
 rhs (ConDom _ x d) = Dom x d
 rhs (DomSet _ _ k) = Set k
 
-domainC :: Constraint -> [Int]
-domainC (DomDom x y d) = [x, y]
-domainC (ConDom k x d) = [x]
-domainC (DomSet x d ks) = [x]
+instance Domain Constraint where
+  domain (DomDom x y d) = [x, y]
+  domain (ConDom k x d) = [x]
+  domain (DomSet x d ks) = [x]
 
 -- Convert a pair of constructor sets to atomic form if possible
 toAtomic :: K -> K -> [Constraint]
 toAtomic (Dom x d) (Dom y d')
-  | d == d'   = [DomDom x y d]
-  | otherwise = Core.pprPanic "Invalid subtyping constraint!" (Core.ppr (d, d'))
+  | d /= d'   = Core.pprPanic "Invalid subtyping constraint!" (Core.ppr (d, d'))
+  | x == y    = []
+  | otherwise = [DomDom x y d]
 toAtomic (Dom x d) (Set k)   = [DomSet x d k]
 toAtomic (Set ks) (Dom x d)  = fmap (\k -> ConDom k x d) ks
 
@@ -129,8 +130,8 @@ type ConSet = M.Map Constraint [Guard]
 instance Rename ConSet where
   rename x y = M.mapKeys (rename x y) . M.map (fmap $ rename x y)
 
-domain :: ConSet -> [Int]
-domain m = concatMap domainC (M.keys m) ++ concatMap M.keys (concat (M.elems m))
+instance Domain ConSet where
+  domain m = concatMap domain (M.keys m) ++ concatMap M.keys (concat (M.elems m))
 
 -- Insert an atomic constraint, combining with existing guards 
 insertA :: Constraint -> Guard -> ConSet -> ConSet
@@ -149,7 +150,8 @@ simplify :: Type T -> Type T -> Core.Expr Core.Var -> [Constraint]
 simplify t1 t2 e 
   | shape t1 /= shape t2               = Core.pprPanic "Types must refine the same sort!" (Core.ppr (t1, t2, e))
 simplify (t11 :=> t12) (t21 :=> t22) e = simplify t21 t11 e `L.union` simplify t12 t22 e
-simplify (Inj x d) (Inj y _) e         = DomDom x y . Core.getName <$> slice d
+simplify (Inj x d) (Inj y _) e 
+  | x /= y                             = DomDom x y . Core.getName <$> slice d
 simplify (Forall _ t1) (Forall _ t2) e = simplify t1 t2 e
 simplify _ _ _                         = []
 
@@ -193,5 +195,5 @@ trans xs = xs `bind` (\c v -> xs `bind` cross c v)
 
 -- Remove intermediate nodes
 filterToSet :: [Int] -> ConSet -> ConSet
-filterToSet xs cs = M.filterWithKey (\k _ -> all (`elem` xs) (domainC k)) $ M.map (filter (all (`elem` xs) . M.keys)) cs
+filterToSet xs cs = M.filterWithKey (\k _ -> all (`elem` xs) (domain k)) $ M.map (filter (all (`elem` xs) . M.keys)) cs
 

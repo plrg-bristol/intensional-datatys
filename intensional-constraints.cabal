@@ -34,7 +34,7 @@ library
       InferCoreExpr
       --PrettyPrint
       -- Serialization
-      --Lib
+      Lib
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:

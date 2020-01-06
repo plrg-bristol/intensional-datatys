@@ -4,26 +4,12 @@ module Lib
     ( plugin
     ) where
 
--- import System.Directory
-
--- import Control.Monad.RWS hiding (get)
-
--- import Data.Time
 import qualified Data.Map as M
 
--- -- import Type
 import InferM
--- import Constraint
-import PrettyPrint
--- -- import Serialization
 import InferCoreExpr
 
--- import Name
--- import Binary
--- import IfaceEnv
--- import BinIface
 import GhcPlugins
--- import TcRnMonad
 
 plugin :: Plugin
 plugin = defaultPlugin { installCoreToDos = install }
@@ -54,12 +40,12 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   --   ) M.empty deps
 
   -- Infer constraints
-  tss <- runInferM (inferProg p) M.empty
+  !tss <- runInferM (inferProg p) M.empty
 
   -- Display typeschemes
-  liftIO $ mapM_ (\(v, ts) -> do
+  liftIO $ mapM_ (\(!v, !ts) -> do
       putStrLn ""
-      putStrLn $ showSDocUnsafe $ format v ts
+      putStrLn $ showSDocUnsafe $ ppr (v, ts)
       putStrLn ""
     ) tss
 

@@ -1,12 +1,18 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE BangPatterns #-}
 
 module InferCoreExpr (
+  inferProg
 ) where
 
 import Control.Monad
+import Control.Arrow
 
+import qualified Data.List as L
 import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
@@ -15,105 +21,88 @@ import Utils
 import Types
 import Constraint
 import InferM
--- 
--- -- List all free variables in an expression
--- freeVars :: Core.Expr Core.Var -> [Core.Name]
--- freeVars (Core.Var i)         = [Core.getName i]
--- freeVars (Core.Lit _)         = []
--- freeVars (Core.App e1 e2)     = freeVars e1 ++ freeVars e2
--- freeVars (Core.Lam x e)       = freeVars e L.\\ [Core.getName x]
--- freeVars (Core.Let b e)       = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) L.\\ (Core.getName <$> Core.bindersOf b)
--- freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae L.\\ (Core.getName <$> bs) | (_, bs, ae) <- as] L.\\ [Core.getName x])
--- freeVars (Core.Cast e _)      = freeVars e
--- freeVars (Core.Tick _ e)      = freeVars e
--- freeVars (Core.Type _)        = []
--- freeVars (Core.Coercion _)    = []
--- 
--- -- Used to compare groups of binds
--- instance Eq Core.CoreBind where
---   b == b' = Core.bindersOf b == Core.bindersOf b'
--- 
--- -- Sort a program in order of dependancies
--- dependancySort :: Core.CoreProgram -> Core.CoreProgram
--- dependancySort p = foldl go [] depGraph
---   where
---     -- Pair binder groups with their dependancies
---     depGraph = [(b, [group | rhs <- Core.rhssOfBind b, fv <- freeVars rhs, group <- findGroup p fv, group /= b]) | b <- p]
--- 
---     go p' (b, deps) = L.nub $
---       case L.elemIndex b p' of
---         Just i -> uncurry (++) $ first (++ deps) $ splitAt i p' -- Insert dependencies before binder
---         _      -> p' ++ deps ++ [b]                             -- Concatenate dependencies and binder to the end of the program
---     
---     -- Find the group in which the variable is contained
---     findGroup [] _ = []
---     findGroup (b:bs) x
---       | x `elem` (Core.getName <$> Core.bindersOf b) = [b]
---       | otherwise = findGroup bs x
--- 
--- -- Infer program
--- inferProg :: Core.CoreProgram -> InferM [(Core.Name, TypeScheme)]
--- inferProg p = do
--- 
---   -- Reorder program with dependancies
---   let p' = dependancySort p
--- 
---   -- Mut rec groups
---   z <- foldr (\b r -> do
--- 
---     -- Filter evidence binds
---     let xs   = Core.getName <$> filter (not . Core.isPredTy . Core.varType) (Core.bindersOf b)
---     let rhss = filter (not . Core.isPredTy . Core.exprType) $ Core.rhssOfBind b
--- 
---     -- Fresh typescheme for each binder in the group
---     ts <- mapM (freshScheme . Core.exprType) rhss
--- 
---     -- Infer constraints for the rhs of each bind
---     binds <- mapM (local (insertMany xs ts) . infer) rhss
---     let (ts', cgs) = unzip binds
--- 
---     -- !() <- Core.pprTraceM "Binds" (Core.ppr binds)
--- 
---     -- Combine constraint graphs
---     let bcg = foldr union empty cgs 
--- 
---     -- Insure fresh types are quantified by infered constraint (t' < t) for recursion
---     -- Type/refinement variables bound in match those bound in t'
---     let bcg' = foldr (\(rhs, t', Forall _ _ t) bcg' -> emit t' t (Just []) bcg' rhs) bcg (zip3 rhss ts' ts)
--- 
---     -- Restrict constraints to the interface
---     !ts'' <- quantifyWith bcg' ts
--- 
---     -- Add infered typescheme to the environment
---     r' <- local (insertMany xs ts'') r
--- 
---     return $ (xs, ts''):r'
---     ) (return []) p'
---   return $ concatMap (uncurry zip) z
--- 
---inferVar :: Core.Var -> [Core.Type] -> Core.Expr Core.Var -> InferM m (Type M T)
--- inferVar x ts e | Core.pprTrace "inferVar" (Core.ppr e) False = undefined 
--- inferVar x ts e =
---   case Core.isDataConId_maybe x of
---     Just k -> do 
---       (t, args) <- safeCon k ts
--- 
---       case t of
---         Inj x (Core.getName -> d) -> do
---           -- Infer refinable constructor
---           forM_ args (\a -> emitT a (inj x a) e)
---           emitS (Con (Core.getName k)) (Dom x d) 
---       
---       return (foldr (:=>) t args)
--- 
---     Nothing -> do  
---       -- Infer polymorphic variable at type(s)
---       t <- safeVar x ts 
---       v <- fromCore $ Core.exprType e
---       emitT t v e 
---       return (v, t)
+ 
+-- List all free variables in an expression
+freeVars :: Core.Expr Core.Var -> [Core.Name]
+freeVars (Core.Var i)         = [Core.getName i]
+freeVars (Core.Lit _)         = []
+freeVars (Core.App e1 e2)     = freeVars e1 ++ freeVars e2
+freeVars (Core.Lam x e)       = freeVars e L.\\ [Core.getName x]
+freeVars (Core.Let b e)       = (freeVars e ++ concatMap freeVars (Core.rhssOfBind b)) L.\\ (Core.getName <$> Core.bindersOf b)
+freeVars (Core.Case e x _ as) = freeVars e ++ (concat [freeVars ae L.\\ (Core.getName <$> bs) | (_, bs, ae) <- as] L.\\ [Core.getName x])
+freeVars (Core.Cast e _)      = freeVars e
+freeVars (Core.Tick _ e)      = freeVars e
+freeVars (Core.Type _)        = []
+freeVars (Core.Coercion _)    = []
 
-infer :: Monad m => Core.Expr Core.Var -> InferM m (Scheme T)
+-- Used to compare groups of binds
+instance Eq Core.CoreBind where
+  b == b' = Core.bindersOf b == Core.bindersOf b'
+
+-- Sort a program in order of dependancies
+dependancySort :: Core.CoreProgram -> Core.CoreProgram
+dependancySort p = foldl go [] depGraph
+   where
+   -- Pair binder groups with their dependancies
+    depGraph = [(b, [group | rhs <- Core.rhssOfBind b, fv <- freeVars rhs, group <- findGroup p fv, group /= b]) | b <- p]
+
+    go p' (b, deps) = L.nub $
+      case L.elemIndex b p' of
+        Just i -> uncurry (++) $ first (++ deps) $ splitAt i p' -- Insert dependencies before binder
+        _      -> p' ++ deps ++ [b]                             -- Concatenate dependencies and binder to the end of the program
+    
+    -- Find the group in which the variable is contained
+    findGroup [] _ = []
+    findGroup (b:bs) x
+      | x `elem` (Core.getName <$> Core.bindersOf b) = [b]
+      | otherwise = findGroup bs x
+
+-- Infer program
+inferProg :: Monad m => Core.CoreProgram -> InferM m [(Core.Name, ([Int], ConSet, Type T))]
+inferProg p = do
+ 
+  -- Reorder program with dependancies
+  let !p' = dependancySort p
+
+  !bs <- foldM (\l bg -> do
+    !() <- Core.pprTraceM "l" (Core.ppr l)
+    !() <- Core.pprTraceM "I'm here" (Core.ppr ())
+    -- Add each binds within the group to context with a fresh type (t) and no constraints
+    !binds <- mapM (\(Core.getName -> x, Core.exprType -> t) -> do 
+      !t' <- fromCore t
+      return (x, t')
+      ) $ Core.flattenBinds [bg]
+
+    !ts <- withVars' binds $ mapM (\(!x, !rhs) -> do
+
+      !() <- Core.pprTraceM "I should have tested more" (Core.ppr rhs)
+
+      -- Infer each bind within the group, compiling constraints
+      !t <- infer rhs
+
+      -- Insure fresh types are quantified by infered constraint (t < t')
+      !t' <- safeVar x
+      !() <- Core.pprTraceM "Done with - 1" (Core.ppr t') 
+      !() <- emitT t t' rhs
+
+      !() <- Core.pprTraceM "Done with" (Core.ppr (rhs, t, t')) 
+
+      return t
+      ) $ Core.flattenBinds [bg]
+    
+    !() <- Core.pprTraceM "I'm here2" (Core.ppr ())
+
+    -- Restrict constraints to the interface
+    !ts' <- restrict ts
+
+    !() <- Core.pprTraceM "I'm here3" (Core.ppr ())
+  
+    return $ zip (Core.getName <$> Core.bindersOf bg) ts' ++ l
+    ) [] p'
+  !() <- Core.pprTraceM "I'm here 4" (Core.ppr ())
+  return bs
+
+infer :: Monad m => Core.Expr Core.Var -> InferM m (Type T)
 infer (Core.Var x) =
   case Core.isDataConId_maybe x of
     -- Infer constructor
@@ -124,116 +113,107 @@ infer (Core.Var x) =
 
 infer l@(Core.Lit _) = fromCore $ Core.exprType l
 
-infer e@(Core.App e1 e2) =
-  case e2 of
-    Core.Type t -> do
-      -- Type appliciation
-      t1 <- infer e1
-      applyTyVars t1 t
+infer (Core.App e1 (Core.Type e2)) = do
+  t1 <- infer e1
+  applyTyVars t1 e2
 
-    _ -> do
-      -- Term appliciation
-      t1 <- infer e1
-      if Core.isPredTy (Core.exprType e2) 
-        then return t1
-        else case mono t1 of
-          t3 :=> t4 -> do
-            t2 <- infer e2
-            emitT (mono t2) t3 e
-            return (Forall [] t4) 
+infer e@(Core.App e1 e2) = do
+  t1 <- infer e1
+  case t1 of
+    t3 :=> t4 -> do
+      t2 <- infer e2
+      emitT t2 t3 e
+      return t4
 
-          _ -> Core.pprPanic "Application must be to an arrow type!" (Core.ppr e)
-
-infer (Core.Lam x e) = do
-  let t = Core.varType x
-  if False -- type or term 
+infer (Core.Lam x e) =
+  if not $ Core.isTyVar x
     then do
-      -- Type abstraction
-      t' <- infer e
-      case t' of
-        Forall as u -> return $ Forall (Core.getName x:as) u
-    else do
       -- Variable abstraction
-      t1 <- fromCore t
-      t2 <- withVars [(Core.getName x, ([], M.empty, t1))] (infer e)
-      return $ Forall [] (mono t1 :=> mono t2)
+      t1 <- fromCore $ Core.varType x
+      t2 <- withVar' (Core.getName x) t1 (infer e)
+      return (t1 :=> t2)
+    else
+      -- Type abstraction
+      Forall (Core.getName x) <$> infer e
  
 infer e'@(Core.Let b e) = do
-  -- Infer local module (i.e. let expression)
-  let xs   = Core.getName <$> Core.bindersOf b
-  let rhss = Core.rhssOfBind b
- 
   -- Add each binds within the group to context with a fresh type (t) and no constraints
-  ts <- mapM (fromCore . Core.exprType) rhss
+  binds <- mapM (\(Core.getName -> x, Core.exprType -> t) -> do 
+    t' <- fromCore t
+    return (x, t')
+    ) $ Core.flattenBinds [b]
  
-  ts' <- foldM (\ts rhs -> do
+  ts <- withVars' binds $ mapM (\(x, rhs) -> do
     -- Infer each bind within the group, compiling constraints
-    t <- withVars (zip xs (fmap (\t -> ([], M.empty, t)) ts)) (infer rhs)
-    return (ts ++ [t])
-    ) [] rhss
- 
-  --  Insure fresh types are quantified by infered constraint (t' < t)
-  mapM_ (\(r, Forall _ t', Forall _ t) -> emitT t' t r) (zip3 rhss ts' ts)
+    t <- infer rhs
+
+    -- Insure fresh types are quantified by infered constraint (t < t')
+    t' <- safeVar x
+    emitT t t' rhs    
+
+    return t
+    ) $ Core.flattenBinds [b] 
  
   -- Restrict constraints to the interface
-  ts'' <- restrict ts
- 
+  ts' <- restrict ts
+  
   -- Infer in body with infered typescheme to the environment
-  withVars (zip xs ts'') (infer e)
--- 
---   -- Infer top-level case expession
--- infer e'@(Core.Case e b rt as) = do
---   -- Fresh return type
---   t  <- fresh rt
--- 
---   -- Infer expression on which to pattern match
---   (t0, c0) <- infer e
---   let d = case sort t0 of { SBase d -> d; SData d -> d }
--- 
---   -- b @ e
---   et <- fresh $ Core.exprType e
---   let c0' = emit et t0 (Just []) c0 e
--- 
---   (caseType, cg) <- local (insertVar (Core.getName b) $ Forall [] empty et) (pushCase e >> -- Add expression to the context, and record the case
---     foldM (\(caseType, cg) (a, bs, rhs) ->
---       if Core.exprIsBottom rhs
---         then return (caseType, cg) -- If rhs is bottom, it is not a valid case
---         else do
---           -- Add variables introduced by the pattern
---           ts <- mapM (fresh . Core.varType) bs
--- 
---           -- Ensure return type is valid
---           (ti', cgi) <- local (insertMany (Core.getName <$> bs) (Forall [] empty <$> ts)) (infer rhs)
---           let cgi' = emit ti' t (Just []) cgi e'
--- 
---           -- Track the occurance of a constructors/default case
---           case a of 
---             Core.DataAlt (Core.getName -> k) -> return (fmap (k:) caseType, cg `union` guardWith k t0 cgi')
---             _                                -> return (Nothing, cg `union` cgi') -- Default/literal cases
---     ) (Just [], c0') as)
--- 
---   popCase
--- 
---   tl <- topLevel e
--- 
---   -- Ensure destructor is total, GHC will conservatively insert defaults
---   case caseType of
---     Nothing  -> return (t, cg) -- Literal cases must have a default
---     Just ks -> 
---       if tl 
---         then return (t, emit t0 (Sum d ks) (Just []) cg e')
---         else return (t, cg)
---     _ -> Core.pprPanic "Inconsistent data constructors arguments!" (Core.ppr ())
--- 
--- -- Remove core ticks
--- infer (Core.Tick _ e) = infer e
--- 
--- -- Maintain constraints but give trivial type (Dot - a sub/super-type of everything) to expression - effectively ignore casts
--- -- GHC already requires the prog to well typed
--- infer (Core.Cast e _) = do
---   (_, cg) <- infer e
---   return (Dot, cg)
--- 
--- -- Cannot infer a coercion expression.
--- -- For most programs these will never occur outside casts.
--- infer _ = error "Unimplemented"
+  withVars (zip (Core.getName <$> Core.bindersOf b) ts') (infer e)
+ 
+infer e'@(Core.Case e b rt as) = do
+  -- Fresh return type
+  t <- fromCore rt
+
+  -- Infer expression on which to pattern match
+  et <- fromCore $ Core.exprType e
+  t0 <- infer e
+    
+  let (x, d) = case t0 of { Inj x d -> (Just x, Core.getName d); Base d -> (Nothing, Core.getName d); _ -> Core.pprPanic "Datatype isn't pattern matchtable" (Core.ppr t0)}
+
+  emitT et t0 e
+
+  pushCase e
+
+  caseType <- withVar' (Core.getName b) et $ foldM (\caseType (a, bs, rhs) ->
+    if Core.exprIsBottom rhs
+      then return caseType -- If rhs is bottom, it is not a valid case
+      else do
+        -- Guard case
+        let branch = case a of {Core.DataAlt (Core.getName -> k) -> case x of {Just x' -> guardWith x' k d; Nothing -> id} ; _ -> id }
+
+        -- Add variables introduced by the pattern
+        ts <- mapM (fromCore . Core.varType) bs
+        
+        -- Ensure return type is valid
+        ti' <- withBranch branch $ withVars (zip (Core.getName <$> bs) (([], M.empty,) <$> ts)) (infer rhs)
+        withBranch branch $ emitT ti' t e'
+
+        -- Track the occurance of a constructors/default case
+        case a of 
+          Core.DataAlt (Core.getName -> k) -> return (fmap (k:) caseType)
+          _                                -> return Nothing -- Default/literal cases
+    ) (Just []) as
+ 
+  popCase
+ 
+  tl <- topLevel e 
+  
+  -- Ensure destructor is total, GHC will conservatively insert defaults
+  case caseType of
+    Nothing  -> return t -- Literal cases must have a default
+    Just ks -> do
+      case x of
+        Just x' -> when tl (emitS (Dom x' d) (Set ks))
+        Nothing -> return () 
+      return t
+ 
+-- Remove core ticks
+infer (Core.Tick _ e) = infer e
+ 
+infer e'@(Core.Cast e _) = do
+  infer e
+  fromCore $ Core.exprType e'
+ 
+-- Cannot infer a coercion expression.
+-- For most programs these will never occur outside casts.
+infer _ = error "Unimplemented"

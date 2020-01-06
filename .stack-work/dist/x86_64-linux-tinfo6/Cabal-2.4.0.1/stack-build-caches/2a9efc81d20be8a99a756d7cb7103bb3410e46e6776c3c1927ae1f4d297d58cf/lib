@@ -1,7 +1,7 @@
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Types.hs:
-  hash: 3978384e593bbe9ab3136e51cb26e3cd8d7eb689c2010c833f2a29cdc852b090
-  size: 5105
-  modtime: 1577707324
+  hash: e30bca36ce00193c1551d11bcc8572298daeb7ffff1242b5c31252cdebdf9b51
+  size: 4635
+  modtime: 1578236524
 /home/eddie/Documents/work/intensional/intensional-constraints/ChangeLog.md:
   hash: 9772e09830a0f2c60923e2cf9e536719742deaf2df94f25bf0e056ac3233f85e
   size: 52
@@ -13,20 +13,24 @@
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Utils.hs:
   hash: 7c5b741e1a730ce4c559c57acd2bc55921283f0bebc0ad97fa599b0b45addec4
   size: 1643
-  modtime: 1577271690
+  modtime: 1578043713
 /home/eddie/Documents/work/intensional/intensional-constraints/src/InferM.hs:
-  hash: 07390c09d4fdb08ba919e6d62d35edcbca284a6dfb51a9e85efd866d839ce79a
-  size: 5147
-  modtime: 1577712166
+  hash: aebb29ce9c96bf78f41e9bb35cce90676fd850acc6a02f13dc5261404cf8153a
+  size: 6230
+  modtime: 1578307321
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Constraint.hs:
-  hash: 6c56e547befe731f6e95c81f1359334d5b149ca672a44291030ae06c51eb84ef
-  size: 5483
-  modtime: 1577711544
+  hash: e12a6b21573214b047e18f440a3e318aac5e277018e3efe8a6d6b375621c058c
+  size: 5625
+  modtime: 1578238255
 /home/eddie/Documents/work/intensional/intensional-constraints/src/InferCoreExpr.hs:
-  hash: ded168d5f1b11e6e16b6794f0ff4c26dd3f7c4ab097493a2c4edfb19d69e041b
-  size: 8412
-  modtime: 1577712112
+  hash: 97484f5c87156d5078e6d9109ba9bc47a2ca793edbe46c790e15bd185efaf249
+  size: 6888
+  modtime: 1578307318
+/home/eddie/Documents/work/intensional/intensional-constraints/src/Lib.hs:
+  hash: cd4a0611382e33c85652b4d0ec539637d19b5c64d5fd98310d6a74ef5bf5d7d6
+  size: 1985
+  modtime: 1578305872
 /home/eddie/Documents/work/intensional/intensional-constraints/intensional-constraints.cabal:
-  hash: e38aecffe1014cc71abba03c879c8bd7b68ea4360c5fd6b77e5d753a8b7cf8c4
-  size: 1564
-  modtime: 1577640787
+  hash: 55f44eeb8019964b12236e8723f19369212835bf4ec7647242df4025765eabe8
+  size: 1562
+  modtime: 1578225425

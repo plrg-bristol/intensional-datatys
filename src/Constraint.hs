@@ -16,14 +16,16 @@ module Constraint (
   resolve,
   domain,
   filterToSet,
+  guardWith,
 ) where
 
-import Prelude
+import Prelude hiding ((<>))
 
 import qualified Data.List as L
 import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
+import Outputable
 
 import Utils
 import Types
@@ -34,6 +36,11 @@ data Constraint where
   ConDom :: Core.Name -> Int -> Core.Name -> Constraint
   DomSet :: Int -> Core.Name -> [Core.Name] -> Constraint
   deriving (Eq, Ord)
+
+instance Outputable Constraint where
+  ppr (DomDom x y d) = ppr x <> ppr y <> ppr d
+  ppr (ConDom k x d) = ppr k <> ppr x <> ppr d
+  ppr (DomSet x d ks) = ppr x <> ppr d <> ppr ks
 
 instance Rename Constraint where
   rename x y (DomDom x' x'' d)
@@ -82,27 +89,19 @@ toAtomic (Set ks) (Dom x d)  = fmap (\k -> ConDom k x d) ks
 
 
 -- A guard is a conjunction of k in dom(X(d), grouped as X |-> (k, d)
-newtype Guard = Guard (M.Map Int [(Core.Name, Core.Name)])
-  deriving Eq
+type Guard = M.Map Int [(Core.Name, Core.Name)]
 
-instance Semigroup Guard where
-  (Guard m) <> (Guard m') = Guard (M.union m m')
-
-instance Monoid Guard where
-  mempty = Guard M.empty 
-
--- X <= Y if X -> Y
-instance Ord Guard where
-  Guard m <= Guard m' = M.foldrWithKey pred True m'
-    where
-      pred :: Int -> [(Core.Name, Core.Name)] -> Bool -> Bool
-      pred x ps k =
-        case M.lookup x m of
-          Just ps' -> all (`elem` ps') ps  -- every constraint of X in m' should appear in m 
-          Nothing  -> null ps && k         -- m does not constrain X, so neither should m'
+subsume :: Guard -> Guard -> Bool
+subsume m = M.foldrWithKey pred True
+  where
+    pred :: Int -> [(Core.Name, Core.Name)] -> Bool -> Bool
+    pred x ps k =
+      case M.lookup x m of
+        Just ps' -> all (`elem` ps') ps  -- every constraint of X in m' should appear in m 
+        Nothing  -> null ps && k         -- m does not constrain X, so neither should m'
 
 instance Rename Guard where
-  rename x y (Guard m) = Guard (M.mapKeys r m)
+  rename x y = M.mapKeys r
     where
       r x'
         | x == x'    = y
@@ -116,8 +115,7 @@ mergeGuards g = foldr go [g]
       | g <= g'   = gs
       | otherwise = L.insert g' gs
 
-domainG :: Guard -> [Int]
-domainG (Guard m) = M.keys m
+
 
 
 
@@ -131,7 +129,7 @@ instance Rename ConSet where
   rename x y = M.mapKeys (rename x y) . M.map (fmap $ rename x y)
 
 domain :: ConSet -> [Int]
-domain m = concatMap domainC (M.keys m) ++ concatMap domainG (concat (M.elems m))
+domain m = concatMap domainC (M.keys m) ++ concatMap M.keys (concat (M.elems m))
 
 -- Insert an atomic constraint, combining with existing guards 
 insertA :: Constraint -> Guard -> ConSet -> ConSet
@@ -142,20 +140,24 @@ insertS :: K -> K -> Guard -> ConSet -> ConSet
 insertS k1 k2 g cs = foldr (`insertA` g) cs (toAtomic k1 k2)
 
 -- Insert a subtyping constraint
-insertT :: Type e -> Type e -> Guard -> ConSet -> Core.Expr Core.Var -> ConSet
+insertT :: Type T -> Type T -> Guard -> ConSet -> Core.Expr Core.Var -> ConSet
 insertT t1 t2 g cs e = foldr (`insertA` g) cs (simplify t1 t2 e)
 
 -- Convert subtyping constraints to constructor constraints (if they have the same underlying sort)
-simplify :: Type e -> Type e -> Core.Expr Core.Var -> [Constraint]
+simplify :: Type T -> Type T -> Core.Expr Core.Var -> [Constraint]
 simplify t1 t2 e 
   | shape t1 /= shape t2               = Core.pprPanic "Types must refine the same sort!" (Core.ppr (t1, t2, e))
 simplify (t11 :=> t12) (t21 :=> t22) e = simplify t21 t11 e `L.union` simplify t12 t22 e
 simplify (Inj x d) (Inj y _) e         = DomDom x y . Core.getName <$> slice d
+simplify (Forall _ t1) (Forall _ t2) e = simplify t1 t2 e
 simplify _ _ _                         = []
 
 -- Combine two constraint sets
 union :: ConSet -> ConSet -> ConSet
 union = M.unionWith $ foldr mergeGuards
+
+guardWith :: Int -> Core.Name -> Core.Name -> ConSet -> ConSet
+guardWith x k d = M.map (mergeGuards (M.singleton x [(k, d)]))
 
 
 
@@ -169,6 +171,7 @@ bind :: ConSet -> (Constraint -> Guard -> ConSet) -> ConSet
 bind m f = M.foldrWithKey (\c gs m' -> foldr (M.unionWith (foldr mergeGuards) . f c) m' gs) M.empty m
 
 -- Close a constrain set under resolve
+-- TODO: only resolve filtered
 resolve :: ConSet -> ConSet
 resolve cs
   | trans cs == cs = cs
@@ -180,13 +183,14 @@ trans xs = xs `bind` (\c v -> xs `bind` cross c v)
   where
     --Todo apply both cases at once
     cross :: Constraint -> Guard -> Constraint -> Guard -> ConSet
-    cross c@(ConDom k x d) g c' (Guard g')
+    cross c@(ConDom k x d) g c' g'
       | Just kds <- M.lookup x g'
-      , (k, d) `elem` kds = insertA c g $ return' c' $ Guard (M.adjust (L.delete (k, d)) x g')
+      , (k, d) `elem` kds = insertA c g $ return' c' (M.adjust (L.delete (k, d)) x g')
     cross c g c' g'
-      | rhs c == lhs c'   = insertA c g $ insertS (lhs c) (rhs c') (g <> g') $ return' c' g'
+      | rhs c == lhs c'   = insertA c g $ insertS (lhs c) (rhs c') (M.union g g') $ return' c' g'
     cross c g c' g'       = insertA c g $ return' c' g'
 
 -- Remove intermediate nodes
 filterToSet :: [Int] -> ConSet -> ConSet
-filterToSet xs cs = M.filterWithKey (\k _ -> all (`elem` xs) (domainC k)) $ M.map (filter (\(Guard g) -> all (`elem` xs) (M.keys g))) cs
+filterToSet xs cs = M.filterWithKey (\k _ -> all (`elem` xs) (domainC k)) $ M.map (filter (all (`elem` xs) . M.keys)) cs
+

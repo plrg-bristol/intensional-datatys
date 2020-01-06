@@ -1,25 +1,14 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE QuantifiedConstraints #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Types (
   Type (..),
   Extended (..),
-  Scheme(..),
-  pattern Forall,
   shape,
   inj,
-  mono,
 
   Rename(..),
 
@@ -40,10 +29,9 @@ import Utils
 
 -- Type level flags
 data Extended where
-  S    :: Extended -- Unrefined
-  T    :: Extended -- Refined
+  S :: Extended -- Unrefined
+  T :: Extended -- Refined
 
--- Interal representation of sorts, types and schemes
 data Type (e :: Extended) where
   Var    :: Core.Name -> Type e
   App    :: Type S -> Type S -> Type e
@@ -52,6 +40,7 @@ data Type (e :: Extended) where
   Inj    :: Int -> Core.TyCon -> Type T
   (:=>)  :: Type e -> Type e -> Type e
   Lit    :: Tcr.TyLit -> Type e
+  Forall :: Core.Name -> Type e -> Type e
 
 deriving instance Eq (Type e)
 
@@ -62,17 +51,9 @@ instance Outputable (Type e) where
   ppr (Base b)      = ppr b
   ppr (Data d)      = ppr d
   ppr (Inj x d)     = ppr "inj" <> ppr x <> ppr " " <> ppr d
-  ppr (x :=> y)     = ppr x <> ppr "->" <> ppr y
+  ppr (x :=> y)     = ppr "(" <> ppr x <> ppr "->" <> ppr y <> ppr ")"
   ppr (Lit l)       = ppr l
-
--- Typescheme
-newtype Scheme (e :: Extended) = Scheme ([Core.Name], Type e)
-
-pattern Forall :: [Core.Name] -> Type e -> Scheme e
-pattern Forall as u = Scheme (as, u)
-
-instance Outputable (Scheme e) where
-  ppr (Forall as u) = ppr "forall" <> ppr as <> ppr "." <> ppr u 
+  ppr (Forall as t) = ppr "forall" <> ppr as <> ppr t
 
 -- The underlying shape
 shape :: Type e -> Type S
@@ -84,6 +65,7 @@ shape (Data d)      = Base d
 shape (Inj _ d)     = Base d
 shape (a :=> b)     = shape a :=> shape b
 shape (Lit l)       = Lit l
+shape (Forall as t) = Forall as (shape t)
 
 -- Inject any sort
 inj :: Int -> Type e -> Type T
@@ -95,18 +77,14 @@ inj x (Data d) = Inj x d
 inj x (Inj _ d) = Inj x d
 inj x (a :=> b) = inj x a :=> inj x b
 inj x (Lit l) = Lit l
-
--- Demand that a typescheme is fully instantiated
-mono :: Scheme e -> Type e
-mono (Forall [] t) = t
-mono (Forall as t) = Core.pprPanic "Type scheme must be fully istantiated!" (Core.ppr (as, t))
+inj x (Forall as t) = Forall as (inj x t)
 
 -- Replace refinement variables
 -- TODO: Specialise
 class Rename t where
   rename :: Int -> Int -> t -> t
 
-instance Rename (Type s) where
+instance Rename (Type e) where
   rename x y (Var a) = Var a
   rename x y (App a b) = App (rename x y a) (rename x y b)
   rename x y (Base b) = Base b
@@ -116,26 +94,32 @@ instance Rename (Type s) where
     | otherwise = Inj x' d
   rename x y (a :=> b) = rename x y a :=> rename x y b
   rename x y (Lit l) = Lit l
+  rename x y (Forall as t) = Forall as (rename x y t)
 
-instance Rename (Scheme s) where
-  rename x y (Forall as t) = Forall as $ rename x y t
+
+
+
+
+
+
+
 
 -- Convert from a core type
 -- TODO: Specialise
 class FromCore (e :: Extended) where
-  type M e :: (* -> *) -> * -> *
-  dataType :: Monad m => Core.TyCon -> M e m (Scheme e)
+  type MT (e :: Extended) :: (* -> *) -> * -> *
+  dataType :: Monad m => Core.TyCon -> MT e m (Type e)
 
 instance FromCore S where
-  type M S = IdentityT
-  dataType t = return $ Forall [] (Data t)
+  type MT S = IdentityT
+  dataType t = return $ Data t
 
-fromCore :: (Monad m, Monad (M e m), FromCore e) => Core.Type -> M e m (Scheme e)
-fromCore (Tcr.TyVarTy a) = return $ Forall [] (Var $ Core.getName a)
+fromCore :: (FromCore e, Monad m, Monad (MT e m)) => Core.Type -> MT e m (Type e)
+fromCore (Tcr.TyVarTy a) = return $ Var $ Core.getName a
 fromCore (Tcr.AppTy t1 t2) = do
   s1 <- runIdentityT $ fromCore t1
   s2 <- runIdentityT $ fromCore t2
-  return $ Forall [] (App (mono s1) (mono s2))
+  return $ App s1 s2
 fromCore (Tcr.TyConApp t args)
   | Core.isTypeSynonymTyCon t
   , Just (as, u) <- Core.synTyConDefn_maybe t
@@ -145,24 +129,25 @@ fromCore (Tcr.TyConApp t args)
   = dataType t
 
   | otherwise
-  = return $ Forall [] (Base t)
+  = return $ Base t
 fromCore (Tcr.FunTy t1 t2) = do
   s1 <- fromCore t1
   s2 <- fromCore t2
-  return $ Forall [] (mono s1 :=> mono s2)
-fromCore (Tcr.LitTy l) = return $ Forall [] (Lit l)
-fromCore (Tcr.ForAllTy b t) = Core.pprPanic "Unexpected quantifier in core type!" (Core.ppr ())
+  return (s1 :=> s2)
+fromCore (Tcr.LitTy l) = return $ Lit l
+fromCore (Tcr.ForAllTy b t) = do
+  let a = Core.getName $ Core.binderVar b
+  t' <- fromCore t
+  return $ Forall a t'
 fromCore t = Core.pprPanic "Unexpected Cast or Coercion type" (Core.ppr t)
 
 -- Partially instantiate type scheme
-applyTyVars :: (FromCore e, Monad (M e m), Monad m) => Scheme e -> Core.Type -> M e m (Scheme e)
-applyTyVars (Forall (a:as) u) t = do
-  u' <- subTyVar a u t
-  return $ Forall as u'
+applyTyVars :: (FromCore e, Monad m, Monad (MT e m)) => Type e -> Core.Type -> MT e m (Type e)
+applyTyVars (Forall a u) t = subTyVar a u t
   where
-    subTyVar :: (FromCore e, Monad (M e m), Monad m) => Core.Name -> Type e -> Core.Type -> M e m (Type e)
+    subTyVar :: (FromCore e, Monad m, Monad (MT e m)) => Core.Name -> Type e -> Core.Type -> MT e m (Type e)
     subTyVar a (Var a') t 
-      | a == a'    = mono <$> fromCore t
+      | a == a'    = fromCore t
       | otherwise  = return (Var a')
     subTyVar a (App x y) t = do
       x' <- runIdentityT $ subTyVar a x t
@@ -171,6 +156,15 @@ applyTyVars (Forall (a:as) u) t = do
     subTyVar a (x :=> y) t = do
       x' <- subTyVar a x t
       y' <- subTyVar a y t
-      return (x :=> y)
-    subTyVar _ t _ = return t 
+      return (x' :=> y')
+    subTyVar a (Forall a' u) t
+      | a == a' = return (Forall a' u)
+      | otherwise = do
+        u' <- subTyVar a u t
+        return $ Forall a' u'
+    subTyVar _ (Base b) _ = return $ Base b
+    subTyVar _ (Data d) _ = return $ Data d
+    subTyVar _ (Inj x d) _ = return $ Inj x d
+    subTyVar _ (Lit l) _ = return $ Lit l 
 applyTyVars t _ = Core.pprPanic "Type scheme doesn't have that many type variables!" (Core.ppr t)
+

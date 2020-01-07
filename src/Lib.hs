@@ -1,15 +1,13 @@
-{-# LANGUAGE BangPatterns #-}
-
 module Lib
     ( plugin
     ) where
 
 import qualified Data.Map as M
 
+import GhcPlugins
+
 import InferM
 import InferCoreExpr
-
-import GhcPlugins
 
 plugin :: Plugin
 plugin = defaultPlugin { installCoreToDos = install }
@@ -40,10 +38,10 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   --   ) M.empty deps
 
   -- Infer constraints
-  !tss <- runInferM (inferProg p) M.empty
+  tss <- runInferM (inferProg $ dependancySort p) M.empty
 
   -- Display typeschemes
-  liftIO $ mapM_ (\(!v, !ts) -> do
+  liftIO $ mapM_ (\(v, ts) -> do
       putStrLn ""
       putStrLn $ showSDocUnsafe $ ppr (v, ts)
       putStrLn ""
@@ -62,3 +60,30 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   -- liftIO $ print $ diffUTCTime stop start
 
   return guts
+
+-- Sort a program in order of dependancies
+dependancySort :: CoreProgram -> CoreProgram
+dependancySort p = foldl go [] depGraph
+   where
+    -- Pair binder groups with their dependancies
+    depGraph :: [(CoreBind, [CoreBind])]
+    depGraph = [(b, [group | rhs <- rhssOfBind b, fv <- exprFreeVarsList rhs, group <- findGroup p fv, bindersOf group /= bindersOf b]) | b <- p]
+
+    go :: [CoreBind] -> (CoreBind, [CoreBind]) -> [CoreBind]
+    go [] (b, deps)     = deps ++ [b]
+    go (b':bs) (b, deps)
+      | bindersOf b == bindersOf b'   = deps ++ [b] ++ (foldl remove bs deps) -- Insert dependencies just before binder
+      | otherwise                     = b' : go bs (b, remove deps b')
+
+    -- Remove duplicates
+    remove [] _     = []
+    remove (y:ys) x
+      | bindersOf x == bindersOf y = ys
+      | otherwise                  = y : remove ys x
+
+    -- Find the group in which the variable is contained
+    findGroup :: [CoreBind] -> Var -> [CoreBind]
+    findGroup [] _ = []
+    findGroup (b:bs) x
+      | x `elem` bindersOf b = [b]
+      | otherwise = findGroup bs x

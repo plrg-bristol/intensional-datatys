@@ -88,16 +88,16 @@ toAtomic (Set ks) (Dom x d) = fmap (\k -> ConDom k x d) ks
 newtype Guard = Guard (M.Map Int [(Core.Name, Core.Name)])
 
 instance Eq Guard where
-  g == g' = g <= g' && g' <= g
+  g == g' = g `subsume` g' && g' `subsume` g
 
-instance Ord Guard where
-  -- Is the first guard weaker than the second?
-  Guard m <= Guard m' = M.foldrWithKey pred True m'
-    where
-      pred x ps k =
-        case M.lookup x m of
-          Just ps' -> all (`elem` ps') ps  -- every constraint of X in m' should appear in m 
-          Nothing  -> null ps && k         -- m does not constrain X, neither should m'
+-- Is the first guard weaker than the second?
+subsume :: Guard -> Guard -> Bool
+subsume (Guard m) (Guard m') = M.foldrWithKey pred True m'
+  where
+    pred x ps k =
+      case M.lookup x m of
+        Just ps' -> all (`elem` ps') ps  -- every constraint of X in m' should appear in m 
+        Nothing  -> null ps && k         -- m does not constrain X, neither should m'
 
 instance Semigroup Guard where
   Guard m <> Guard m' = Guard (m `M.union` m')
@@ -112,11 +112,11 @@ instance Refined Guard where
 
 -- Potentially add a new guard or subsumed an existing guard
 mergeGuards :: Guard -> [Guard] -> [Guard]
-mergeGuards g = foldr go [g]
-  where
-    go g' gs
-      | g <= g'   = gs
-      | otherwise = L.insert g' gs
+mergeGuards g [] = [g]
+mergeGuards g (g':gs)
+  | g  `subsume` g' = mergeGuards g' gs
+  | g' `subsume` g  = mergeGuards g gs
+  | otherwise       = g' : mergeGuards g gs
 
 
 

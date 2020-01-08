@@ -143,5 +143,5 @@ restrict ts = restrict' <$> get
     restrict' :: ConSet -> [(Core.Name, TypeScheme)]
     restrict' cs = fmap (\(x, t) -> (x, TypeScheme (domain cs', cs', t))) ts
       where
-        cs' = resolve xs cs
+        cs' = cs -- resolve xs cs
         xs  = concatMap (domain . snd) ts

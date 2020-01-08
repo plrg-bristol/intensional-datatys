@@ -18,6 +18,9 @@ import InferM
 -- Infer program
 inferProg :: Monad m => Core.CoreProgram -> InferM m [(Core.Name, TypeScheme)]
 inferProg = foldM (\l bg -> do
+
+  restrict []
+
   -- Add each binds within the group to context with a fresh type (t) and no constraints
   binds <- mapM (\(Core.getName -> x, Core.exprType -> t) -> do 
     t' <- fromCore t

@@ -18,22 +18,20 @@ import InferM
 -- Infer program
 inferProg :: Monad m => Core.CoreProgram -> InferM m [(Core.Name, TypeScheme)]
 inferProg = foldM (\l bg -> do
-
-  restrict []
-
   -- Add each binds within the group to context with a fresh type (t) and no constraints
   binds <- mapM (\(Core.getName -> x, Core.exprType -> t) -> do 
     t' <- fromCore t
-    return (x, simple t')
+    return (x, TypeScheme ([], empty, t'))
     ) $ Core.flattenBinds [bg]
 
-  ts <- putVar binds $ putVar l $ mapM (\(x, rhs) -> do
+  ts <- putVars binds $ putVars l $ mapM (\(x, rhs) -> do
     -- Infer each bind within the group, compiling constraints
     t <- infer rhs
 
     -- Insure fresh types are quantified by infered constraint (t < t')
-    t' <- getVar x
+    t' <- getVar x rhs
     emitSubType t t' rhs
+    emitSubType t' t rhs
 
     return (Core.getName x, t)
     ) $ Core.flattenBinds [bg]
@@ -45,25 +43,31 @@ inferProg = foldM (\l bg -> do
   ) []
 
 infer :: Monad m => Core.Expr Core.Var -> InferM m (Type T)
-infer (Core.Var x) =
+infer e@(Core.Var x) =
   case Core.isDataConId_maybe x of
     -- Infer constructor
     Just k -> do
-      t <- fromCore $ Core.dataConUserType k
-      case t of
-        Inj x (Core.getName -> d) -> emit (singleton (Con $ Core.getName k) (Dom x d) mempty)
-        _ -> return ()
+      t  <- fromCore $ Core.dataConRepType k
+      let (args, res) = dataCon t
+      case res of
+        Inj x d -> do
+          emit (insert (Con (Core.getName k)) (Dom x (Core.getName d)) top empty)
+          mapM_ (\t -> emitSubType t (inj x t) e) args 
+        _ -> return () -- Unrefinable    
       return t
 
     -- Infer variable
-    Nothing -> getVar x 
+    Nothing -> getVar x e
 
 infer l@(Core.Lit _) = fromCore $ Core.exprType l
 
 infer (Core.App e1 (Core.Type e2)) = do
   t1 <- infer e1
   case t1 of 
-    Forall a t2 -> subTyVar a t2 e2
+    Forall a u -> do
+      t2 <- fromCore e2
+      return $ subTyVar a t2 u
+    _ -> Core.pprPanic "Type application to monotype!" (Core.ppr (Core.exprType e1,  e2))
 
 infer e@(Core.App e1 e2) = do
   t1 <- infer e1
@@ -72,32 +76,34 @@ infer e@(Core.App e1 e2) = do
       t2 <- infer e2
       emitSubType t2 t3 e
       return t4
+    _ -> Core.pprPanic "Term application to non-function!" (Core.ppr (Core.exprType e1, Core.exprType e2))
 
 infer (Core.Lam x e) =
-  if not $ Core.isTyVar x
-    then do
-      -- Variable abstraction
-      t1 <- fromCore $ Core.varType x
-      t2 <- putVar [(Core.getName x, simple t1)] (infer e)
-      return (t1 :=> t2)
-    else
+  if Core.isTyVar x
+    then 
       -- Type abstraction
       Forall (Core.getName x) <$> infer e
+    else do
+      -- Variable abstraction
+      t1 <- fromCore $ Core.varType x
+      t2 <- putVar (Core.getName x) (TypeScheme ([], empty, t1)) (infer e)
+      return (t1 :=> t2)
  
 infer e'@(Core.Let b e) = do
   -- Add each binds within the group to context with a fresh type (t) and no constraints
   binds <- mapM (\(Core.getName -> x, Core.exprType -> t) -> do 
     t' <- fromCore t
-    return (x, simple t')
+    return (x, TypeScheme ([], empty, t'))
     ) $ Core.flattenBinds [b]
  
-  ts <- putVar binds $ mapM (\(x, rhs) -> do
+  ts <- putVars binds $ mapM (\(x, rhs) -> do
     -- Infer each bind within the group, compiling constraints
     t <- infer rhs
 
     -- Insure fresh types are quantified by infered constraint (t < t')
-    t' <- getVar x
-    emitSubType t t' rhs    
+    t' <- getVar x e'
+    emitSubType t t' rhs   
+    emitSubType t' t rhs 
 
     return (Core.getName x, t)
     ) $ Core.flattenBinds [b] 
@@ -106,7 +112,7 @@ infer e'@(Core.Let b e) = do
   ts' <- restrict ts
   
   -- Infer in body with infered typescheme to the environment
-  putVar ts' (infer e)
+  putVars ts' (infer e)
  
 infer e'@(Core.Case e b rt as) = do
   -- Fresh return type
@@ -114,25 +120,29 @@ infer e'@(Core.Case e b rt as) = do
 
   -- Infer expression on which to pattern match
   t0 <- infer e
-  let (x, d) = unInj t0
 
   pushCase e
 
-  caseType <- putVar [(Core.getName b, simple t0)] $ foldM (\caseType (a, bs, rhs) ->
+  caseType <- putVar (Core.getName b) (TypeScheme ([], empty, t0)) $ foldM (\caseType (a, bs, rhs) ->
     if Core.exprIsBottom rhs
       then return caseType -- If rhs is bottom, it is not a valid case
       else do
         -- Add variables introduced by the pattern
-        ts <- mapM (\b -> (Core.getName b,) . simple <$> (fromCore $ Core.varType b)) bs
+        ts <- mapM (\b -> (Core.getName b,) . (\t -> TypeScheme ([], empty, t)) <$> (fromCore $ Core.varType b)) bs
 
-        -- Guard case (if t0 is refinable)
-        let (Core.DataAlt (Core.getName -> k)) = a
-        let guard = maybe id (\x -> branch k x d) x
-        
-        guard $ do
-          -- Ensure return type is valid
-          ti' <- putVar ts (infer rhs)
-          emitSubType ti' t e'
+        case a of
+          Core.DataAlt k
+            | Inj x (Core.getName -> d) <- t0 ->
+              branch (Core.getName k) x d $ do
+                 -- Ensure return type is valid
+                ti' <- putVars ts (infer rhs)
+
+                mapM_ (\t -> emitSubType (inj x t) t rhs) $ fmap (\(_, TypeScheme (_, _, t)) -> t) ts
+                emitSubType ti' t rhs  
+
+          _ -> do
+            ti' <- putVars ts (infer rhs)
+            emitSubType ti' t rhs
 
         -- Track the occurance of a constructors/default case
         case a of 
@@ -147,8 +157,9 @@ infer e'@(Core.Case e b rt as) = do
   -- Ensure destructor is total, GHC will conservatively insert defaults    
   case caseType of
     Just ks
-      | Just x' <- x, tl -> emit (singleton (Dom x' d) (Set ks) mempty)
-    _                    -> return () -- Literal cases must have a default
+      | Inj x (Core.getName -> d) <- t0
+      , tl -> emit (insert (Dom x d) (Set ks) top empty)
+    _      -> return () -- Literal cases must have a default
   return t
 
   where

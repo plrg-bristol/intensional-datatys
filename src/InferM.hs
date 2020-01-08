@@ -5,6 +5,8 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 module InferM (
+  TypeScheme(..),
+
   InferM,
   runInferM,
 
@@ -16,32 +18,43 @@ module InferM (
 
   getVar,
   putVar,
+  putVars,
 
   emit,
   emitSubType,
   restrict,
 ) where
 
-import qualified Data.List as L
+import Prelude hiding ((<>))
+
 import qualified Data.Map as M
 
-import qualified GhcPlugins as Core
+import Outputable hiding (empty)
+import qualified GhcPlugins as Core hiding (empty)
 
 import Types
 import Constraint
+
+-- A type quantified by constraints
+newtype TypeScheme = TypeScheme ([Int], ConSet, Type T)
+
+instance Outputable TypeScheme where
+  ppr (TypeScheme (xs, cs, t)) = hang (text "forall" <+> fsep (map ppr xs) <> dot <> ppr t)
+                                    2 (ppr cs)
 
 -- The environement variables and their types
 type Context = M.Map Core.Name TypeScheme
 
 -- The inference monad with all the bells and whistles
+-- Essentially an unrolled RWST
 newtype InferM m a = InferM {
-            -- gamma     stack            fresh  cs          (stack,         fresh, cs,     a)
-  unInferM :: Context -> [Core.Unique] -> Int -> ConSet -> m ([Core.Unique], Int,   ConSet, a)
+            --environment  case stack       fresh  constraints (case stack,    fresh, cs,     ret)
+  unInferM :: Context  ->  [Core.Unique] -> Int -> ConSet -> m ([Core.Unique], Int,   ConSet, a  )
 }
 
 runInferM :: Monad m => InferM m a -> Context -> m a
 runInferM m g = do
-  (_, _, _, a) <- unInferM m g [] 0 mempty
+  (_, _, _, a) <- unInferM m g [] 0 empty
   return a
 
 instance Functor m => Functor (InferM m) where
@@ -65,12 +78,13 @@ instance Monad m => Monad (InferM m) where
     m >>= k = InferM $ \gamma stack fresh cs -> do
         ~(stack', fresh', cs', a)    <- unInferM m gamma stack fresh cs
         ~(stack'', fresh'', cs'', b) <- unInferM (k a) gamma stack' fresh' cs'
-        return (stack'', fresh'', cs' <> cs'', b)
+        return (stack'', fresh'', cs'', b)
     {-# INLINE (>>=) #-}
 
 instance Monad m => FromCore (InferM m) T where
   dataType d = (`Inj` d) <$> fresh
 
+-- A unique integer
 fresh :: Monad m => InferM m Int
 fresh = InferM $ \_ stack fresh cs -> return (stack, fresh + 1, cs, fresh) 
 
@@ -91,12 +105,12 @@ topLevel _ = error "Cannot pattern match on a non-variable!"
 -- Guard local constraints
 branch :: Monad m => Core.Name -> Int -> Core.Name -> InferM m a -> InferM m a
 branch k x d m = InferM $ \gamma stack fresh cs -> do 
-    (stack, fresh, cs, a) <- unInferM m gamma stack fresh cs
-    return (stack, fresh, guardWith k x d cs, a)
+    (stack', fresh', cs', a) <- unInferM m gamma stack fresh cs
+    return (stack', fresh', guardWith k x d cs', a)
 
 -- Extract a variable from the environment
-getVar :: Monad m => Core.Var -> InferM m (Type T)
-getVar v = getCtx >>= getVar'
+getVar :: Monad m => Core.Var -> Core.Expr Core.Var -> InferM m (Type T)
+getVar v e = getCtx >>= getVar'
   where
     getCtx :: Monad m => InferM m Context
     getCtx = InferM $ \gamma stack fresh cs -> return (stack, fresh, cs, gamma)
@@ -104,11 +118,11 @@ getVar v = getCtx >>= getVar'
     getVar' :: Monad m => Context -> InferM m (Type T)
     getVar' gamma = 
       case gamma M.!? Core.getName v of
-        Just (TypeScheme (xs, cs, ts)) -> do
+        Just (TypeScheme (xs, cs, u)) -> do
           -- Localise constraints
           ys <- mapM (\x -> (x,) <$> fresh) xs
-          emit $ foldr (uncurry rename) cs ys
-          return $ foldr (uncurry rename) ts ys
+          emit   $ foldr (uncurry rename) cs ys
+          return $ foldr (uncurry rename) u ys
 
         Nothing ->
           -- We can assume the variable is in scope as GHC hasn't emitted a warning
@@ -116,32 +130,37 @@ getVar v = getCtx >>= getVar'
          fromCore $ Core.varType v
 
 -- Insert variables into the environment
-putVar :: [(Core.Name, TypeScheme)] -> InferM m a -> InferM m a
-putVar vs m = InferM $ \gamma -> unInferM m (M.fromList vs `M.union` gamma)
+putVar :: Core.Name -> TypeScheme -> InferM m a -> InferM m a
+putVar n t m = InferM $ \gamma -> unInferM m (M.insert n t gamma)
+
+-- Insert many variables
+putVars :: [(Core.Name, TypeScheme)] -> InferM m a -> InferM m a
+putVars vs m = InferM $ \gamma -> unInferM m (foldr (\(n, t) -> M.insert n t) gamma vs)
 
 -- Emit a constraint set to the environment
 emit :: Monad m => ConSet -> InferM m ()
-emit cs = InferM $ \gamma stack fresh cs' -> return (stack, fresh, cs <> cs', ())
+emit cs = InferM $ \gamma stack fresh cs' -> return (stack, fresh, cs `union` cs', ())
 
 -- Convert a subtyping constraint to a constraint set and emit
 emitSubType :: Monad m => Type T -> Type T -> Core.Expr Core.Var -> InferM m ()
+-- emitSubType t1 t2 _ | Core.pprTrace "log emit type: " (Core.ppr (t1, t2)) False = undefined
+emitSubType (Forall a t1) (Forall b t2) e = emitSubType t1 (subTyVar b (Var a) t2) e
 emitSubType t1 t2 e 
   | shape t1 /= shape t2                  = Core.pprPanic "Types must refine the same sort!" (Core.ppr (t1, t2, e))
 emitSubType (t11 :=> t12) (t21 :=> t22) e = emitSubType t21 t11 e >> emitSubType t12 t22 e
 emitSubType (Inj x d) (Inj y _) e 
-  | x /= y                                = mapM_ (\(Core.getName -> n) -> emit (singleton (Dom x n) (Dom y n) mempty)) $ slice [d]
-emitSubType (Forall _ t1) (Forall _ t2) e = emitSubType t1 t2 e
+  | x /= y                                = mapM_ (\(Core.getName -> n) -> emit (insert (Dom x n) (Dom y n) top empty)) $ slice [d]
 emitSubType _ _ _                         = return ()
 
 -- Clear constraints and attach them to variables
 restrict :: Monad m => [(Core.Name, Type T)] -> InferM m [(Core.Name, TypeScheme)]
-restrict ts = restrict' <$> get
+restrict ts = restrict' <$> getCs
   where
-    get :: Monad m => InferM m ConSet
-    get = InferM $ \gamma stack fresh cs -> return (stack, fresh, mempty, cs)
+    getCs :: Monad m => InferM m ConSet
+    getCs = InferM $ \gamma stack fresh cs -> return (stack, fresh, empty, cs)
 
     restrict' :: ConSet -> [(Core.Name, TypeScheme)]
     restrict' cs = fmap (\(x, t) -> (x, TypeScheme (domain cs', cs', t))) ts
       where
-        cs' = cs -- resolve xs cs
         xs  = concatMap (domain . snd) ts
+        cs' = resolve xs cs

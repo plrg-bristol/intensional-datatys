@@ -31,7 +31,6 @@ inferProg = foldM (\l bg -> do
     -- Insure fresh types are quantified by infered constraint (t < t')
     t' <- getVar x rhs
     emitSubType t t' rhs
-    emitSubType t' t rhs
 
     return (Core.getName x, t)
     ) $ Core.flattenBinds [bg]
@@ -47,13 +46,13 @@ infer e@(Core.Var x) =
   case Core.isDataConId_maybe x of
     -- Infer constructor
     Just k -> do
-      t  <- fromCore $ Core.dataConRepType k
+      t  <- fromCore $ Core.exprType e
       let (args, res) = dataCon t
       case res of
         Inj x d -> do
           emit (insert (Con (Core.getName k)) (Dom x (Core.getName d)) top empty)
-          mapM_ (\t -> emitSubType t (inj x t) e) args 
-        _ -> return () -- Unrefinable    
+          mapM_ (\t -> emitSubType t (inj x t) e) args
+        Base _ -> return () -- Unrefinable
       return t
 
     -- Infer variable
@@ -63,10 +62,8 @@ infer l@(Core.Lit _) = fromCore $ Core.exprType l
 
 infer (Core.App e1 (Core.Type e2)) = do
   t1 <- infer e1
-  case t1 of 
-    Forall a u -> do
-      t2 <- fromCore e2
-      return $ subTyVar a t2 u
+  case t1 of
+    Forall a u -> subTyVarM a e2 u
     _ -> Core.pprPanic "Type application to monotype!" (Core.ppr (Core.exprType e1,  e2))
 
 infer e@(Core.App e1 e2) = do
@@ -102,8 +99,7 @@ infer e'@(Core.Let b e) = do
 
     -- Insure fresh types are quantified by infered constraint (t < t')
     t' <- getVar x e'
-    emitSubType t t' rhs   
-    emitSubType t' t rhs 
+    emitSubType t t' rhs
 
     return (Core.getName x, t)
     ) $ Core.flattenBinds [b] 
@@ -120,6 +116,7 @@ infer e'@(Core.Case e b rt as) = do
 
   -- Infer expression on which to pattern match
   t0 <- infer e
+  let (mx, d) = unInj t0
 
   pushCase e
 
@@ -132,7 +129,7 @@ infer e'@(Core.Case e b rt as) = do
 
         case a of
           Core.DataAlt k
-            | Inj x (Core.getName -> d) <- t0 ->
+            | Just x <- mx ->
               branch (Core.getName k) x d $ do
                  -- Ensure return type is valid
                 ti' <- putVars ts (infer rhs)
@@ -157,7 +154,7 @@ infer e'@(Core.Case e b rt as) = do
   -- Ensure destructor is total, GHC will conservatively insert defaults    
   case caseType of
     Just ks
-      | Inj x (Core.getName -> d) <- t0
+      | Just x <- mx
       , tl -> emit (insert (Dom x d) (Set ks) top empty)
     _      -> return () -- Literal cases must have a default
   return t
@@ -166,6 +163,7 @@ infer e'@(Core.Case e b rt as) = do
     unInj :: Type T -> (Maybe Int, Core.Name) 
     unInj (Inj x (Core.getName -> n)) = (Just x, n)
     unInj (Base  (Core.getName -> n)) = (Nothing, n)
+    unInj (App a b)                   = unInj a
     unInj t0                          = Core.pprPanic "Datatype isn't pattern matchtable" (Core.ppr t0)
  
 -- Remove core ticks

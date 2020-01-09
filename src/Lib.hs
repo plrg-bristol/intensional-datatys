@@ -40,7 +40,7 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   --   ) M.empty deps
 
   -- Infer constraints
-  !tss <- runInferM (inferProg $ dependancySort p) M.empty
+  tss <- runInferM (inferProg $ dependancySort p) M.empty
 
   -- Display typeschemes
   liftIO $ mapM_ (\(v, ts) -> do

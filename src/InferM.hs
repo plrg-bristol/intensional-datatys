@@ -40,7 +40,7 @@ newtype TypeScheme = TypeScheme ([Int], ConSet, Type T)
 
 instance Outputable TypeScheme where
   ppr (TypeScheme (xs, cs, t)) = hang (text "forall" <+> fsep (map ppr xs) <> dot <> ppr t)
-                                    2 (ppr cs)
+                                    2 (hang (text "where") 2 (ppr cs))
 
 -- The environement variables and their types
 type Context = M.Map Core.Name TypeScheme
@@ -48,8 +48,8 @@ type Context = M.Map Core.Name TypeScheme
 -- The inference monad with all the bells and whistles
 -- Essentially an unrolled RWST
 newtype InferM m a = InferM {
-            --environment  case stack       fresh  constraints (case stack,    fresh, cs,     ret)
-  unInferM :: Context  ->  [Core.Unique] -> Int -> ConSet -> m ([Core.Unique], Int,   ConSet, a  )
+            --environment  case stack              fresh  constraints (case stack,           fresh, cs,     ret)
+  unInferM :: Context  ->  [Core.Expr Core.Var] -> Int -> ConSet -> m ([Core.Expr Core.Var], Int,   ConSet, a  )
 }
 
 runInferM :: Monad m => InferM m a -> Context -> m a
@@ -82,7 +82,7 @@ instance Monad m => Monad (InferM m) where
     {-# INLINE (>>=) #-}
 
 instance Monad m => FromCore (InferM m) T where
-  dataType d = (`Inj` d) <$> fresh
+  dataType d = (\x -> Inj x d) <$> fresh
 
 -- A unique integer
 fresh :: Monad m => InferM m Int
@@ -90,8 +90,7 @@ fresh = InferM $ \_ stack fresh cs -> return (stack, fresh + 1, cs, fresh)
 
 -- Enter a new case statement
 pushCase :: Monad m => Core.Expr Core.Var -> InferM m ()
-pushCase (Core.Var (Core.getUnique -> s)) = InferM $ \_ stack fresh cs -> return (s:stack, fresh, cs, ())
-pushCase _ = error "Cannot pattern match on a non-variable!"
+pushCase s = InferM $ \_ stack fresh cs -> return (s:stack, fresh, cs, ())
  
 -- Exit a case statement
 popCase :: Monad m => InferM m ()
@@ -99,8 +98,13 @@ popCase = InferM $ \_ (s:stack) fresh cs -> return (stack, fresh, cs, ())
  
 -- Is the current case statement at the top level?
 topLevel :: Monad m => Core.Expr Core.Var -> InferM m Bool
-topLevel (Core.Var (Core.getUnique -> s)) = InferM $ \_ stack fresh cs -> return (stack, fresh, cs, s `notElem` stack)
-topLevel _ = error "Cannot pattern match on a non-variable!"
+topLevel s = InferM $ \_ stack fresh cs -> return (stack, fresh, cs, inStack s stack)
+  where
+    inStack s [] = True
+    inStack s (s':ss)
+      -- Not very accurate!
+      | Core.cheapEqExpr s s' = False
+      | otherwise             = inStack s ss
 
 -- Guard local constraints
 branch :: Monad m => Core.Name -> Int -> Core.Name -> InferM m a -> InferM m a
@@ -143,13 +147,14 @@ emit cs = InferM $ \gamma stack fresh cs' -> return (stack, fresh, cs `union` cs
 
 -- Convert a subtyping constraint to a constraint set and emit
 emitSubType :: Monad m => Type T -> Type T -> Core.Expr Core.Var -> InferM m ()
--- emitSubType t1 t2 _ | Core.pprTrace "log emit type: " (Core.ppr (t1, t2)) False = undefined
 emitSubType (Forall a t1) (Forall b t2) e = emitSubType t1 (subTyVar b (Var a) t2) e
 emitSubType t1 t2 e 
   | shape t1 /= shape t2                  = Core.pprPanic "Types must refine the same sort!" (Core.ppr (t1, t2, e))
 emitSubType (t11 :=> t12) (t21 :=> t22) e = emitSubType t21 t11 e >> emitSubType t12 t22 e
-emitSubType (Inj x d) (Inj y _) e 
-  | x /= y                                = mapM_ (\(Core.getName -> n) -> emit (insert (Dom x n) (Dom y n) top empty)) $ slice [d]
+emitSubType (Inj x d) (Inj y _) e
+  | x /= y = mapM_ (\(Core.getName -> n) -> emit (insert (Dom x n) (Dom y n) top empty)) $ slice [d]
+emitSubType (App t11 t12) (App t21 t22) e
+  | refiableTyFunc t11                    = emitSubType t11 t21 e >> emitSubType t12 t22 e
 emitSubType _ _ _                         = return ()
 
 -- Clear constraints and attach them to variables

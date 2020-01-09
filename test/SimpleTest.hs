@@ -11,3 +11,6 @@ odd (Succ n) = even n
 even :: Nat -> Bool
 even Zero = True
 even (Succ n) = odd n
+
+head :: [a] -> a
+head (a:as) = a

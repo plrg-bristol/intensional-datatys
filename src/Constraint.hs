@@ -69,7 +69,7 @@ instance Refined Constraint where
   rename x y (DomSet x' d ks)
     | x == x' = DomSet y d ks
   rename _ _ c = c
-  
+
 instance Outputable Constraint where
   ppr c = ppr (lhs c) <+> arrowt <+> ppr (rhs c)
 
@@ -91,6 +91,9 @@ toAtomic (Dom x d) (Dom y d')
   | otherwise = [DomDom x y d]
 toAtomic (Dom x d) (Set k)  = [DomSet x d k]
 toAtomic (Set ks) (Dom x d) = fmap (\k -> ConDom k x d) ks
+toAtomic (Set ks) (Set ks')
+  | all (`elem` ks') ks = []
+  | otherwise           = Core.pprPanic "Invalid subtyping constraint!" (Core.ppr (ks, ks'))
 
 
 

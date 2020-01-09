@@ -1,7 +1,7 @@
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Types.hs:
-  hash: ae42dc3281b0a39401e0bf9236c8c80c539932c90d63330cdae3e100cdd93536
-  size: 6109
-  modtime: 1578499399
+  hash: b0dd18c7b7a93e8eaddb449ed64219016118878530a4e4a495f65f5ce6fe00f1
+  size: 7064
+  modtime: 1578558447
 /home/eddie/Documents/work/intensional/intensional-constraints/ChangeLog.md:
   hash: 9772e09830a0f2c60923e2cf9e536719742deaf2df94f25bf0e056ac3233f85e
   size: 52
@@ -15,22 +15,22 @@
   size: 1693
   modtime: 1578308252
 /home/eddie/Documents/work/intensional/intensional-constraints/src/InferM.hs:
-  hash: 971c96a6b99dea10ff5a5bd41f44d414198e84ccabfdae6f3f252abca8ed83e6
-  size: 6171
-  modtime: 1578499281
+  hash: e8319cadd4b924f7a056ddf330de24951ab170f18016631132f95b23d0c478b9
+  size: 6214
+  modtime: 1578558596
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Constraint.hs:
-  hash: 29d6a357ab912602f076f001135079b9eefa1dcafb3ed474f677c117da020e5b
-  size: 7545
-  modtime: 1578500987
+  hash: 7210f69bf3c91fa0f873d03133df6cb9c114c8b2e936fe8df4d3e92aa10e5120
+  size: 7695
+  modtime: 1578558747
 /home/eddie/Documents/work/intensional/intensional-constraints/src/InferCoreExpr.hs:
-  hash: 100d09f93560420564836326b53b8cb0b5760faf6791567148b1f0361e3c9d2f
-  size: 5320
-  modtime: 1578499149
+  hash: e45d449717f42ad603bcaf60d33901e171b6e3e1843401e421b79939e25b05d1
+  size: 5253
+  modtime: 1578558814
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Lib.hs:
-  hash: c5cb0d53ac174b6ba881a101c5668f8b2062d77c2d711657345c028d13ff39a3
-  size: 3078
-  modtime: 1578496539
+  hash: b88ae429fe21bfa0dd6217d4110f245e4d1e77a6057fbd0f14b7a3576a9823c6
+  size: 3077
+  modtime: 1578558834
 /home/eddie/Documents/work/intensional/intensional-constraints/intensional-constraints.cabal:
-  hash: 7ce737275aa5dc010b458a357a003a2c040999d978a38ede4b66dfeb45607fbf
-  size: 1563
-  modtime: 1578487386
+  hash: d6c9cd13827d336bc41fa59637e2f41dfb8079322668cb71a15a07998e2cb018
+  size: 1556
+  modtime: 1578558758

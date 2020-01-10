@@ -10,6 +10,7 @@ module InferM (
   InferM,
   runInferM,
 
+  fetchStack,
   pushCase,
   popCase,
   topLevel,
@@ -88,6 +89,10 @@ instance Monad m => FromCore (InferM m) T where
 fresh :: Monad m => InferM m Int
 fresh = InferM $ \_ stack fresh cs -> return (stack, fresh + 1, cs, fresh) 
 
+-- For debugging
+fetchStack :: Monad m => InferM m [Core.Expr Core.Var]
+fetchStack = InferM $ \_ stack fresh cs -> return (stack, fresh, cs, stack)
+
 -- Enter a new case statement
 pushCase :: Monad m => Core.Expr Core.Var -> InferM m ()
 pushCase s = InferM $ \_ stack fresh cs -> return (s:stack, fresh, cs, ())
@@ -125,6 +130,7 @@ getVar v e = getCtx >>= getVar'
         Just (TypeScheme (xs, cs, u)) -> do
           -- Localise constraints
           ys <- mapM (\x -> (x,) <$> fresh) xs
+          Core.pprTraceM "mapping" (Core.ppr ys)
           emit   $ foldr (uncurry rename) cs ys
           return $ foldr (uncurry rename) u ys
 
@@ -143,6 +149,7 @@ putVars vs m = InferM $ \gamma -> unInferM m (foldr (\(n, t) -> M.insert n t) ga
 
 -- Emit a constraint set to the environment
 emit :: Monad m => ConSet -> InferM m ()
+emit cs | Core.pprTrace "emit" (Core.ppr cs) False = undefined
 emit cs = InferM $ \gamma stack fresh cs' -> return (stack, fresh, cs `union` cs', ())
 
 -- Convert a subtyping constraint to a constraint set and emit

@@ -122,6 +122,7 @@ inj x (a :=> b)     = inj x a :=> inj x b
 inj x (Lit l)       = Lit l
 inj x (Forall as t) = Forall as (inj x t)
 
+-- Extract the result type from a constructor
 dataCon :: Type T -> ([Type T], Type T)
 dataCon (a :=> b) = (a:args, res)
   where
@@ -184,13 +185,11 @@ fromCore (Tcr.TyConApp t args)
   = do
       args' <- mapM fromCore args
       t' <- dataType t
-      return $ foldl App t' args' -- These need Forall is args isn't long enough
-  
+      return $ foldl App t' args' -- These need Forall if args isn't long enough
   | otherwise
   = do
       args' <- mapM fromCore args
       return $ foldl App (Base t) args'
-
 fromCore (Tcr.FunTy t1 t2) = do
   s1 <- fromCore t1
   s2 <- fromCore t2

@@ -9,6 +9,8 @@ module InferCoreExpr (
 
 import Control.Monad
 
+import qualified Data.List as L
+
 import qualified GhcPlugins as Core
 
 import Types
@@ -18,6 +20,8 @@ import InferM
 -- Infer program
 inferProg :: Monad m => Core.CoreProgram -> InferM m [(Core.Name, TypeScheme)]
 inferProg = foldM (\l bg -> do
+  restrict []
+
   -- Add each binds within the group to context with a fresh type (t) and no constraints
   binds <- mapM (\(Core.getName -> x, Core.exprType -> t) -> do 
     t' <- fromCore t
@@ -120,9 +124,11 @@ infer e'@(Core.Case e b rt as) = do
 
   pushCase e
 
-  caseType <- putVar (Core.getName b) (TypeScheme ([], empty, t0)) $ foldM (\caseType (a, bs, rhs) ->
+  caseType <- putVar (Core.getName b) (TypeScheme ([], empty, t0)) $ foldM (\(ks, ks') (a, bs, rhs) ->
+    -- guard 
+    -- Guard x not in ks
     if Core.exprIsBottom rhs
-      then return caseType -- If rhs is bottom, it is not a valid case
+      then return (ks, ks') -- If rhs is bottom, it is not a valid case
       else do
         -- Add variables introduced by the pattern
         ts <- mapM (\b -> (Core.getName b,) . (\t -> TypeScheme ([], empty, t)) <$> (fromCore $ Core.varType b)) bs
@@ -130,41 +136,41 @@ infer e'@(Core.Case e b rt as) = do
         case a of
           Core.DataAlt k
             | Just x <- mx ->
-              branch (Core.getName k) x d $ do
+              branch (Core.getName k) x (Core.getName d) $ do
                  -- Ensure return type is valid
                 ti' <- putVars ts (infer rhs)
 
                 mapM_ (\t -> emitSubType (inj x t) t rhs) $ fmap (\(_, TypeScheme (_, _, t)) -> t) ts
-                emitSubType ti' t rhs  
+                emitSubType ti' t rhs
 
           _ -> do
             ti' <- putVars ts (infer rhs)
             emitSubType ti' t rhs
 
         -- Track the occurance of a constructors/default case
-        case a of 
-          Core.DataAlt (Core.getName -> k) -> return (fmap (k:) caseType)
-          _                                -> return Nothing -- Default/literal cases
-    ) (Just []) as
+        case a of
+          Core.DataAlt (Core.getName -> k) -> return (L.delete k ks, fmap (k:) ks')
+          _                                -> return (ks, Nothing) -- Default/literal cases
+    ) (map Core.getName $ Core.tyConDataCons d, Just []) as
  
   popCase
  
   tl <- topLevel e 
   
   -- Ensure destructor is total, GHC will conservatively insert defaults    
-  case caseType of
+  case snd caseType of
     Just ks
       | Just x <- mx
-      , tl -> emit (insert (Dom x d) (Set ks) top empty)
+      , tl -> emit (insert (Dom x (Core.getName d)) (Set ks) top empty)
     _      -> return () -- Literal cases must have a default
   return t
 
   where
-    unInj :: Type T -> (Maybe Int, Core.Name) 
-    unInj (Inj x (Core.getName -> n)) = (Just x, n)
-    unInj (Base  (Core.getName -> n)) = (Nothing, n)
-    unInj (App a b)                   = unInj a
-    unInj t0                          = Core.pprPanic "Datatype isn't pattern matchtable" (Core.ppr t0)
+    unInj :: Type T -> (Maybe Int, Core.TyCon) 
+    unInj (Inj x d) = (Just x, d)
+    unInj (Base  d) = (Nothing, d)
+    unInj (App a b) = unInj a
+    unInj t0        = Core.pprPanic "Datatype isn't pattern matchtable" (Core.ppr t0)
  
 -- Remove core ticks
 infer (Core.Tick _ e) = infer e

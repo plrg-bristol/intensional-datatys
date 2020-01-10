@@ -13,8 +13,8 @@ module Constraint (
   empty,
   union,
   insert,
-  fromList,
-  toList,
+  --fromList,
+  --toList,
   guardWith,
 
   resolve
@@ -46,8 +46,8 @@ instance Outputable K where
 
 subset :: K -> K -> Bool
 subset (Dom x d) (Dom x' d') = x == x' && d == d'
-subset (Set ks) (Set ks') = all (`elem` ks') ks
-subset _ _ = False
+subset (Set ks) (Set ks')    = all (`elem` ks') ks
+subset _ _                   = False
 
 -- Internal (atomic) constraint
 data Constraint where
@@ -76,7 +76,7 @@ instance Outputable Constraint where
 -- Atomic constraints behave like a ordered pair of constructor sets
 lhs :: Constraint -> K
 lhs (DomDom x _ d) = Dom x d
-lhs (ConDom k _ _) = Set [k]
+lhs (ConDom k _ _) = Con k
 lhs (DomSet x d _) = Dom x d
 
 rhs :: Constraint -> K
@@ -102,6 +102,7 @@ toAtomic (Set ks) (Set ks')
 
 -- A guard is a conjunction of k in dom(X(d) {grouped as X |-> (k, d)}
 newtype Guard = Guard (M.Map Int [(Core.Name, Core.Name)])
+  deriving Eq
 
 instance Refined Guard where
   domain (Guard m) = M.keys m
@@ -153,12 +154,13 @@ mergeGuards g (g':gs)
 
 -- A collection of guarded constraints    
 newtype ConSet = ConSet (M.Map Constraint [Guard])
+  deriving Eq
 
 -- TODO: inline this
-instance Eq ConSet where
-  c == c' = leq (toList c) (toList c') && leq (toList c') (toList c)
-    where
-      leq l = all (\(k1, k2, g) -> any (\(k1', k2', g') -> entails g g' && subset k2' k2 && subset k1 k1') l)
+-- instance Eq ConSet where
+--   c == c' = leq (toList c) (toList c') && leq (toList c') (toList c)
+--     where
+--       leq l = all (\(k1, k2, g) -> any (\(k1', k2', g') -> entails g g' && subset k2' k2 && subset k1 k1') l)
 
 instance Refined ConSet where
   domain (ConSet m)     = L.nub (concatMap domain (M.keys m) ++ concatMap (concatMap domain) (M.elems m))
@@ -193,7 +195,7 @@ toList (ConSet m) = [(lhs c, rhs c, g) | (c, gs) <- M.toList m, g <- gs]
 
 -- Add a guard to an entire set
 guardWith :: Core.Name -> Int -> Core.Name -> ConSet -> ConSet
-guardWith k x d (ConSet cs) = ConSet $ M.map (mergeGuards $ Guard $ M.singleton x [(k, d)]) cs
+guardWith k x d (ConSet cs) = ConSet $ M.map (fmap $ and (Guard $ M.singleton x [(k, d)])) cs
 
 -- Filter a constraint set to a certain domain
 restrict :: [Int] -> ConSet -> ConSet

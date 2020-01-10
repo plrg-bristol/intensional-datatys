@@ -7,6 +7,8 @@ module Constraint (
   pattern Con,
 
   Guard,
+  dom,
+  and,
   top,
 
   ConSet,
@@ -16,6 +18,7 @@ module Constraint (
   --fromList,
   --toList,
   guardWith,
+  guardAlts,
 
   resolve
 ) where
@@ -195,7 +198,11 @@ toList (ConSet m) = [(lhs c, rhs c, g) | (c, gs) <- M.toList m, g <- gs]
 
 -- Add a guard to an entire set
 guardWith :: Core.Name -> Int -> Core.Name -> ConSet -> ConSet
-guardWith k x d (ConSet cs) = ConSet $ M.map (fmap $ and (Guard $ M.singleton x [(k, d)])) cs
+guardWith k x d (ConSet cs) = ConSet $ M.map (fmap $ and (dom k x d)) cs
+
+-- Guard a constraint set by one of the guards
+guardAlts :: [Guard] -> ConSet -> ConSet
+guardAlts gs (ConSet cs) = ConSet $ M.map (\gs' -> [g `and` g' | g <- gs, g' <- gs']) cs
 
 -- Filter a constraint set to a certain domain
 restrict :: [Int] -> ConSet -> ConSet

@@ -42,7 +42,7 @@ inferProg = foldM (\l bg -> do
   -- Restrict type schemes
   ts' <- restrict ts
 
-  return (ts' ++ l)
+  return (l ++ ts')
   ) []
 
 infer :: Monad m => Core.Expr Core.Var -> InferM m (Type T)
@@ -125,32 +125,35 @@ infer e'@(Core.Case e b rt as) = do
   pushCase e
 
   caseType <- putVar (Core.getName b) (TypeScheme ([], empty, t0)) $ foldM (\(ks, ks') (a, bs, rhs) ->
-    -- guard 
-    -- Guard x not in ks
-    if Core.exprIsBottom rhs
-      then return (ks, ks') -- If rhs is bottom, it is not a valid case
-      else do
-        -- Add variables introduced by the pattern
-        ts <- mapM (\b -> (Core.getName b,) . (\t -> TypeScheme ([], empty, t)) <$> (fromCore $ Core.varType b)) bs
+    -- (case a of
+    --   Core.DataAlt k
+    --     | Just x <- mx -> branchAlts [dom k x (Core.getName d) | k <- ks]
+    --   _ -> id) $ do
+    -- Guards of the form x in [k1, k2, k3, ...]
+          if Core.exprIsBottom rhs
+            then return (ks, ks') -- If rhs is bottom, it is not a valid case
+            else do
+              -- Add variables introduced by the pattern
+              ts <- mapM (\b -> (Core.getName b,) . (\t -> TypeScheme ([], empty, t)) <$> (fromCore $ Core.varType b)) bs
 
-        case a of
-          Core.DataAlt k
-            | Just x <- mx ->
-              branch (Core.getName k) x (Core.getName d) $ do
-                 -- Ensure return type is valid
-                ti' <- putVars ts (infer rhs)
+              case a of
+                Core.DataAlt k
+                  | Just x <- mx ->
+                    branch (Core.getName k) x (Core.getName d) $ do
+                      -- Ensure return type is valid
+                      ti' <- putVars ts (infer rhs)
 
-                mapM_ (\t -> emitSubType (inj x t) t rhs) $ fmap (\(_, TypeScheme (_, _, t)) -> t) ts
-                emitSubType ti' t rhs
+                      mapM_ (\t -> emitSubType (inj x t) t rhs) $ fmap (\(_, TypeScheme (_, _, t)) -> t) ts
+                      emitSubType ti' t rhs
 
-          _ -> do
-            ti' <- putVars ts (infer rhs)
-            emitSubType ti' t rhs
+                _ -> do
+                  ti' <- putVars ts (infer rhs)
+                  emitSubType ti' t rhs
 
-        -- Track the occurance of a constructors/default case
-        case a of
-          Core.DataAlt (Core.getName -> k) -> return (L.delete k ks, fmap (k:) ks')
-          _                                -> return (ks, Nothing) -- Default/literal cases
+              -- Track the occurance of a constructors/default case
+              case a of
+                Core.DataAlt (Core.getName -> k) -> return (L.delete k ks, fmap (k:) ks')
+                _                                -> return (ks, Nothing) -- Default/literal cases
     ) (map Core.getName $ Core.tyConDataCons d, Just []) as
  
   popCase

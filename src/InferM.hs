@@ -16,6 +16,7 @@ module InferM (
   topLevel,
 
   branch,
+  branchAlts,
 
   getVar,
   putVar,
@@ -117,6 +118,12 @@ branch k x d m = InferM $ \gamma stack fresh cs -> do
     (stack', fresh', cs', a) <- unInferM m gamma stack fresh cs
     return (stack', fresh', guardWith k x d cs', a)
 
+-- Guard local constraints with one of several possible branches
+branchAlts :: Monad m => [Guard] -> InferM m a -> InferM m a
+branchAlts gs m = InferM $ \gamma stack fresh cs -> do 
+    (stack', fresh', cs', a) <- unInferM m gamma stack fresh cs
+    return (stack', fresh', guardAlts gs cs', a)
+
 -- Extract a variable from the environment
 getVar :: Monad m => Core.Var -> Core.Expr Core.Var -> InferM m (Type T)
 getVar v e = getCtx >>= getVar'
@@ -130,7 +137,6 @@ getVar v e = getCtx >>= getVar'
         Just (TypeScheme (xs, cs, u)) -> do
           -- Localise constraints
           ys <- mapM (\x -> (x,) <$> fresh) xs
-          Core.pprTraceM "mapping" (Core.ppr ys)
           emit   $ foldr (uncurry rename) cs ys
           return $ foldr (uncurry rename) u ys
 
@@ -149,7 +155,6 @@ putVars vs m = InferM $ \gamma -> unInferM m (foldr (\(n, t) -> M.insert n t) ga
 
 -- Emit a constraint set to the environment
 emit :: Monad m => ConSet -> InferM m ()
-emit cs | Core.pprTrace "emit" (Core.ppr cs) False = undefined
 emit cs = InferM $ \gamma stack fresh cs' -> return (stack, fresh, cs `union` cs', ())
 
 -- Convert a subtyping constraint to a constraint set and emit

@@ -9,13 +9,13 @@ module InferCoreExpr (
 
 import Control.Monad
 
-import qualified Data.List as L
-
 import qualified GhcPlugins as Core
 
 import Types
 import Constraint
 import InferM
+
+data CaseType = RefinedDataAlt Int Core.Name | BaseAlt
 
 -- Infer program
 inferProg :: Monad m => Core.CoreProgram -> InferM m [(Core.Name, TypeScheme)]
@@ -114,66 +114,75 @@ infer e'@(Core.Let b e) = do
   -- Infer in body with infered typescheme to the environment
   putVars ts' (infer e)
  
-infer e'@(Core.Case e b rt as) = do
+infer e'@(Core.Case e b rt alts) = do
+  pushCase e
+
   -- Fresh return type
   t <- fromCore rt
 
   -- Infer expression on which to pattern match
   t0 <- infer e
-  let (mx, d) = unInj t0
 
-  pushCase e
+  -- Add the variable under scrutinee to scope
+  putVar (Core.getName b) (TypeScheme ([], empty, t0)) $  case unInj t0 of
 
-  caseType <- putVar (Core.getName b) (TypeScheme ([], empty, t0)) $ foldM (\(ks, ks') (a, bs, rhs) ->
-    -- (case a of
-    --   Core.DataAlt k
-    --     | Just x <- mx -> branchAlts [dom k x (Core.getName d) | k <- ks]
-    --   _ -> id) $ do
-    -- Guards of the form x in [k1, k2, k3, ...]
+      -- Infer a refinable case expression
+      Just (x, d) -> do
+        let (alts', def) = Core.findDefault alts
+        ks <- foldM (\ks (Core.DataAlt (Core.getName -> k), bs, rhs) ->
           if Core.exprIsBottom rhs
-            then return (ks, ks') -- If rhs is bottom, it is not a valid case
+            then return ks -- If rhs is bottom, it is not a valid case
             else do
-              -- Add variables introduced by the pattern
+              -- Add constructor arguments introduced by the pattern
               ts <- mapM (\b -> (Core.getName b,) . (\t -> TypeScheme ([], empty, t)) <$> (fromCore $ Core.varType b)) bs
 
-              case a of
-                Core.DataAlt k
-                  | Just x <- mx ->
-                    branch (Core.getName k) x (Core.getName d) $ do
-                      -- Ensure return type is valid
-                      ti' <- putVars ts (infer rhs)
+              branch k x d $ do
+                -- Constructor arguments are from the same refinement environment
+                mapM_ (\t -> emitSubType (inj x t) t rhs) $ fmap (\(_, TypeScheme (_, _, t)) -> t) ts
+                
+                -- Ensure return type is valid
+                ti' <- putVars ts (infer rhs)
+                emitSubType ti' t rhs
 
-                      mapM_ (\t -> emitSubType (inj x t) t rhs) $ fmap (\(_, TypeScheme (_, _, t)) -> t) ts
-                      emitSubType ti' t rhs
+                -- Track the occurance of a constructors
+                return (k:ks)
+            ) [] alts'
 
-                _ -> do
-                  ti' <- putVars ts (infer rhs)
-                  emitSubType ti' t rhs
+        -- Ensure destructor is total if not nested  
+        popCase
+        tl <- topLevel e
 
-              -- Track the occurance of a constructors/default case
-              case a of
-                Core.DataAlt (Core.getName -> k) -> return (L.delete k ks, fmap (k:) ks')
-                _                                -> return (ks, Nothing) -- Default/literal cases
-    ) (map Core.getName $ Core.tyConDataCons d, Just []) as
- 
-  popCase
- 
-  tl <- topLevel e 
-  
-  -- Ensure destructor is total, GHC will conservatively insert defaults    
-  case snd caseType of
-    Just ks
-      | Just x <- mx
-      , tl -> emit (insert (Dom x (Core.getName d)) (Set ks) top empty)
-    _      -> return () -- Literal cases must have a default
+        branchAlts [dom k x d | k <- ks] $ case def of
+          Nothing -> when tl $ emit (insert (Dom x (Core.getName d)) (Set ks) top empty)
+          Just rhs
+            | Core.exprIsBottom rhs -> do -- If rhs is bottom, it is not a valid case
+                when tl $ emit (insert (Dom x (Core.getName d)) (Set ks) top empty)
+            | otherwise -> do
+                -- Default case
+                ti' <- infer rhs
+                emitSubType ti' t rhs
+
+      -- Infer an unrefinable case expression
+      Nothing -> do
+        mapM_ (\(alt, bs, rhs) ->
+          if Core.exprIsBottom rhs
+            then return () -- If rhs is bottom, it is not a valid case
+            else do
+              -- Add constructor arguments introduced by the pattern
+              ts <- mapM (\b -> (Core.getName b,) . (\t -> TypeScheme ([], empty, t)) <$> (fromCore $ Core.varType b)) bs
+              
+              -- Ensure return type is valid
+              ti' <- putVars ts (infer rhs)
+              emitSubType ti' t rhs
+            ) alts
+        popCase
+
   return t
-
   where
-    unInj :: Type T -> (Maybe Int, Core.TyCon) 
-    unInj (Inj x d) = (Just x, d)
-    unInj (Base  d) = (Nothing, d)
+    unInj :: Type T -> Maybe (Int, Core.Name)
+    unInj (Inj x d) = Just (x, Core.getName d)
     unInj (App a b) = unInj a
-    unInj t0        = Core.pprPanic "Datatype isn't pattern matchtable" (Core.ppr t0)
+    unInj _         = Nothing
  
 -- Remove core ticks
 infer (Core.Tick _ e) = infer e

@@ -253,5 +253,5 @@ cross xs cs = cs `bind` (\c g -> cs `bind` (\c' g' -> trans c' g' c  g  `union`
     weak c@(ConDom k x d) g c' g'@(Guard m)
       -- | all (`elem` xs) (domain c ++ domain c' ++ domain g') -- Both sides are relevant
       | Just kds <- M.lookup x m
-      , (k, d) `elem` kds = return' c' (g `and` (remove k x d g'))
+      , (k, d) `elem` kds = return' c' (g `and` remove k x d g')
     weak _ _ _ _          = empty

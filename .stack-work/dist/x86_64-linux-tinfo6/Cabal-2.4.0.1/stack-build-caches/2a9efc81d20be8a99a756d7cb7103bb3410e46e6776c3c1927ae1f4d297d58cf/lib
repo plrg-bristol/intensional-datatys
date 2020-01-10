@@ -19,13 +19,13 @@
   size: 6687
   modtime: 1578642840
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Constraint.hs:
-  hash: 2e25930026a5f5472c7c36baf66ab87e8eaf9922c2bff29a9d9b9ef94201e8c7
-  size: 7941
-  modtime: 1578643247
+  hash: 7010f4de78a505f9f606bf0da4f346afb7eae4975875ca71b334cc8a29e7cfee
+  size: 7938
+  modtime: 1578668233
 /home/eddie/Documents/work/intensional/intensional-constraints/src/InferCoreExpr.hs:
-  hash: fb884510de64f14797595d533150b2ff6c939d9d730c1438de6e70d3ffdd9a11
-  size: 6029
-  modtime: 1578652010
+  hash: 3eef3e50ca35b099e6baa126759035c4575d853e07cce179398cd9c604b7a84e
+  size: 6128
+  modtime: 1578668169
 /home/eddie/Documents/work/intensional/intensional-constraints/src/Lib.hs:
   hash: b88ae429fe21bfa0dd6217d4110f245e4d1e77a6057fbd0f14b7a3576a9823c6
   size: 3077

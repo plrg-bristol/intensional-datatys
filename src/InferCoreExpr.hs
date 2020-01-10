@@ -9,6 +9,8 @@ module InferCoreExpr (
 
 import Control.Monad
 
+import qualified Data.List as L
+
 import qualified GhcPlugins as Core
 
 import Types
@@ -136,7 +138,7 @@ infer e'@(Core.Case e b rt alts) = do
               -- Add constructor arguments introduced by the pattern
               ts <- mapM (\b -> (Core.getName b,) . (\t -> TypeScheme ([], empty, t)) <$> (fromCore $ Core.varType b)) bs
 
-              branch k x d $ do
+              branch k x (Core.getName d) $ do
                 -- Constructor arguments are from the same refinement environment
                 mapM_ (\t -> emitSubType (inj x t) t rhs) $ fmap (\(_, TypeScheme (_, _, t)) -> t) ts
                 
@@ -152,7 +154,7 @@ infer e'@(Core.Case e b rt alts) = do
         popCase
         tl <- topLevel e
 
-        branchAlts [dom k x d | k <- ks] $ case def of
+        branchAlts [dom k x (Core.getName d) | k <- (fmap Core.getName $ Core.tyConDataCons d) L.\\ ks] $ case def of
           Nothing -> when tl $ emit (insert (Dom x (Core.getName d)) (Set ks) top empty)
           Just rhs
             | Core.exprIsBottom rhs -> do -- If rhs is bottom, it is not a valid case
@@ -179,8 +181,8 @@ infer e'@(Core.Case e b rt alts) = do
 
   return t
   where
-    unInj :: Type T -> Maybe (Int, Core.Name)
-    unInj (Inj x d) = Just (x, Core.getName d)
+    unInj :: Type T -> Maybe (Int, Core.TyCon)
+    unInj (Inj x d) = Just (x, d)
     unInj (App a b) = unInj a
     unInj _         = Nothing
  

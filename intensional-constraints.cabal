@@ -50,7 +50,7 @@ library
 
 test-suite intensional-constraints-test
   type: exitcode-stdio-1.0
-  main-is: Map.hs
+  main-is: SimpleTest.hs
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:

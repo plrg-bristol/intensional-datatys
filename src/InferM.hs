@@ -138,7 +138,12 @@ getVar v e = getCtx >>= getVar'
           -- Localise constraints
           ys <- mapM (\x -> (x,) <$> fresh) xs
           emit   $ foldr (uncurry rename) cs ys
-          return $ foldr (uncurry rename) u ys
+            
+          let u' = foldr (uncurry rename) u ys
+          v' <- fromCore $ Core.varType v
+          emitSubType u' v' e
+
+          return v'
 
         Nothing ->
           -- We can assume the variable is in scope as GHC hasn't emitted a warning
@@ -180,4 +185,4 @@ restrict ts = restrict' <$> getCs
     restrict' cs = fmap (\(x, t) -> (x, TypeScheme (domain cs', cs', t))) ts
       where
         xs  = concatMap (domain . snd) ts
-        cs' = resolve xs cs
+        cs' = cs -- resolve xs cs

@@ -47,7 +47,7 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
       putStrLn ""
       putStrLn $ showSDocUnsafe $ ppr (v, ts)
       putStrLn ""
-    ) tss
+    ) $ M.toList tss
 
   -- let tss' = globalise m tss
     

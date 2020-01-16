@@ -2,29 +2,36 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE StandaloneDeriving #-}
+
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
+
+{-# LANGUAGE ViewPatterns #-}
 
 module Types (
   Extended(..),
-  Type(..),
-  mono,
+  Type(Var, App, Base, Data, Inj, (:=>), Lit),
+  Scheme(..),
+  Refined(..),
+
   shape,
   inj,
-  dataCon,
-  refiableTyFunc,
-  slice,
+  refinable,
+
+  applyType,
   subTyVar,
-  subTyVarM,
-  Refined(..),
+
   FromCore(..),
   fromCore,
+  fromCoreScheme,
 ) where
 
-import Control.Monad 
+import Prelude hiding ((<>))
 
 import BasicTypes
 import Outputable
+-- import UniqSupply
 import qualified TyCoRep as Tcr
 import qualified GhcPlugins as Core
 
@@ -32,17 +39,23 @@ data Extended where
   S :: Extended -- Unrefined
   T :: Extended -- Refined
 
+-- Monomorphic types
 data Type (e :: Extended) where
   Var    :: Core.Name -> Type e
-  App    :: Type e -> Type e -> Type e
-  Base   :: Core.TyCon -> Type e
-  Data   :: Core.TyCon -> Type S
-  Inj    :: Int -> Core.TyCon -> Type T
+  App    :: Type S -> Type S -> Type e
+  Base   :: Core.TyCon -> [Type S] -> Type e
+  Data   :: Core.TyCon -> [Type S] -> Type S
+  Inj    :: Int -> Core.TyCon -> [Type T] -> Type T
   (:=>)  :: Type e -> Type e -> Type e
   Lit    :: Tcr.TyLit -> Type e
-  Forall :: Core.Name -> Type e -> Type e
 
 deriving instance Eq (Type e)
+
+-- Polymorphic types
+data Scheme (e :: Extended) where
+  Forall :: [Core.Name] -> Type e -> Scheme e
+
+deriving instance Eq (Scheme e)
 
 -- Objects which are parameterised by refinement variables
 class Refined t where
@@ -51,93 +64,96 @@ class Refined t where
 
 instance Refined (Type e) where
   domain (App a b)    = domain a ++ domain b
-  domain (Inj x d)    = [x]
+  domain (Inj x d _)  = [x]
   domain (a :=> b)    = domain a ++ domain b
-  domain (Forall _ t) = domain t
   domain _            = []
 
   rename x y (App a b)     = App (rename x y a) (rename x y b)
-  rename x y (Inj x' d)
-    | x == x'              = Inj y d
-    | otherwise            = Inj x' d
+  rename x y (Inj x' d as)
+    | x == x'              = Inj y d (rename x y <$> as)
+    | otherwise            = Inj x' d (rename x y <$> as)
   rename x y (a :=> b)     = rename x y a :=> rename x y b
-  rename x y (Forall as t) = Forall as (rename x y t)
   rename _ _ t             = t
+
+instance Refined (Scheme e) where
+  domain (Forall as t) = domain t
+
+  rename x y (Forall as t) = Forall as $ rename x y t
 
 -- Clone of a Outputable (Core.Type)
 instance Outputable (Type e) where
   ppr = pprTy topPrec
     where
       pprTy :: PprPrec -> Type e -> SDoc
-      pprTy _ (Var a)        = ppr a
-      pprTy prec (App t1 t2) = hang (pprTy prec t1)
-                                  2 (pprTy appPrec t2)
-      pprTy _ (Base b)       = ppr b
-      pprTy _ (Data d)       = ppr d
-      pprTy prec (Inj x d)   = maybeParen prec appPrec $ sep [text "inj", ppr x, ppr d]
-      pprTy prec (t1 :=> t2) = maybeParen prec funPrec $ sep [pprTy funPrec t1, arrow <+> pprTy prec t2]
-      pprTy _ (Lit l)        = ppr l
-      pprTy prec ty@Forall{}
-        | (tvs, body) <- split ty
-        = maybeParen prec funPrec $
-          hang (text "forall" <+> fsep (map ppr tvs) Core.<> dot)
-            2 (ppr body)
-        where
-          split ty | Forall tv ty' <- ty
-                    , (tvs, body) <- split ty'
-                    = (tv:tvs, body)
-                    | otherwise
-                    = ([], ty)
+      pprTy _ (Var a)         = ppr a
+      pprTy prec (App t1 t2)  = hang (pprTy prec t1)
+                                   2 (pprTy appPrec t2)
+      pprTy prec (Base b as)  = hang (ppr b)
+                                   2 (sep $ fmap (\a -> text "@" <> pprTy appPrec a) as)
+      pprTy prec (Data d as)  = hang (ppr d)
+                                   2 (sep $ fmap (\a -> text "@" <> pprTy appPrec a) as)
+      pprTy prec (Inj x d as) = hang (maybeParen prec appPrec $ sep [text "inj", ppr x, ppr d])
+                                   2 (sep $ fmap (\a -> text "@" <> pprTy appPrec a) as)
+      pprTy prec (t1 :=> t2)  = maybeParen prec funPrec $ sep [pprTy funPrec t1, arrow <+> pprTy prec t2]
+      pprTy _ (Lit l)         = ppr l
 
--- Force a type to be monomorphic
-mono :: Type e -> Type e
-mono (Var a)       = Var a
-mono (App a b)     = App (mono a) (mono b)
-mono (Base b)      = Base b
-mono (Data d)      = Data d
-mono (Inj x d)     = Inj x d
-mono (a :=> b)     = mono a :=> mono b
-mono (Lit l)       = Lit l
-mono (Forall as t) = Core.pprPanic "Unexpected polymorphic type!" (Core.ppr (as, t))
+instance Outputable (Scheme e) where
+  ppr (Forall as t) = maybeParen topPrec funPrec $
+                        hang (text "forall" <+> fsep (map ppr as) Core.<> dot)
+                           2 (ppr t)
 
 -- The underlying shape
 shape :: Type e -> Type S
 shape (Var a)       = Var a
-shape (App a b)     = App (shape a) (shape b)
-shape (Base b)      = Base b
-shape (Data d)      = Base d
-shape (Inj _ d)     = Base d
+shape (App a b)     = App a (shape b)
+shape (Base b as)   = Base b (shape <$> as)
+shape (Data d as)   = Base d as
+shape (Inj _ d as)  = Base d (shape <$> as)
 shape (a :=> b)     = shape a :=> shape b
 shape (Lit l)       = Lit l
-shape (Forall as t) = Forall as (shape t)
 
 -- Inject a sort into a refinement environment
 inj :: Int -> Type e -> Type T
 inj x (Var a)       = Var a
-inj x (App a b)     = App (inj x a) (inj x b)
-inj x (Base b)      = Base b
-inj x (Data d)      = Inj x d
-inj x (Inj _ d)     = Inj x d
+inj x (App a b)     = App a b
+inj x (Base b as)   = Base b as
+inj x (Data d as)   = Inj x d (inj x <$> as)
+inj x (Inj _ d as)  = Inj x d (inj x <$> as)
 inj x (a :=> b)     = inj x a :=> inj x b
 inj x (Lit l)       = Lit l
-inj x (Forall as t) = Forall as (inj x t)
 
--- Extract the result type from a constructor
-dataCon :: Type T -> ([Type T], Type T)
-dataCon (a :=> b) = (a:args, res)
-  where
-    (args, res) = dataCon b
-dataCon (App a b)     = dataCon a
-dataCon (Forall as t) = dataCon t
-dataCon t = ([], t)
 
--- Does the head of an application correspond to a refinable datatype
-refiableTyFunc :: Type T -> Bool
-refiableTyFunc Inj{}     = True
-refiableTyFunc (App h _) = refiableTyFunc h
-refiableTyFunc _         = False
 
--- TODO: Check this is sound!!
+-- Type application
+applyType :: Scheme e -> Type e -> Scheme e
+applyType (Forall [] (Base b as)) t  = Forall [] (Base b (as ++ [shape t]))
+applyType (Forall [] (Data d as)) t  = Forall [] (Data d (as ++ [t]))
+applyType (Forall [] (Inj x d as)) t = Forall [] (Inj x d (as ++ [t]))
+applyType (Forall [] (Var a)) t      = Forall [] (App (Var a) (shape t))
+applyType (Forall [] (App a b)) t    = Forall [] (App (App a b) (shape t))
+applyType (Forall (a:as) u) t        = Forall as (subTyVar a t u)
+applyType t t'                       = Core.pprPanic "Type doesn't take any arguments!" (Core.ppr (t, t'))
+
+-- Type variable substitution
+subTyVar :: Core.Name -> Type e -> Type e -> Type e
+subTyVar a t (Var a')
+  | a == a'    = t
+  | otherwise  = Var a'
+subTyVar a t (App x y) =
+  case applyType (Forall [] $ subTyVar a (shape t) x) (subTyVar a (shape t) y) of
+    Forall [] (Base b as) -> Base b as
+    Forall [] (Var a)     -> Var a
+    Forall [] (App a b)   -> App a b
+subTyVar a t (x :=> y) = subTyVar a t x :=> subTyVar a t y
+subTyVar a t (Base b as)  = Base b (subTyVar a (shape t) <$> as)
+subTyVar a t (Data d as)  = Data d (subTyVar a t <$> as)
+subTyVar a t (Inj x d as) = Inj x d (subTyVar a t <$> as)
+subTyVar _ _ t = t
+
+
+
+
+-- Check whether a core type is refinable
 refinable :: Core.TyCon -> Bool
 refinable tc = (length (Core.tyConDataCons tc) > 1) && all pos (concatMap Core.dataConOrigArgTys $ Core.tyConDataCons tc)
   where
@@ -146,30 +162,17 @@ refinable tc = (length (Core.tyConDataCons tc) > 1) && all pos (concatMap Core.d
     pos _                 = True
 
     neg :: Core.Type -> Bool
-    neg (Tcr.TyConApp tc' _)               = False -- Test wether tc' is refinable?
-    neg (Tcr.TyVarTy _)   = False
-    neg (Tcr.FunTy t1 t2) = pos t1 && neg t2
-    neg _                 = True
-
--- Take the slice of a datatype
-slice :: [Core.TyCon] -> [Core.TyCon]
-slice tcs
-  | tcs' == tcs = tcs
-  | otherwise   = slice tcs'
-  where
-    tcs' = [tc' | tc <- tcs
-                , dc <- Core.tyConDataCons tc
-                , (Tcr.TyConApp tc' _) <- Core.dataConOrigArgTys dc
-                , tc' `notElem` tcs
-                , refinable tc'] 
-                ++ tcs
+    neg (Tcr.TyConApp tc' _) = False -- Could this test wether tc' is refinable?
+    neg (Tcr.TyVarTy _)      = False
+    neg (Tcr.FunTy t1 t2)    = pos t1 && neg t2
+    neg _                    = True
 
 -- Convert from a core type
 class Monad m => FromCore m (e :: Extended) where
-  dataType :: Core.TyCon -> m (Type e)
+  tycon  :: Core.TyCon -> [Type e] -> m (Type e)
 
 instance Monad m => FromCore m S where
-  dataType t = return $ Data t
+  tycon t args = return $ Data t args
 
 fromCore :: FromCore m e => Core.Type -> m (Type e)
 fromCore (Tcr.TyVarTy a)   = return $ Var $ Core.getName a
@@ -177,58 +180,60 @@ fromCore (Tcr.AppTy t1 t2) = do
   s1 <- fromCore t1
   s2 <- fromCore t2
   return $ App s1 s2
-fromCore (Tcr.TyConApp t args)
-  | Core.isTypeSynonymTyCon t
-  , Just (as, u) <- Core.synTyConDefn_maybe t
-  = fromCore (Core.substTy (Core.extendTvSubstList Core.emptySubst (zip as args)) u)
-  | refinable t
-  = do
-      args' <- mapM fromCore args
-      t' <- dataType t
-      return $ foldl App t' args' -- These need Forall if args isn't long enough
+fromCore t@(Tcr.TyConApp tc args)
+  | Core.isTypeSynonymTyCon tc  -- Type synonym
+  , Just (as, u) <- Core.synTyConDefn_maybe tc
+    = fromCore (Core.substTy (Core.extendTvSubstList Core.emptySubst (zip as args)) u)
+  -- | Core.tyConArity tc /= length args
+  --  = Core.pprPanic "Type constructor must be fully isntantiated!" (Core.ppr t)
+  | refinable tc
+    = do
+        args' <- mapM fromCore args
+        tycon tc args'
   | otherwise
-  = do
-      args' <- mapM fromCore args
-      return $ foldl App (Base t) args'
+    = do
+        args' <- mapM fromCore args
+        return $ Base tc args'
 fromCore (Tcr.FunTy t1 t2) = do
   s1 <- fromCore t1
   s2 <- fromCore t2
   return (s1 :=> s2)
 fromCore (Tcr.LitTy l) = return $ Lit l
-fromCore (Tcr.ForAllTy b t) = do
+fromCore t@Tcr.ForAllTy{} = Core.pprPanic "Unexpected polymorphic type!" (Core.ppr t)
+fromCore t                = Core.pprPanic "Unexpected cast or coercion type!" (Core.ppr t)
+
+-- Convert a polymorphic core type
+fromCoreScheme :: FromCore m e => Core.Type -> m (Scheme e)
+fromCoreScheme (Tcr.TyVarTy a)   = return $ Forall [] $ Var $ Core.getName a
+fromCoreScheme (Tcr.AppTy t1 t2) = do
+  s1 <- fromCore t1
+  s2 <- fromCore t2
+  return $ Forall [] $ App s1 s2
+fromCoreScheme t@(Tcr.TyConApp tc args)
+  | Core.isTypeSynonymTyCon tc  -- Type synonym
+  , Just (as, u) <- Core.synTyConDefn_maybe tc
+    = fromCoreScheme (Core.substTy (Core.extendTvSubstList Core.emptySubst (zip as args)) u)
+  | refinable tc
+    = do
+        args' <- mapM fromCore args
+        -- uniqs <- take (Core.tyConArity tc - length args') <$> getUniquesM -- Quantify over unsaturated type variables
+        -- let as = fmap (\u -> Core.mkInternalName u (Core.mkTyVarOcc "tc_arg") Core.noSrcSpan) uniqs
+        -- Forall as <$> tycon tc (args' ++ (Var <$> as))
+        Forall [] <$> tycon tc args'
+  | otherwise
+    = do
+        args' <- mapM fromCore args
+        -- uniqs <- take (Core.tyConArity tc - length args') <$> getUniquesM -- Quantify over unsaturated type variables
+        -- let as = fmap (\u -> Core.mkInternalName u (Core.mkTyVarOcc "tc_arg") Core.noSrcSpan) uniqs
+        -- return $ Forall as $ Base tc (args' ++ (Var <$> as))
+        return $ Forall [] $ Base tc args'
+fromCoreScheme (Tcr.ForAllTy b t) = do
   let a = Core.getName $ Core.binderVar b
-  t' <- fromCore t
-  return $ Forall a t'
-fromCore t = Core.pprPanic "Unexpected Cast or Coercion type" (Core.ppr t)
-
--- Substitute type variable
-subTyVar :: Core.Name -> Type e -> Type e -> Type e
-subTyVar a t (Var a') 
-  | a == a'    = t
-  | otherwise  = Var a'
-subTyVar a t (App x y) = App (subTyVar a t x) (subTyVar a t y)
-subTyVar a t (x :=> y) = subTyVar a t x :=> subTyVar a t y
-subTyVar a t (Forall a' u)
-  | a == a'    = Forall a' u
-  | otherwise  = Forall a' (subTyVar a t u)
-subTyVar _ _ t = t
-
--- Substitute type variable directly from core type
-subTyVarM :: FromCore m e => Core.Name -> Core.Type -> Type e -> m (Type e)
-subTyVarM a t (Var a') 
-  | a == a'    = fromCore t
-  | otherwise  = return (Var a')
-subTyVarM a t (App x y) = do
-  x' <- subTyVarM a t x
-  y' <- subTyVarM a t y
-  return (App x' y')
-subTyVarM a t (x :=> y) = do
-  x' <- subTyVarM a t x
-  y' <- subTyVarM a t y
-  return (x' :=> y')
-subTyVarM a t (Forall a' u)
-  | a == a'   = return $ Forall a' u
-  | otherwise = do
-    u' <- subTyVarM a t u
-    return $ Forall a' u'
-subTyVarM _ _ t = return t
+  Forall as t' <- fromCoreScheme t
+  return $ Forall (a:as) t'
+fromCoreScheme (Tcr.FunTy t1 t2) = do
+  s1           <- fromCore t1
+  Forall as s2 <- fromCoreScheme t2
+  return $ Forall as (s1 :=> s2)
+fromCoreScheme (Tcr.LitTy l) = return $ Forall [] $ Lit l
+fromCoreScheme t             = Core.pprPanic "Unexpected cast or coercion type!" (Core.ppr t)

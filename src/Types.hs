@@ -11,11 +11,12 @@
 
 module Types (
   Extended(..),
-  Type(Var, App, Base, Data, Inj, (:=>), Lit),
+  Type(..),
   Scheme(..),
   Refined(..),
 
   shape,
+  compareShape,
   inj,
   refinable,
 
@@ -28,6 +29,8 @@ module Types (
 ) where
 
 import Prelude hiding ((<>))
+
+import qualified Data.List as L
 
 import BasicTypes
 import Outputable
@@ -49,6 +52,8 @@ data Type (e :: Extended) where
   (:=>)  :: Type e -> Type e -> Type e
   Lit    :: Tcr.TyLit -> Type e
 
+  Ambiguous :: Type e -- Ambiguous type hides higher ranked types and casts from inference
+
 deriving instance Eq (Type e)
 
 -- Polymorphic types
@@ -62,20 +67,19 @@ class Refined t where
   domain :: t -> [Int]
   rename :: Int -> Int -> t -> t
 
-instance Refined (Type e) where
-  domain (App a b)    = domain a ++ domain b
-  domain (Inj x d _)  = [x]
-  domain (a :=> b)    = domain a ++ domain b
+instance Refined (Type T) where
+  domain (Inj x d as) = foldr (\a -> L.union (domain a)) [x] as
+  domain (a :=> b)    = L.union (domain a) (domain b)
   domain _            = []
 
-  rename x y (App a b)     = App (rename x y a) (rename x y b)
+  rename x y (App a b)     = App a b
   rename x y (Inj x' d as)
     | x == x'              = Inj y d (rename x y <$> as)
     | otherwise            = Inj x' d (rename x y <$> as)
   rename x y (a :=> b)     = rename x y a :=> rename x y b
   rename _ _ t             = t
 
-instance Refined (Scheme e) where
+instance Refined (Scheme T) where
   domain (Forall as t) = domain t
 
   rename x y (Forall as t) = Forall as $ rename x y t
@@ -96,21 +100,36 @@ instance Outputable (Type e) where
                                    2 (sep $ fmap (\a -> text "@" <> pprTy appPrec a) as)
       pprTy prec (t1 :=> t2)  = maybeParen prec funPrec $ sep [pprTy funPrec t1, arrow <+> pprTy prec t2]
       pprTy _ (Lit l)         = ppr l
+      pprTy _ Ambiguous       = text "Ambiguous"
 
 instance Outputable (Scheme e) where
-  ppr (Forall as t) = maybeParen topPrec funPrec $
+  ppr (Forall as t)
+    | null as   = ppr t
+    | otherwise = maybeParen topPrec funPrec $
                         hang (text "forall" <+> fsep (map ppr as) Core.<> dot)
                            2 (ppr t)
 
 -- The underlying shape
 shape :: Type e -> Type S
 shape (Var a)       = Var a
-shape (App a b)     = App a (shape b)
+shape (App a b)     = App (shape a) (shape b)
 shape (Base b as)   = Base b (shape <$> as)
-shape (Data d as)   = Base d as
+shape (Data d as)   = Base d (shape <$> as)
 shape (Inj _ d as)  = Base d (shape <$> as)
 shape (a :=> b)     = shape a :=> shape b
 shape (Lit l)       = Lit l
+shape Ambiguous     = Ambiguous
+
+-- Comapre shapes
+compareShape :: Type S -> Type S -> Bool
+compareShape Ambiguous _               = True
+compareShape _ Ambiguous               = True
+compareShape (Var _) (Var _)           = True -- Type schemes may be unaligned
+compareShape (App a b) (App a' b')     = compareShape a a' && compareShape b b'
+compareShape (Base b as) (Base b' as') = b == b' && all (uncurry compareShape) (zip as as')
+compareShape (a :=> b) (a' :=> b')     = compareShape a a' && compareShape b b'
+compareShape (Lit l) (Lit l')          = l == l'
+compareShape _ _                       = False
 
 -- Inject a sort into a refinement environment
 inj :: Int -> Type e -> Type T
@@ -126,13 +145,14 @@ inj x (Lit l)       = Lit l
 
 -- Type application
 applyType :: Scheme e -> Type e -> Scheme e
+applyType (Forall [] Ambiguous) t    = Forall [] Ambiguous
 applyType (Forall [] (Base b as)) t  = Forall [] (Base b (as ++ [shape t]))
 applyType (Forall [] (Data d as)) t  = Forall [] (Data d (as ++ [t]))
 applyType (Forall [] (Inj x d as)) t = Forall [] (Inj x d (as ++ [t]))
 applyType (Forall [] (Var a)) t      = Forall [] (App (Var a) (shape t))
 applyType (Forall [] (App a b)) t    = Forall [] (App (App a b) (shape t))
 applyType (Forall (a:as) u) t        = Forall as (subTyVar a t u)
-applyType t t'                       = Core.pprPanic "Type doesn't take any arguments!" (Core.ppr (t, t'))
+applyType t t'                       = Core.pprPanic "The type is saturated!" (Core.ppr (t, t'))
 
 -- Type variable substitution
 subTyVar :: Core.Name -> Type e -> Type e -> Type e

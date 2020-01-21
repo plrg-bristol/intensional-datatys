@@ -28,12 +28,9 @@ source-repository head
 library
   exposed-modules:
       Types
-      Utils
       Constraint
       InferM
       InferCoreExpr
-      -- PrettyPrint
-      -- Serialization
       Lib
   other-modules:
       Paths_intensional_constraints
@@ -42,20 +39,19 @@ library
   ghc-options: -O2
   build-depends:
       base >=4.7
-    , transformers
+    , nonempty-containers
     , containers
-    , mtl
     , ghc
   default-language: Haskell2010
 
 test-suite intensional-constraints-test
   type: exitcode-stdio-1.0
-  main-is: SimpleTest.hs
+  main-is: Set.hs
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:
       test
-  ghc-options: -O0 -fplugin Lib
+  ghc-options: -g -O0 -fplugin Lib
   build-depends:
       base >=4.7
     , intensional-constraints

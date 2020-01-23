@@ -33,7 +33,7 @@ import qualified Data.Set.NonEmpty as S
 
 import SrcLoc
 import Outputable hiding (empty, isEmpty)
-import qualified Pretty as Pretty
+import qualified Pretty
 import qualified GhcPlugins as Core
 
 import Types
@@ -64,10 +64,10 @@ instance Outputable K where
 
 -- Convenient smart constructors
 con :: Core.Name -> Maybe RealSrcSpan -> K
-con n l = Set (unitUniqSet n) l
+con n = Set (unitUniqSet n)
 
 set :: [Core.Name] -> Maybe RealSrcSpan -> K
-set s l = Set (mkUniqSet s) l
+set s = Set (mkUniqSet s)
 
 -- Origin of the constructor set in src
 loc :: K -> Maybe RealSrcSpan
@@ -102,9 +102,9 @@ instance Ord Constraint where
   ConDom k x d _ <= ConDom k' x' d' _ = (k, x, d) <= (k', x', d')
   DomSet x d k _ <= DomSet x' d' k' _ = (x, d, nonDetEltsUniqSet k) <= (x', d', nonDetEltsUniqSet k')
 
-  DomDom _ _ _   <= _              = True
-  ConDom _ _ _ _ <= DomSet _ _ _ _ = True
-  _              <= _              = False
+  DomDom {} <= _         = True
+  ConDom {} <= DomSet {} = True
+  _         <= _         = False
 
 instance Refined Constraint where
   domain (DomDom x y _ )  = [x, y] -- We assume x/=y
@@ -140,7 +140,7 @@ toAtomic (Dom x d) (Dom y d')
   | x == y    = Just []
   | otherwise = Just [DomDom x y d]
 toAtomic (Dom x d) (Set k l)  = Just [DomSet x d k l]
-toAtomic (Set ks l) (Dom x d) = Just $ fmap (\k -> ConDom k x d l) $ nonDetEltsUniqSet ks
+toAtomic (Set ks l) (Dom x d) = Just ((\k -> ConDom k x d l) <$> nonDetEltsUniqSet ks)
 toAtomic (Set ks l) (Set ks' r)
   | uniqSetAll (`elementOfUniqSet` ks') ks
               = Just []
@@ -217,7 +217,7 @@ entailsGuard (Guard m) (Guard m') = M.foldrWithKey (\x kds k -> k && pred x kds)
 insertGuard :: Guard -> S.NESet Guard -> S.NESet Guard
 -- insertGuard g s | Core.pprTrace "insertGuard" (Core.ppr (g, s)) False = undefined
 insertGuard g s
- | any (\g' -> entailsGuard g g') s = s                                    -- g is stronger than an existing guard
+ | any (entailsGuard g ) s = s                                             -- g is stronger than an existing guard
  | otherwise = S.insertSet g $ S.filter (\g' -> not (entailsGuard g' g)) s -- remove guards that are stronger than g
 
 
@@ -257,7 +257,7 @@ insertAtomic c g (ConSet cs) = ConSet $ M.insertWith (foldr insertGuard) c (S.si
 insert :: K -> K -> Guard -> ConSet -> ConSet
 insert k1 k2 g cs =
   case toAtomic k1 k2 of
-    Just cs' -> foldr (\c -> insertAtomic c g) cs cs'
+    Just cs' -> foldr (`insertAtomic` g) cs cs'
     Nothing  -> Core.pprPanic "The program is unsound!" (Core.ppr (loc k1, loc k2))
 
 -- ConSet behaves like [(K, K, Guard)]
@@ -323,7 +323,7 @@ saturate xs cs = foldr (\x cs' -> filterOut x $ saturate' x cs' $ filterTo x cs'
       | isEmpty cs = done
       | otherwise  = saturate' x new (filterTo x $ diff new done)
       where
-        new = M.foldrWithKey (\c gs -> cross c gs) done todo
+        new = M.foldrWithKey cross done todo
 
 -- Apply the resolution rules once between the new constraint and the old
 cross :: Constraint -> S.NESet Guard -> ConSet -> ConSet

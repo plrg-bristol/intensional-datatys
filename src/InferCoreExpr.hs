@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE TupleSections #-}
 
 module InferCoreExpr (
   inferProg
@@ -18,11 +17,9 @@ import Types
 import Constraint
 import InferM
 
-
--- Infer program
-inferProg :: Monad m => Core.CoreProgram -> InferM m Context
-inferProg = foldM (\ctx bgs -> do
-
+-- Infer recursive bind
+inferRec :: Monad m => Core.Bind Core.Var -> InferM m Context
+inferRec bgs = do
   -- Add each binds within the group to context with a fresh type and no constraints
   binds <- foldM (\bs (Core.getName -> x, Core.exprType -> t) -> do
     Forall as t' <- fromCoreScheme t
@@ -30,9 +27,9 @@ inferProg = foldM (\ctx bgs -> do
     ) M.empty $ Core.flattenBinds [bgs]
 
   -- Restrict type schemes
-  ts <- restrict $
+  restrict $
     -- Add recusrive binds and context build so far
-    putVars binds $ putVars ctx $
+    putVars binds $
       foldM (\bs (Core.getName -> x, rhs) -> do
 
         -- Infer each bind within the group, compiling constraints
@@ -47,9 +44,10 @@ inferProg = foldM (\ctx bgs -> do
         return $ M.insert x t bs
         ) M.empty $ Core.flattenBinds [bgs]
 
-  return (M.union ctx ts)
-  ) M.empty
 
+-- Infer program
+inferProg :: Monad m => Core.CoreProgram -> InferM m Context
+inferProg = foldM (\ctx bgs -> putVars ctx (M.union ctx <$> inferRec bgs)) M.empty
 
 -- Demand a monomorphic type
 -- This is only applied to the lhs of (->) and case expressions
@@ -126,34 +124,8 @@ infer e'@(Core.Lam x e)
     Forall as t2 <- putVar (Core.getName x) (RefinedScheme [] [] empty t1) (infer e)
     return $ Forall as (t1 :=> t2)
 
-
-infer e'@(Core.Let b e) = do
-  -- Add each binds within the group to context with a fresh type and no constraints
-  binds <- foldM (\bs (Core.getName -> x, Core.exprType -> t) -> do
-    Forall as t' <- fromCoreScheme t
-    return $ M.insert x (RefinedScheme as [] empty t') bs
-    ) M.empty $ Core.flattenBinds [b]
-
-  -- Restrict type schemes
-  ts <- restrict $
-    -- Add recusrive binds
-    putVars binds $
-      foldM (\bs (Core.getName -> x, rhs) -> do
-
-        -- Infer each bind within the group, compiling constraints
-        t@(Forall as ut) <- infer rhs
-
-        -- Insure types are quantified by infered constraint
-        let (RefinedScheme as' _ _ ut') = binds M.! x
-        when (as /= as') $ Core.pprPanic "Type variables don't align!" (Core.ppr (as, as'))
-        emitSubType ut  ut' rhs
-        emitSubType ut' ut rhs
-
-        return $ M.insert x t bs
-        ) M.empty $ Core.flattenBinds [b]
-
-  -- Infer in body with infered typescheme to the environment
-  putVars ts (infer e)
+-- Local prog
+infer (Core.Let b e) = inferRec b >>= flip putVars (infer e)
 
 infer e'@(Core.Case e b rt alts) = do
   -- The location of the case statement
@@ -203,15 +175,15 @@ infer e'@(Core.Case e b rt alts) = do
         Nothing -> when tl $ emitSingle (Dom x (Core.getName d)) (set ks l)
         Just rhs
           | Core.exprIsBottom rhs -> when tl $ emitSingle (Dom x (Core.getName d)) (set ks l) -- If rhs is bottom, it is not a valid case
-          | otherwise -> do
+          | otherwise ->
             -- Default case
             -- Guard by constructors which have not occured
-            branchAlts e [guardDom k x (Core.getName d) | k <- (fmap Core.getName $ Core.tyConDataCons d) L.\\ ks] $ do
+            branchAlts e [guardDom k x (Core.getName d) | k <- fmap Core.getName (Core.tyConDataCons d) L.\\ ks] $ do
               ti' <- rank1 $ infer rhs
               emitSubType ti' t rhs
 
     -- Infer an unrefinable case expression
-    Nothing -> do
+    Nothing ->
       mapM_ (\(alt, bs, rhs) ->
         if Core.exprIsBottom rhs
           then return () -- If rhs is bottom, it is not a valid case

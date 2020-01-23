@@ -1,5 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
-
 module Lib
     ( plugin
     ) where
@@ -74,7 +72,7 @@ dependancySort p = foldl go [] depGraph
     go :: [CoreBind] -> (CoreBind, [CoreBind]) -> [CoreBind]
     go [] (b, deps)     = deps ++ [b]
     go (b':bs) (b, deps)
-      | bindersOf b == bindersOf b'   = deps ++ [b] ++ (foldl remove bs deps) -- Insert dependencies just before binder
+      | bindersOf b == bindersOf b'   = deps ++ [b] ++ foldl remove bs deps -- Insert dependencies just before binder
       | otherwise                     = b' : go bs (b, remove deps b')
 
     -- Remove duplicates

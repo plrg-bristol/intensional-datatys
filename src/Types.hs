@@ -7,8 +7,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-{-# LANGUAGE ViewPatterns #-}
-
 module Types (
   Extended(..),
   Type(..),
@@ -68,7 +66,7 @@ class Refined t where
   rename :: Int -> Int -> t -> t
 
 instance Refined (Type T) where
-  domain (Inj x d as) = foldr (\a -> L.union (domain a)) [x] as
+  domain (Inj x d as) = foldr (L.union . domain) [x] as
   domain (a :=> b)    = L.union (domain a) (domain b)
   domain _            = []
 

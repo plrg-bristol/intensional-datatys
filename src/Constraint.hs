@@ -336,11 +336,11 @@ saturate xs cs = foldr (\x cs' -> filterOut x $ saturate' x cs' $ filterTo x cs'
       | H.null todo = done
       | otherwise   = saturate' x new (filterTo x $ diff new done)
       where
-        new = H.foldrWithKey cross done todo
+        new = H.foldrWithKey (cross x) done todo
 
 -- Apply the resolution rules once between the new constraint and the old
-cross :: Constraint -> S.NESet Guard -> ConSet -> ConSet
-cross c gs cs@(ConSet m) =
+cross :: Int -> Constraint -> S.NESet Guard -> ConSet -> ConSet
+cross x c gs cs@(ConSet m) =
 
 --   (\cs -> M.foldrWithKey (\c' gs' cs' ->
 --     S.foldr (\(g, g') ->
@@ -364,8 +364,8 @@ cross c gs cs@(ConSet m) =
     S.foldr (\(g, g') ->
        trans c g c' g' .
        trans c' g' c g .
-       subs c' g' c g  .
-       subs c g c' g'  .
+       subs x c' g' c g  .
+       subs x c g c' g'  .
        weak c' g' c g  .
        weak c g c' g'
      ) cs' $ S.cartesianProduct gs gs'
@@ -386,8 +386,9 @@ cross c gs cs@(ConSet m) =
     weak _ _ _ _                            = id
 
     -- Substitution rule
-    subs :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
-    subs c@(DomDom x y d) g c' g'@(Guard m)
-      | Just g'' <- g `and` replace x y d g' = insertAtomic c' g''
-    subs _ _ _ _                             = id
+    subs :: Int -> Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
+    subs y' c@(DomDom x y d) g c' g'@(Guard m)
+      | y == y'
+      , Just g'' <- g `and` replace x y d g' = insertAtomic c' g''
+    subs _ _ _ _ _                           = id
 

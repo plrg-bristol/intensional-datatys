@@ -1,7 +1,10 @@
+{-# LANGUAGE BangPatterns #-}
+
 module Lib
     ( plugin
     ) where
 
+import Data.Time
 import qualified Data.Map as M
 
 import GhcPlugins
@@ -20,7 +23,7 @@ plugin = defaultPlugin { installCoreToDos = install }
 inferGuts :: ModGuts -> CoreM ModGuts
 inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
 
-  !start <- liftIO $ getCurrentTime
+  !start <- liftIO getCurrentTime
   -- !() <- pprTraceM "Mod name: " (ppr m)
   -- !() <- pprTraceM "Def count" $ (ppr $ length $ concatMap (\b -> getName <$> (filter (not . isPredTy . varType) $ bindersOf b)) p)
 
@@ -56,7 +59,7 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   -- liftIO $ putWithUserData (const $ return ()) bh tss'
   -- liftIO $ writeBinMem bh $ interfaceName $ moduleName m
 
-  stop <- liftIO $ getCurrentTime
+  stop <- liftIO getCurrentTime
   liftIO $ print $ diffUTCTime stop start
 
   return guts

@@ -21,12 +21,17 @@ module Constraint (
 
 import Prelude hiding ((<>), and)
 
+import GHC.Generics (Generic)
+
 import Control.Monad
 
 import UniqSet
+import Unique
 import Data.Maybe
+import Data.Hashable
 import qualified Data.List as L
 import qualified Data.List.NonEmpty as NE
+import qualified Data.HashMap.Lazy as H
 import qualified Data.Map as M
 import qualified Data.Set as SS
 import qualified Data.Set.NonEmpty as S
@@ -47,6 +52,13 @@ instance Eq K where
   Dom x d == Dom x' d' = x == x' && d == d'
   Set s _ == Set s' _  = s == s'
   _       == _         = False
+
+instance Hashable Core.Unique where
+  hashWithSalt s u = hashWithSalt s (Unique.getKey u)
+
+instance Hashable K where
+  hashWithSalt s (Dom x d) = hashWithSalt s (x, Unique.getUnique d)
+  hashWithSalt s (Set ks _) = hashWithSalt s (nonDetKeysUniqSet ks)
 
 instance Refined K where
   domain (Dom x _) = [x]
@@ -106,6 +118,9 @@ instance Ord Constraint where
   ConDom {} <= DomSet {} = True
   _         <= _         = False
 
+instance Hashable Constraint where
+  hashWithSalt s u = hashWithSalt s (lhs u, rhs u)
+
 instance Refined Constraint where
   domain (DomDom x y _ )  = [x, y] -- We assume x/=y
   domain (ConDom _ x _ _) = [x]
@@ -149,6 +164,9 @@ toAtomic (Set ks l) (Set ks' r)
 -- Is the first constraint stronger than the second?
 entailsConstraint :: Constraint -> Constraint -> Bool
 entailsConstraint c1 c2 = (lhs c1 `subset` lhs c2) && (rhs c2 `subset` rhs c1)
+
+
+
 
 
 
@@ -215,10 +233,9 @@ entailsGuard (Guard m) (Guard m') = M.foldrWithKey (\x kds k -> k && pred x kds)
 
 -- Insert a guard if it is not stronger than an existing guard, and remove guards which are stronger than it
 insertGuard :: Guard -> S.NESet Guard -> S.NESet Guard
--- insertGuard g s | Core.pprTrace "insertGuard" (Core.ppr (g, s)) False = undefined
 insertGuard g s
- | any (entailsGuard g ) s = s                                             -- g is stronger than an existing guard
- | otherwise = S.insertSet g $ S.filter (\g' -> not (entailsGuard g' g)) s -- remove guards that are stronger than g
+ | any (entailsGuard g) s = s                                         -- g is stronger than an existing guard
+ | otherwise = S.insertSet g $ S.filter (not . flip entailsGuard g) s -- remove guards that are stronger than g
 
 
 
@@ -226,32 +243,27 @@ insertGuard g s
 
 
 -- A collection of guarded constraints
-newtype ConSet = ConSet (M.Map Constraint (S.NESet Guard))
+newtype ConSet = ConSet (H.HashMap Constraint (S.NESet Guard))
   deriving Eq
 
 instance Refined ConSet where
-   domain (ConSet m)     = L.nub (concatMap domain (M.keys m)) `L.union` concatMap domain (concatMap (NE.toList . S.toList) $ M.elems m)
-   rename x y (ConSet m) = ConSet $ M.map (S.map (rename x y)) $ M.mapKeys (rename x y) m
+   domain (ConSet m)     = L.nub (concatMap domain (H.keys m)) `L.union` concatMap domain (concatMap (NE.toList . S.toList) $ H.elems m)
+   rename x y (ConSet m) = ConSet $ H.fromList $ fmap (\(k, v) -> (rename x y k, S.map (rename x y) v)) $ H.toList m
 
 instance Outputable ConSet where
   ppr cs = vcat [(if M.null m then Core.empty else ppr g <+> char '?') <+> ppr k1 <+> arrowt <+> ppr k2 | (k1, k2, g@(Guard m)) <- toList cs]
 
 -- Empty set of constraints
 empty :: ConSet
-empty = ConSet M.empty
-
--- Is the constraint set empty
-isEmpty :: ConSet -> Bool
-isEmpty (ConSet m) = M.null m
+empty = ConSet H.empty
 
 -- Combined constraint sets
 union :: ConSet -> ConSet -> ConSet
-union (ConSet cs) (ConSet cs') = ConSet $ M.unionWith (foldr insertGuard) cs cs'
+union (ConSet cs) (ConSet cs') = ConSet $ H.unionWith (foldr insertGuard) cs cs'
 
 -- Insert an atomic constraint, combining with existing guards
 insertAtomic :: Constraint -> Guard -> ConSet -> ConSet
--- insertAtomic _ g _ | Core.pprTrace "insertGuard" (Core.ppr g) False = undefined
-insertAtomic c g (ConSet cs) = ConSet $ M.insertWith (foldr insertGuard) c (S.singleton g) cs
+insertAtomic c g (ConSet cs) = ConSet $ H.insertWith (foldr insertGuard) c (S.singleton g) cs
 
 -- Insert any constructor set constraint
 insert :: K -> K -> Guard -> ConSet -> ConSet
@@ -262,7 +274,7 @@ insert k1 k2 g cs =
 
 -- ConSet behaves like [(K, K, Guard)]
 toList :: ConSet -> [(K, K, Guard)]
-toList (ConSet m) = [(lhs c, rhs c, g) | (c, gs) <- M.toList m, g <- NE.toList $ S.toList gs]
+toList (ConSet m) = [(lhs c, rhs c, g) | (c, gs) <- H.toList m, g <- NE.toList $ S.toList gs]
 
 -- Surely there is a better way of doing this??
 mapMaybeSet :: Ord b => (a -> Maybe b) -> S.NESet a -> Maybe (S.NESet b)
@@ -270,40 +282,42 @@ mapMaybeSet f = S.nonEmptySet . SS.fromList . mapMaybe f . SS.toList . S.toSet
 
 -- Add a guard to an entire set
 guardWith :: Core.Name -> Int -> Core.Name -> ConSet -> ConSet
-guardWith k x d (ConSet cs) = ConSet $ M.mapMaybe (mapMaybeSet (and $ guardDom k x d)) cs
+guardWith k x d (ConSet cs) = ConSet $ H.mapMaybe (mapMaybeSet (and $ guardDom k x d)) cs
 
 -- Guard a constraint set by one of the guards
 guardAlts :: [Guard] -> ConSet -> ConSet
 guardAlts gs (ConSet cs) =
   case S.nonEmptySet $ SS.fromList gs of
     Nothing  -> empty
-    Just gs' -> ConSet $ M.mapMaybe (mapMaybeSet (uncurry and) . S.cartesianProduct gs') cs
+    Just gs' -> ConSet $ H.mapMaybe (mapMaybeSet (uncurry and) . S.cartesianProduct gs') cs
 
--- Difference between to ConSets
+-- Difference between to Constraint sets
 diff :: ConSet -> ConSet -> ConSet
-diff (ConSet m) (ConSet m') = ConSet $ M.mapMaybeWithKey go m
+diff (ConSet m) (ConSet m') = ConSet $ H.mapMaybeWithKey go m
   where
     go c gs =
-      case M.lookup c m' of
+      case H.lookup c m' of
         Just gs' -> S.nonEmptySet (gs S.\\ gs')
         Nothing  -> Just gs
 
 -- Filter a constraint set to a certain domain
 restrict :: [Int] -> ConSet -> ConSet
 restrict xs (ConSet m) = ConSet
-                       $ M.mapMaybe (S.nonEmptySet . S.filter (all (`elem` xs) . domain))            -- Filter guards
-                       $ M.filterWithKey (\c _ -> all (`elem` xs) $ domain c) m -- Filter constraints
+                       $ H.mapMaybe (S.nonEmptySet . S.filter (all (`elem` xs) . domain)) -- Filter guards
+                       $ H.filterWithKey (\c _ -> all (`elem` xs) $ domain c) m           -- Filter constraints
 
 -- Filter a constraint set to remove a variable
 filterOut :: Int -> ConSet -> ConSet
 filterOut x (ConSet m) = ConSet
-                       $ M.mapMaybe (S.nonEmptySet . S.filter (notElem x . domain))            -- Filter guards
-                       $ M.filterWithKey (\c _ -> x `notElem` domain c) m -- Filter constraints
+                       $ H.mapMaybe (S.nonEmptySet . S.filter (notElem x . domain)) -- Filter guards
+                       $ H.filterWithKey (\c _ -> x `notElem` domain c) m           -- Filter constraints
 
 -- Filter a constraint set to one which reference a variable
 filterTo :: Int -> ConSet -> ConSet
 filterTo x (ConSet m) = ConSet
-                      $ M.mapMaybeWithKey (\c gs -> if x `elem` domain c then Just gs else S.nonEmptySet $ S.filter (elem x . domain) gs) m -- Filter guards
+                      $ H.mapMaybeWithKey (\c gs -> if x `elem` domain c then Just gs else S.nonEmptySet $ S.filter (elem x . domain) gs) m -- Filter guards
+
+
 
 
 
@@ -318,26 +332,44 @@ saturate xs cs = foldr (\x cs' -> filterOut x $ saturate' x cs' $ filterTo x cs'
     inter = domain cs L.\\ xs
 
     saturate' :: Int -> ConSet -> ConSet -> ConSet
-    -- saturate' x _ cs | Core.pprTrace "todo" (Core.ppr (x, cs)) False = undefined
     saturate' x done cs@(ConSet todo)
-      | isEmpty cs = done
-      | otherwise  = saturate' x new (filterTo x $ diff new done)
+      | H.null todo = done
+      | otherwise   = saturate' x new (filterTo x $ diff new done)
       where
-        new = M.foldrWithKey cross done todo
+        new = H.foldrWithKey cross done todo
 
 -- Apply the resolution rules once between the new constraint and the old
 cross :: Constraint -> S.NESet Guard -> ConSet -> ConSet
 cross c gs cs@(ConSet m) =
-  M.foldrWithKey (\c' gs' cs' ->
+
+--   (\cs -> M.foldrWithKey (\c' gs' cs' ->
+--     S.foldr (\(g, g') ->
+--       case g `and` g' of
+--         Nothing  -> id
+--         Just g'' -> insert (lhs c) (rhs c') g''
+--     ) cs' $ S.cartesianProduct gs gs'
+--   ) cs $ lookupLHS (rhs c) cs)
+-- 
+--   .
+-- 
+--   (\cs -> M.foldrWithKey (\c' gs' cs' ->
+--     S.foldr (\(g, g') ->
+--       case g `and` g' of
+--         Nothing  -> id
+--         Just g'' -> insert (lhs c') (rhs c) g''
+--     ) cs' $ S.cartesianProduct gs gs'
+--   ) cs $ lookupRHS (rhs c) cs)
+
+   H.foldrWithKey (\c' gs' cs' ->
     S.foldr (\(g, g') ->
-      subs c' g' c g  .
-      subs c g c' g'  .
-      weak c' g' c g  .
-      weak c g c' g'  .
-      trans c g c' g' .
-      trans c' g' c g
-    ) cs' $ S.cartesianProduct gs gs'
-  ) cs m
+       trans c g c' g' .
+       trans c' g' c g .
+       subs c' g' c g  .
+       subs c g c' g'  .
+       weak c' g' c g  .
+       weak c g c' g'
+     ) cs' $ S.cartesianProduct gs gs'
+   ) cs m
 
   where
     -- Transitive closure

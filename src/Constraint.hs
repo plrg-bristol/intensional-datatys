@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 
 module Constraint (
+  Tag(..),
   K(..),
   con,
   set,
@@ -43,10 +44,21 @@ import qualified GhcPlugins as Core
 
 import Types
 
+-- Possible locations
+data Tag where
+  NA  :: Tag
+  Loc :: RealSrcSpan -> Tag
+  Mod :: Core.ModuleName -> Tag
+
+instance Outputable Tag where
+  ppr NA      = text "NA"
+  ppr (Loc r) = ppr r
+  ppr (Mod m) = text "in module:" <+> ppr m
+
 -- General constructors set
 data K where
   Dom :: Int -> Core.Name -> K
-  Set :: UniqSet Core.Name -> Maybe RealSrcSpan -> K
+  Set :: UniqSet Core.Name -> Tag -> K
 
 instance Eq K where
   Dom x d == Dom x' d' = x == x' && d == d'
@@ -57,7 +69,7 @@ instance Hashable Core.Unique where
   hashWithSalt s u = hashWithSalt s (Unique.getKey u)
 
 instance Hashable K where
-  hashWithSalt s (Dom x d) = hashWithSalt s (x, Unique.getUnique d)
+  hashWithSalt s (Dom x d)  = hashWithSalt s (x, Unique.getUnique d)
   hashWithSalt s (Set ks _) = hashWithSalt s (nonDetKeysUniqSet ks)
 
 instance Refined K where
@@ -75,16 +87,20 @@ instance Outputable K where
     | otherwise         = pprWithBars ppr (nonDetEltsUniqSet ks)
 
 -- Convenient smart constructors
-con :: Core.Name -> Maybe RealSrcSpan -> K
+con :: Core.Name -> Tag -> K
 con n = Set (unitUniqSet n)
 
-set :: [Core.Name] -> Maybe RealSrcSpan -> K
+set :: [Core.Name] -> Tag -> K
 set s = Set (mkUniqSet s)
 
 -- Origin of the constructor set in src
-loc :: K -> Maybe RealSrcSpan
-loc (Set _ l) = l
-loc _         = Nothing
+tag :: K -> Tag
+tag (Set _ l) = l
+tag _         = NA
+
+size :: K -> Maybe Int
+size (Dom _ _) = Nothing
+size (Set l _) = Just $ sizeUniqSet l
 
 -- Is the first constructor set a susbet of the second
 subset :: K -> K -> Bool
@@ -100,8 +116,8 @@ subset _ _                    = False
 -- Internal (atomic) constraint
 data Constraint where
   DomDom   :: Int -> Int -> Core.Name -> Constraint
-  ConDom   :: Core.Name -> Int -> Core.Name -> Maybe RealSrcSpan -> Constraint
-  DomSet   :: Int -> Core.Name -> UniqSet Core.Name -> Maybe RealSrcSpan -> Constraint
+  ConDom   :: Core.Name -> Int -> Core.Name -> Tag -> Constraint
+  DomSet   :: Int -> Core.Name -> UniqSet Core.Name -> Tag -> Constraint
 
 instance Eq Constraint where
   DomDom x y d   == DomDom x' y' d'   = (x, y, d) == (x', y', d')
@@ -109,8 +125,9 @@ instance Eq Constraint where
   DomSet x d k _ == DomSet x' d' k' _ = (x, d, nonDetEltsUniqSet k) == (x', d', nonDetEltsUniqSet k')
   _              == _                 = False
 
+-- TODO: Include size heuristic in the ord
 instance Ord Constraint where
-  DomDom x y d <= DomDom x' y' d'     = (x, y, d) <= (x', y', d')
+  DomDom x y d   <= DomDom x' y' d'   = (x, y, d) <= (x', y', d')
   ConDom k x d _ <= ConDom k' x' d' _ = (k, x, d) <= (k', x', d')
   DomSet x d k _ <= DomSet x' d' k' _ = (x, d, nonDetEltsUniqSet k) <= (x', d', nonDetEltsUniqSet k')
 
@@ -242,6 +259,9 @@ insertGuard g s
 
 
 
+
+
+
 -- A collection of guarded constraints
 newtype ConSet = ConSet (H.HashMap Constraint (S.NESet Guard))
   deriving Eq
@@ -266,11 +286,17 @@ insertAtomic :: Constraint -> Guard -> ConSet -> ConSet
 insertAtomic c g (ConSet cs) = ConSet $ H.insertWith (foldr insertGuard) c (S.singleton g) cs
 
 -- Insert any constructor set constraint
-insert :: K -> K -> Guard -> ConSet -> ConSet
-insert k1 k2 g cs =
+insert :: K -> K -> Guard -> Core.Expr Core.Var -> ConSet -> ConSet
+insert k1 k2 g e cs =
   case toAtomic k1 k2 of
     Just cs' -> foldr (`insertAtomic` g) cs cs'
-    Nothing  -> Core.pprPanic "The program is unsound!" (Core.ppr (loc k1, loc k2))
+    Nothing  -> Core.pprPanic "The program is unsound!" (Core.ppr (k1, tag k1, k2, tag k2, e))
+
+-- Slow but steady insert
+insertSlow :: Constraint -> Guard -> ConSet -> ConSet
+insertSlow c g cs@(ConSet m)
+  | H.null $ H.filterWithKey (\c' gs' -> entailsConstraint c' c && any (entailsGuard g) gs') m = insertAtomic c g cs
+  | otherwise = cs
 
 -- ConSet behaves like [(K, K, Guard)]
 toList :: ConSet -> [(K, K, Guard)]
@@ -300,17 +326,26 @@ diff (ConSet m) (ConSet m') = ConSet $ H.mapMaybeWithKey go m
         Just gs' -> S.nonEmptySet (gs S.\\ gs')
         Nothing  -> Just gs
 
+-- Filter guards in a coarse or fine mode
+notEmpty :: Bool -> (Guard -> Bool) -> H.HashMap Constraint (S.NESet Guard) -> H.HashMap Constraint (S.NESet Guard)
+notEmpty False f hm = H.mapMaybe (S.nonEmptySet . S.filter f) hm
+notEmpty True f hm = H.map (\s ->
+  let s' = S.filter f s
+  in case S.nonEmptySet s' of
+    Nothing -> S.insertSet top s'
+    Just s'' -> s'') hm
+
 -- Filter a constraint set to a certain domain
-restrict :: [Int] -> ConSet -> ConSet
-restrict xs (ConSet m) = ConSet
-                       $ H.mapMaybe (S.nonEmptySet . S.filter (all (`elem` xs) . domain)) -- Filter guards
-                       $ H.filterWithKey (\c _ -> all (`elem` xs) $ domain c) m           -- Filter constraints
+restrict :: Bool -> [Int] -> ConSet -> ConSet
+restrict c xs (ConSet m) = ConSet
+                       $ notEmpty c (all (`elem` xs) . domain) -- Filter guards
+                       $ H.filterWithKey (\c _ -> all (`elem` xs) $ domain c) m -- Filter constraints
 
 -- Filter a constraint set to remove a variable
-filterOut :: Int -> ConSet -> ConSet
-filterOut x (ConSet m) = ConSet
-                       $ H.mapMaybe (S.nonEmptySet . S.filter (notElem x . domain)) -- Filter guards
-                       $ H.filterWithKey (\c _ -> x `notElem` domain c) m           -- Filter constraints
+filterOut :: Bool -> Int -> ConSet -> ConSet
+filterOut c x (ConSet m) = ConSet
+                       $ notEmpty c (notElem x . domain) -- Filter guards
+                       $ H.filterWithKey (\c _ -> x `notElem` domain c) m -- Filter constraints
 
 -- Filter a constraint set to one which reference a variable
 filterTo :: Int -> ConSet -> ConSet
@@ -318,6 +353,9 @@ filterTo x (ConSet m) = ConSet
                       $ H.mapMaybeWithKey (\c gs -> if x `elem` domain c then Just gs else S.nonEmptySet $ S.filter (elem x . domain) gs) m -- Filter guards
 
 
+-- Rebuild without superfluous constraints
+houseKeeping :: ConSet -> ConSet
+houseKeeping (ConSet m) = H.foldrWithKey (\c gs cs -> foldr (insertSlow c) cs gs) empty m
 
 
 
@@ -326,8 +364,8 @@ filterTo x (ConSet m) = ConSet
 
 
 -- Close a constrain set under the resolution rules
-saturate :: [Int] -> ConSet -> ConSet
-saturate xs cs = foldr (\x cs' -> filterOut x $ saturate' x cs' $ filterTo x cs') cs inter
+saturate :: Bool -> Core.Expr Core.Var -> [Int] -> ConSet -> ConSet
+saturate c e xs cs = {- houseKeeping $ -} foldr (\x cs' -> filterOut c x $ saturate' x cs' $ filterTo x cs') cs inter
   where
     inter = domain cs L.\\ xs
 
@@ -336,36 +374,18 @@ saturate xs cs = foldr (\x cs' -> filterOut x $ saturate' x cs' $ filterTo x cs'
       | H.null todo = done
       | otherwise   = saturate' x new (filterTo x $ diff new done)
       where
-        new = H.foldrWithKey (cross x) done todo
+        new = H.foldrWithKey (cross x e) done todo
 
 -- Apply the resolution rules once between the new constraint and the old
-cross :: Int -> Constraint -> S.NESet Guard -> ConSet -> ConSet
-cross x c gs cs@(ConSet m) =
-
---   (\cs -> M.foldrWithKey (\c' gs' cs' ->
---     S.foldr (\(g, g') ->
---       case g `and` g' of
---         Nothing  -> id
---         Just g'' -> insert (lhs c) (rhs c') g''
---     ) cs' $ S.cartesianProduct gs gs'
---   ) cs $ lookupLHS (rhs c) cs)
--- 
---   .
--- 
---   (\cs -> M.foldrWithKey (\c' gs' cs' ->
---     S.foldr (\(g, g') ->
---       case g `and` g' of
---         Nothing  -> id
---         Just g'' -> insert (lhs c') (rhs c) g''
---     ) cs' $ S.cartesianProduct gs gs'
---   ) cs $ lookupRHS (rhs c) cs)
+cross :: Int -> Core.Expr Core.Var -> Constraint -> S.NESet Guard -> ConSet -> ConSet
+cross z e c gs cs@(ConSet m) =
 
    H.foldrWithKey (\c' gs' cs' ->
     S.foldr (\(g, g') ->
        trans c g c' g' .
        trans c' g' c g .
-       subs x c' g' c g  .
-       subs x c g c' g'  .
+       subs c' g' c g  .
+       subs c g c' g'  .
        weak c' g' c g  .
        weak c g c' g'
      ) cs' $ S.cartesianProduct gs gs'
@@ -376,19 +396,21 @@ cross x c gs cs@(ConSet m) =
     trans :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
     trans c g c' g'
       | rhs c == lhs c'
-      , Just g'' <- g `and` g' = insert (lhs c) (rhs c') g''
+      , z `elem` (domain c ++ domain c')
+      , Just g'' <- g `and` g' = insert (lhs c) (rhs c') g'' e
     trans _ _ _ _              = id
 
     -- Weakening rule
     weak :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
     weak c@(ConDom k x d l) g c' g'@(Guard m)
-      | Just g'' <- g `and` delete k x d g' = insertAtomic c' g''
+      | x == z
+      , Just g'' <- g `and` delete k x d g' = insertAtomic c' g''
     weak _ _ _ _                            = id
 
     -- Substitution rule
-    subs :: Int -> Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
-    subs y' c@(DomDom x y d) g c' g'@(Guard m)
-      | y == y'
+    subs :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
+    subs c@(DomDom x y d) g c' g'@(Guard m)
+      | y == z
       , Just g'' <- g `and` replace x y d g' = insertAtomic c' g''
-    subs _ _ _ _ _                           = id
+    subs _ _ _ _                             = id
 

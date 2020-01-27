@@ -45,6 +45,7 @@ library
     , containers
     , ghc
     , time
+    , directory
   default-language: Haskell2010
 
 test-suite intensional-constraints-test

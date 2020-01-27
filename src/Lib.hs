@@ -4,44 +4,57 @@ module Lib
     ( plugin
     ) where
 
+import Control.Monad
+
+import System.Directory
+
 import Data.Time
 import qualified Data.Map as M
 
 import GhcPlugins
+-- import Binary
+-- import BinIface
+-- import IfaceEnv
+-- import TcRnMonad
 
 import InferM
 import InferCoreExpr
+
+-- TODO: Build from env
+data Flags = Flags {
+  time    :: Bool,
+  coarse  :: Bool,
+  srcDump :: Bool
+}
+
+flags = Flags { coarse = True, time = True, srcDump = False }
 
 plugin :: Plugin
 plugin = defaultPlugin { installCoreToDos = install }
   where
     install _ todo = return ([ CoreDoStrictness, CoreDoPluginPass "Constraint Inference" inferGuts] ++ todo)
 
--- interfaceName :: ModuleName -> FilePath
--- interfaceName = ("interface/" ++) . moduleNameString
+interfaceName :: ModuleName -> FilePath
+interfaceName = ("interface/" ++) . moduleNameString
 
 inferGuts :: ModGuts -> CoreM ModGuts
 inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
 
-  !start <- liftIO getCurrentTime
-  -- !() <- pprTraceM "Mod name: " (ppr m)
-  -- !() <- pprTraceM "Def count" $ (ppr $ length $ concatMap (\b -> getName <$> (filter (not . isPredTy . varType) $ bindersOf b)) p)
-
-  -- pprTraceM "" (ppr p)
+  start <- liftIO getCurrentTime
+  when (srcDump flags) $ pprTraceM "" (ppr p)
 
   -- Reload saved typeschemes
-  -- deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
-  -- hask <- getHscEnv 
-  -- env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m -> do
-  --   bh    <- liftIO $ readBinMem $ interfaceName m
-  --   cache <- mkNameCacheUpdater
-  --   tss   <- liftIO (getWithUserData cache bh :: IO [(Name, TypeScheme)])
-  --   let tss' = [(n, tagSumsWith m ts) | (n, ts) <- tss]
-  --   return $ foldr (\(x, ts) env' -> insertVar x ts env') env tss'
-  --   ) M.empty deps
+  --  deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
+  --  hask <- getHscEnv
+  --  env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m -> do
+  --    bh    <- liftIO $ readBinMem $ interfaceName m
+  --    cache <- mkNameCacheUpdater
+  --    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, RefinedScheme)])
+  --    return $ foldr (\(x, ts) env' -> M.insert x ts env') env tss
+  --    ) M.empty deps
 
   -- Infer constraints
-  tss <- runInferM (inferProg $ dependancySort p) M.empty
+  tss <- runInferM (inferProg $ dependancySort p) (coarse flags) M.empty
 
   -- Display typeschemes
   liftIO $ mapM_ (\(v, ts) -> do
@@ -50,17 +63,16 @@ inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
       putStrLn ""
     ) $ M.toList tss
 
+  -- Save typescheme to temporary file
   -- let tss' = globalise m tss
-    
-  -- -- Save typescheme to temporary file
-  -- exist <- liftIO $ doesDirectoryExist "interface"
-  -- liftIO $ unless exist (createDirectory "interface")
-  -- bh <- liftIO $ openBinMem 1000
-  -- liftIO $ putWithUserData (const $ return ()) bh tss'
-  -- liftIO $ writeBinMem bh $ interfaceName $ moduleName m
+  --  exist <- liftIO $ doesDirectoryExist "interface"
+  --  liftIO $ unless exist (createDirectory "interface")
+  --  bh <- liftIO $ openBinMem 1000
+  --  liftIO $ putWithUserData (const $ return ()) bh (M.toList tss)
+  --  liftIO $ writeBinMem bh $ interfaceName $ moduleName m
 
   stop <- liftIO getCurrentTime
-  liftIO $ print $ diffUTCTime stop start
+  when (time flags) $ liftIO $ print $ diffUTCTime stop start
 
   return guts
 

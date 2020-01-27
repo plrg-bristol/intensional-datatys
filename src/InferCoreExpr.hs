@@ -27,7 +27,7 @@ inferRec bgs = do
     ) M.empty $ Core.flattenBinds [bgs]
 
   -- Restrict type schemes
-  restrict $
+  restrict (head $ Core.rhssOfBind bgs) $
     -- Add recusrive binds and context build so far
     putVars binds $
       foldM (\bs (Core.getName -> x, rhs) -> do
@@ -37,7 +37,7 @@ inferRec bgs = do
 
         -- Insure types are quantified by infered constraint
         let (RefinedScheme as' _ _ ut') = binds M.! x
-        when (as /= as') $ Core.pprPanic "Type variables don't align!" (Core.ppr (as, as'))
+        unless (as == as') $ Core.pprPanic "Type variables don't align!" (Core.ppr (as, as'))
         emitSubType ut  ut' rhs
         emitSubType ut' ut rhs
 
@@ -71,8 +71,8 @@ infer e@(Core.Var x) =
         let (args, res)  =  dataCon t'
         case res of
           Inj x d _ -> do
-            l <- loc
-            emitSingle (con (Core.getName k) l) (Dom x (Core.getName d))
+            l <- getTag
+            emitSingle (con (Core.getName k) l) (Dom x (Core.getName d)) e
             mapM_ (\t -> emitSubType t (inj x t) e) args
 
           Base _ _ -> return () -- Unrefinable
@@ -129,7 +129,7 @@ infer (Core.Let b e) = inferRec b >>= flip putVars (infer e)
 
 infer e'@(Core.Case e b rt alts) = do
   -- The location of the case statement
-  l <- loc
+  l <- getTag
 
   -- Fresh return type
   t <- fromCore rt
@@ -172,9 +172,9 @@ infer e'@(Core.Case e b rt alts) = do
 
       -- Ensure destructor is total if not nested
       case def of
-        Nothing -> when tl $ emitSingle (Dom x (Core.getName d)) (set ks l)
+        Nothing -> when tl $ emitSingle (Dom x (Core.getName d)) (set ks l) e'
         Just rhs
-          | Core.exprIsBottom rhs -> when tl $ emitSingle (Dom x (Core.getName d)) (set ks l) -- If rhs is bottom, it is not a valid case
+          | Core.exprIsBottom rhs -> when tl $ emitSingle (Dom x (Core.getName d)) (set ks l) e' -- If rhs is bottom, it is not a valid case
           | otherwise ->
             -- Default case
             -- Guard by constructors which have not occured
@@ -206,7 +206,7 @@ infer e'@(Core.Case e b rt alts) = do
       unInj _            = Nothing
 
 -- Track source location
-infer (Core.Tick t e) = atLoc (Core.sourceSpan t) $ infer e
+infer (Core.Tick t e) = setLoc (Core.sourceSpan t) $ infer e
 
 -- Infer cast
 infer (Core.Cast e _) = do

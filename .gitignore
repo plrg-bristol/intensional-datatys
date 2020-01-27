@@ -1,3 +1,4 @@
+.ghc*
 dist
 dist-newstyle
 *.log

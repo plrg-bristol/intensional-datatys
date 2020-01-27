@@ -1,5 +1,3 @@
+dist
+dist-newstyle
 *.log
-interface/
-stack.yaml*
-.stack-work
-*.prof

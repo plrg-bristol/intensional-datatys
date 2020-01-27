@@ -20,25 +20,26 @@ import GhcPlugins
 import InferM
 import InferCoreExpr
 
--- TODO: Build from env
 data Flags = Flags {
   time    :: Bool,
   coarse  :: Bool,
   srcDump :: Bool
 }
 
-flags = Flags { coarse = True, time = True, srcDump = False }
+-- Build flags from command line
+mkFlags :: [CommandLineOption] -> Flags
+mkFlags cmd = Flags { coarse = "coarse" `elem` cmd, time = "time" `elem` cmd, srcDump = "srcDump" `elem` cmd }
 
 plugin :: Plugin
-plugin = defaultPlugin { installCoreToDos = install }
+plugin = defaultPlugin { pluginRecompile = \_ -> return NoForceRecompile, installCoreToDos = install }
   where
-    install _ todo = return ([ CoreDoStrictness, CoreDoPluginPass "Constraint Inference" inferGuts] ++ todo)
+    install cmd todo = return ([CoreDoStrictness, CoreDoPluginPass "Constraint Inference" (inferGuts (mkFlags cmd))] ++ todo)
 
 interfaceName :: ModuleName -> FilePath
 interfaceName = ("interface/" ++) . moduleNameString
 
-inferGuts :: ModGuts -> CoreM ModGuts
-inferGuts guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
+inferGuts :: Flags -> ModGuts -> CoreM ModGuts
+inferGuts flags guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
 
   start <- liftIO getCurrentTime
   when (srcDump flags) $ pprTraceM "" (ppr p)

@@ -1,0 +1,3 @@
+packages:.
+-- profiling:true
+-- profiling-detail:all-functions

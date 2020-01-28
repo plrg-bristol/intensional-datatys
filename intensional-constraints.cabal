@@ -55,7 +55,7 @@ test-suite intensional-constraints-test
       Paths_intensional_constraints
   hs-source-dirs:
       test
-  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:time
+  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:fine
   build-depends:
       base >=4.7
     , intensional-constraints

@@ -22,13 +22,12 @@ import InferCoreExpr
 
 data Flags = Flags {
   time    :: Bool,
-  coarse  :: Bool,
   srcDump :: Bool
 }
 
 -- Build flags from command line
 mkFlags :: [CommandLineOption] -> Flags
-mkFlags cmd = Flags { coarse = "coarse" `elem` cmd, time = "time" `elem` cmd, srcDump = "srcDump" `elem` cmd }
+mkFlags cmd = Flags { time = "time" `elem` cmd, srcDump = "srcDump" `elem` cmd }
 
 plugin :: Plugin
 plugin = defaultPlugin { pluginRecompile = \_ -> return NoForceRecompile, installCoreToDos = install }
@@ -55,7 +54,7 @@ inferGuts flags guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   --    ) M.empty deps
 
   -- Infer constraints
-  tss <- runInferM (inferProg $ dependancySort p) (coarse flags) M.empty
+  tss <- runInferM (inferProg $ dependancySort p) M.empty
 
   -- Display typeschemes
   liftIO $ mapM_ (\(v, ts) -> do

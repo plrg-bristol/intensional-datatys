@@ -68,7 +68,7 @@ infer e@(Core.Var x) =
 
       | otherwise -> do -- Infer Constructor
         t@(Forall as t') <- fromCoreScheme $ Core.exprType e
-        let (args, res)  =  dataCon t'
+        let (args, res)  =  result t'
         case res of
           Inj x d _ -> do
             l <- getTag
@@ -80,14 +80,6 @@ infer e@(Core.Var x) =
 
     -- Infer variable
     Nothing -> getVar x e
-  where
-    -- Extract the result type from a constructor
-    dataCon :: Type T -> ([Type T], Type T)
-    dataCon (a :=> b) = (a:args, res)
-      where
-        (args, res) = dataCon b
-    dataCon t = ([], t)
-
 
 infer l@(Core.Lit _) = fromCoreScheme $ Core.exprType l
 
@@ -138,10 +130,10 @@ infer e'@(Core.Case e b rt alts) = do
   t0 <- rank1 $ infer e
 
   -- Add the variable under scrutinee to scope
-  putVar (Core.getName b) (RefinedScheme [] [] empty t0) $ case unInj t0 of
+  putVar (Core.getName b) (RefinedScheme [] [] empty t0) $ case t0 of
 
     -- Infer a refinable case expression
-    Just (x, d) -> do
+    Inj x d _ -> do
 
       let (alts', def) = Core.findDefault alts
       ks <- foldM (\ks (Core.DataAlt (Core.getName -> k), bs, rhs) ->
@@ -183,7 +175,7 @@ infer e'@(Core.Case e b rt alts) = do
               emitSubType ti' t rhs
 
     -- Infer an unrefinable case expression
-    Nothing ->
+    _ ->
       mapM_ (\(alt, bs, rhs) ->
         if Core.exprIsBottom rhs
           then return () -- If rhs is bottom, it is not a valid case
@@ -200,10 +192,6 @@ infer e'@(Core.Case e b rt alts) = do
         ) alts
 
   return $ Forall [] t
-    where
-      unInj :: Type T -> Maybe (Int, Core.TyCon)
-      unInj (Inj x d as) = Just (x, d)
-      unInj _            = Nothing
 
 -- Track source location
 infer (Core.Tick t e) = setLoc (Core.sourceSpan t) $ infer e

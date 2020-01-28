@@ -14,6 +14,7 @@ module Types (
   Refined(..),
 
   shape,
+  result,
   compareShape,
   inj,
   refinable,
@@ -117,6 +118,13 @@ shape (Inj _ d as)  = Base d (shape <$> as)
 shape (a :=> b)     = shape a :=> shape b
 shape (Lit l)       = Lit l
 shape Ambiguous     = Ambiguous
+
+-- Extract the result type from a curried function
+result :: Type T -> ([Type T], Type T)
+result (a :=> b) = (a:args, res)
+  where
+    (args, res) = result b
+result t = ([], t)
 
 -- Comapre shapes
 compareShape :: Type S -> Type S -> Bool

@@ -290,7 +290,7 @@ insert :: K -> K -> Guard -> Core.Expr Core.Var -> ConSet -> ConSet
 insert k1 k2 g e cs =
   case toAtomic k1 k2 of
     Just cs' -> foldr (`insertAtomic` g) cs cs'
-    Nothing  -> Core.pprPanic "The program is unsound!" (Core.ppr (k1, tag k1, k2, tag k2, e))
+    Nothing  -> Core.pprPanic "The program is unsound!" (Core.ppr (k1, tag k1, k2, tag k2, g, e, cs))
 
 -- Slow but steady insert
 insertSlow :: Constraint -> Guard -> ConSet -> ConSet
@@ -327,25 +327,26 @@ diff (ConSet m) (ConSet m') = ConSet $ H.mapMaybeWithKey go m
         Nothing  -> Just gs
 
 -- Filter guards in a coarse or fine mode
-notEmpty :: Bool -> (Guard -> Bool) -> H.HashMap Constraint (S.NESet Guard) -> H.HashMap Constraint (S.NESet Guard)
-notEmpty False f hm = H.mapMaybe (S.nonEmptySet . S.filter f) hm
-notEmpty True f hm = H.map (\s ->
-  let s' = S.filter f s
-  in case S.nonEmptySet s' of
-    Nothing -> S.insertSet top s'
-    Just s'' -> s'') hm
+notEmpty :: (Guard -> Bool) -> H.HashMap Constraint (S.NESet Guard) -> ConSet
+notEmpty f hm = ConSet $ H.mapWithKey go hm'
+  where
+    hm' = H.map (S.filter f) hm
+    go k s =
+      case S.nonEmptySet s of
+        Nothing -> S.insertSet top s -- Trivially true guard
+        Just s' -> s'
 
 -- Filter a constraint set to a certain domain
-restrict :: Bool -> [Int] -> ConSet -> ConSet
-restrict c xs (ConSet m) = ConSet
-                       $ notEmpty c (all (`elem` xs) . domain) -- Filter guards
-                       $ H.filterWithKey (\c _ -> all (`elem` xs) $ domain c) m -- Filter constraints
+-- restrict :: Grain -> [Int] -> ConSet -> ConSet
+-- restrict c xs (ConSet m) = ConSet
+--                        $ notEmpty c (all (`elem` xs) . domain) -- Filter guards
+--                        $ H.filterWithKey (\c _ -> all (`elem` xs) $ domain c) m -- Filter constraints
 
 -- Filter a constraint set to remove a variable
-filterOut :: Bool -> Int -> ConSet -> ConSet
-filterOut c x (ConSet m) = ConSet
-                       $ notEmpty c (notElem x . domain) -- Filter guards
-                       $ H.filterWithKey (\c _ -> x `notElem` domain c) m -- Filter constraints
+filterOut :: Int -> ConSet -> ConSet
+filterOut x (ConSet m) = ConSet
+                       $ H.mapMaybe (S.nonEmptySet . S.filter (notElem x . domain)) -- Filter guards
+                       $ H.filterWithKey (\c _ -> x `notElem` domain c) m           -- Filter constraints
 
 -- Filter a constraint set to one which reference a variable
 filterTo :: Int -> ConSet -> ConSet
@@ -364,8 +365,8 @@ houseKeeping (ConSet m) = H.foldrWithKey (\c gs cs -> foldr (insertSlow c) cs gs
 
 
 -- Close a constrain set under the resolution rules
-saturate :: Bool -> Core.Expr Core.Var -> [Int] -> ConSet -> ConSet
-saturate c e xs cs = {- houseKeeping $ -} foldr (\x cs' -> filterOut c x $ saturate' x cs' $ filterTo x cs') cs inter
+saturate :: Core.Expr Core.Var -> [Int] -> ConSet -> ConSet
+saturate e xs cs = {- houseKeeping $ -} foldr (\x cs' -> filterOut x $ saturate' x cs' $ filterTo x cs') cs inter
   where
     inter = domain cs L.\\ xs
 

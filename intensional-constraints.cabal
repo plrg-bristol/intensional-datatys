@@ -31,14 +31,16 @@ library
       Constraint
       InferM
       InferCoreExpr
+      Interface
       Lib
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:
       src
-  ghc-options: -O2
+  ghc-options: -O2 -Wall
   build-depends:
       base >=4.7
+    , mtl
     , nonempty-containers
     , unordered-containers
     , hashable
@@ -50,7 +52,7 @@ library
 
 test-suite intensional-constraints-test
   type: exitcode-stdio-1.0
-  main-is: Set.hs
+  main-is: SimpleTest.hs
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:

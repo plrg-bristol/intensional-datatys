@@ -23,7 +23,7 @@ inferRec bgs = do
   -- Add each binds within the group to context with a fresh type and no constraints
   binds <- foldM (\bs (Core.getName -> x, Core.exprType -> t) -> do
     Forall as t' <- fromCoreScheme t
-    return $ M.insert x (RefinedScheme as [] empty t') bs
+    return $ M.insert x (RScheme as [] empty t') bs
     ) M.empty $ Core.flattenBinds [bgs]
 
   -- Restrict type schemes
@@ -36,7 +36,7 @@ inferRec bgs = do
         t@(Forall as ut) <- infer rhs
 
         -- Insure types are quantified by infered constraint
-        let (RefinedScheme as' _ _ ut') = binds M.! x
+        let (RScheme as' _ _ ut') = binds M.! x
         unless (as == as') $ Core.pprPanic "Type variables don't align!" (Core.ppr (as, as'))
         emitSubType ut  ut' rhs
         emitSubType ut' ut rhs
@@ -109,11 +109,12 @@ infer e'@(Core.Lam x e)
   | Core.isTyVar x = do
     --Type abstraction
     Forall as t <- infer e
-    return $ Forall (Core.getName x:as) t
+    a <- getExternalName x
+    return $ Forall (a:as) t
   | otherwise = do
     -- Variable abstraction
     t1 <- fromCore $ Core.varType x
-    Forall as t2 <- putVar (Core.getName x) (RefinedScheme [] [] empty t1) (infer e)
+    Forall as t2 <- putVar (Core.getName x) (RScheme [] [] empty t1) (infer e)
     return $ Forall as (t1 :=> t2)
 
 -- Local prog
@@ -130,7 +131,7 @@ infer e'@(Core.Case e b rt alts) = do
   t0 <- rank1 $ infer e
 
   -- Add the variable under scrutinee to scope
-  putVar (Core.getName b) (RefinedScheme [] [] empty t0) $ case t0 of
+  putVar (Core.getName b) (RScheme [] [] empty t0) $ case t0 of
 
     -- Infer a refinable case expression
     Inj x d _ -> do
@@ -144,12 +145,12 @@ infer e'@(Core.Case e b rt alts) = do
             -- Add constructor arguments introduced by the pattern
             ts <- foldM (\m b -> do
               t <- fromCore $ Core.varType b
-              return $ M.insert (Core.getName b) (RefinedScheme [] [] empty t) m
+              return $ M.insert (Core.getName b) (RScheme [] [] empty t) m
               ) M.empty bs
 
             branch e k x (Core.getName d) $ do
               -- Constructor arguments are from the same refinement environment
-              mapM_ (\(RefinedScheme [] _ _ t) -> emitSubType (inj x t) t rhs) ts
+              mapM_ (\(RScheme [] _ _ t) -> emitSubType (inj x t) t rhs) ts
 
               -- Ensure return type is valid
               ti' <- rank1 $ putVars ts (infer rhs)
@@ -183,7 +184,7 @@ infer e'@(Core.Case e b rt alts) = do
             -- Add constructor arguments introduced by the pattern
             ts <- foldM (\m b -> do
               t <- fromCore $ Core.varType b
-              return $ M.insert (Core.getName b) (RefinedScheme [] [] empty t) m
+              return $ M.insert (Core.getName b) (RScheme [] [] empty t) m
               ) M.empty bs
 
             -- Ensure return type is valid
@@ -194,7 +195,7 @@ infer e'@(Core.Case e b rt alts) = do
   return $ Forall [] t
 
 -- Track source location
-infer (Core.Tick t e) = setLoc (Core.sourceSpan t) $ infer e
+infer (Core.Tick t e) = setLoc (RealSrcSpan $ Core.sourceSpan t) $ infer e
 
 -- Infer cast
 infer (Core.Cast e _) = do

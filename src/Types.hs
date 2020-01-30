@@ -6,10 +6,14 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Types (
   Extended(..),
-  Type(..),
+  Type,
+  IType,
+  TypeGen(..),
   Scheme(..),
   Refined(..),
 
@@ -18,21 +22,28 @@ module Types (
   compareShape,
   inj,
   refinable,
+  promote,
+  demote,
 
   applyType,
   subTyVar,
 
   FromCore(..),
+  getExternalName,
   fromCore,
   fromCoreScheme,
 ) where
 
 import Prelude hiding ((<>))
 
+import Control.Monad.Reader
+
 import qualified Data.List as L
 
 import BasicTypes
 import Outputable
+import IfaceType
+import ToIface
 -- import UniqSupply
 import qualified TyCoRep as Tcr
 import qualified GhcPlugins as Core
@@ -42,16 +53,18 @@ data Extended where
   T :: Extended -- Refined
 
 -- Monomorphic types
-data Type (e :: Extended) where
-  Var    :: Core.Name -> Type e
-  App    :: Type S -> Type S -> Type e
-  Base   :: Core.TyCon -> [Type S] -> Type e
-  Data   :: Core.TyCon -> [Type S] -> Type S
-  Inj    :: Int -> Core.TyCon -> [Type T] -> Type T
-  (:=>)  :: Type e -> Type e -> Type e
-  Lit    :: Tcr.TyLit -> Type e
+type Type (e :: Extended) = TypeGen e Tcr.TyLit Core.TyCon
+type IType (e :: Extended) = TypeGen e IfaceTyLit IfaceTyCon
+data TypeGen (e :: Extended) l tc where
+  Var    :: Core.Name -> TypeGen e l tc
+  App    :: TypeGen S l tc -> TypeGen S l tc -> TypeGen e l tc
+  Base   :: tc -> [TypeGen S l tc] -> TypeGen e l tc
+  Data   :: tc -> [TypeGen S l tc] -> TypeGen S l tc
+  Inj    :: Int -> tc -> [TypeGen T l tc] -> TypeGen T l tc
+  (:=>)  :: TypeGen e l tc -> TypeGen e l tc -> TypeGen e l tc
+  Lit    :: l -> TypeGen e l tc
 
-  Ambiguous :: Type e -- Ambiguous type hides higher ranked types and casts from inference
+  Ambiguous :: TypeGen e l tc -- Ambiguous type hides higher ranked types and casts from inference
 
 deriving instance Eq (Type e)
 
@@ -66,7 +79,7 @@ class Refined t where
   domain :: t -> [Int]
   rename :: Int -> Int -> t -> t
 
-instance Refined (Type T) where
+instance Refined (TypeGen T l tc) where
   domain (Inj x d as) = foldr (L.union . domain) [x] as
   domain (a :=> b)    = L.union (domain a) (domain b)
   domain _            = []
@@ -84,10 +97,10 @@ instance Refined (Scheme T) where
   rename x y (Forall as t) = Forall as $ rename x y t
 
 -- Clone of a Outputable (Core.Type)
-instance Outputable (Type e) where
+instance (Outputable l, Outputable tc) => Outputable (TypeGen e l tc) where
   ppr = pprTy topPrec
     where
-      pprTy :: PprPrec -> Type e -> SDoc
+      pprTy :: (Outputable l, Outputable tc) => PprPrec -> TypeGen e l tc -> SDoc
       pprTy _ (Var a)         = ppr a
       pprTy prec (App t1 t2)  = hang (pprTy prec t1)
                                    2 (pprTy appPrec t2)
@@ -147,6 +160,24 @@ inj x (Inj _ d as)  = Inj x d (inj x <$> as)
 inj x (a :=> b)     = inj x a :=> inj x b
 inj x (Lit l)       = Lit l
 
+-- Promote an interface type with the aide of a core type
+promote :: Core.Kind -> IType e -> Type e
+promote t1 t2 | Core.pprTrace "lift" (Core.ppr (t1, t2)) True = undefined
+
+demote :: Type e -> IType e
+demote (Var a) = Var a
+demote (App a b) = App (demote a) (demote b)
+demote (Base b as) = Base (toIfaceTyCon b) (demote <$> as)
+demote (Data d as) = Data (toIfaceTyCon d) (demote <$> as)
+demote (Inj x d as) = Inj x (toIfaceTyCon d) (demote <$> as)
+demote (a :=> b) = demote a :=> demote b
+demote (Lit l) = Lit (toIfaceTyLit l)
+
+
+
+
+
+
 
 
 -- Type application
@@ -195,13 +226,19 @@ refinable tc = (length (Core.tyConDataCons tc) > 1) && all pos (concatMap Core.d
 
 -- Convert from a core type
 class Monad m => FromCore m (e :: Extended) where
-  tycon  :: Core.TyCon -> [Type e] -> m (Type e)
+  tycon :: Core.TyCon -> [Type e] -> m (Type e)
 
 instance Monad m => FromCore m S where
-  tycon t args = return $ Data t args
+  tycon d as = return $ Data d as
 
-fromCore :: FromCore m e => Core.Type -> m (Type e)
-fromCore (Tcr.TyVarTy a)   = return $ Var $ Core.getName a
+getExternalName :: MonadReader Core.Module m => Core.NamedThing a => a -> m Core.Name
+getExternalName a = do
+  let n = Core.getName a
+  m <- ask
+  return $ Core.mkExternalName (Core.nameUnique n) m (Core.nameOccName n) (Core.nameSrcSpan n)
+
+fromCore :: (MonadReader Core.Module m, FromCore m e) => Core.Type -> m (Type e)
+fromCore (Tcr.TyVarTy a)   = Var <$> getExternalName a
 fromCore (Tcr.AppTy t1 t2) = do
   s1 <- fromCore t1
   s2 <- fromCore t2
@@ -229,8 +266,8 @@ fromCore t@Tcr.ForAllTy{} = Core.pprPanic "Unexpected polymorphic type!" (Core.p
 fromCore t                = Core.pprPanic "Unexpected cast or coercion type!" (Core.ppr t)
 
 -- Convert a polymorphic core type
-fromCoreScheme :: FromCore m e => Core.Type -> m (Scheme e)
-fromCoreScheme (Tcr.TyVarTy a)   = return $ Forall [] $ Var $ Core.getName a
+fromCoreScheme :: (MonadReader Core.Module m, FromCore m e) => Core.Type -> m (Scheme e)
+fromCoreScheme (Tcr.TyVarTy a)   = Forall [] . Var <$> getExternalName a
 fromCoreScheme (Tcr.AppTy t1 t2) = do
   s1 <- fromCore t1
   s2 <- fromCore t2

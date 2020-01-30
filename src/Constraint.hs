@@ -2,16 +2,18 @@
 {-# LANGUAGE DataKinds #-}
 
 module Constraint (
-  Tag(..),
+  SrcSpan(..),
   K(..),
   con,
   set,
 
-  Guard,
+  Guard(..),
   guardDom,
   top,
 
   ConSet,
+  toList,
+  fromList,
   empty,
   insert,
   union,
@@ -21,8 +23,6 @@ module Constraint (
 ) where
 
 import Prelude hiding ((<>), and)
-
-import GHC.Generics (Generic)
 
 import Control.Monad
 
@@ -44,21 +44,10 @@ import qualified GhcPlugins as Core
 
 import Types
 
--- Possible locations
-data Tag where
-  NA  :: Tag
-  Loc :: RealSrcSpan -> Tag
-  Mod :: Core.ModuleName -> Tag
-
-instance Outputable Tag where
-  ppr NA      = text "NA"
-  ppr (Loc r) = ppr r
-  ppr (Mod m) = text "in module:" <+> ppr m
-
 -- General constructors set
 data K where
   Dom :: Int -> Core.Name -> K
-  Set :: UniqSet Core.Name -> Tag -> K
+  Set :: UniqSet Core.Name -> SrcSpan -> K
 
 instance Eq K where
   Dom x d == Dom x' d' = x == x' && d == d'
@@ -87,17 +76,18 @@ instance Outputable K where
     | otherwise         = pprWithBars ppr (nonDetEltsUniqSet ks)
 
 -- Convenient smart constructors
-con :: Core.Name -> Tag -> K
+con :: Core.Name -> SrcSpan -> K
 con n = Set (unitUniqSet n)
 
-set :: [Core.Name] -> Tag -> K
+set :: [Core.Name] -> SrcSpan -> K
 set s = Set (mkUniqSet s)
 
 -- Origin of the constructor set in src
-tag :: K -> Tag
+tag :: K -> SrcSpan
 tag (Set _ l) = l
-tag _         = NA
+tag _         = UnhelpfulSpan (Core.mkFastString "Unkown origin!")
 
+-- Possible heuristic for Ord?
 size :: K -> Maybe Int
 size (Dom _ _) = Nothing
 size (Set l _) = Just $ sizeUniqSet l
@@ -116,8 +106,8 @@ subset _ _                    = False
 -- Internal (atomic) constraint
 data Constraint where
   DomDom   :: Int -> Int -> Core.Name -> Constraint
-  ConDom   :: Core.Name -> Int -> Core.Name -> Tag -> Constraint
-  DomSet   :: Int -> Core.Name -> UniqSet Core.Name -> Tag -> Constraint
+  ConDom   :: Core.Name -> Int -> Core.Name -> SrcSpan -> Constraint
+  DomSet   :: Int -> Core.Name -> UniqSet Core.Name -> SrcSpan -> Constraint
 
 instance Eq Constraint where
   DomDom x y d   == DomDom x' y' d'   = (x, y, d) == (x', y', d')
@@ -159,7 +149,7 @@ instance Outputable Constraint where
 lhs :: Constraint -> K
 lhs (DomDom x _ d)   = Dom x d
 lhs (ConDom k _ _ l) = Set (unitUniqSet k) l
-lhs (DomSet x d _ r) = Dom x d
+lhs (DomSet x d _ _) = Dom x d
 
 rhs :: Constraint -> K
 rhs (DomDom _ y d)   = Dom y d
@@ -173,7 +163,7 @@ toAtomic (Dom x d) (Dom y d')
   | otherwise = Just [DomDom x y d]
 toAtomic (Dom x d) (Set k l)  = Just [DomSet x d k l]
 toAtomic (Set ks l) (Dom x d) = Just ((\k -> ConDom k x d l) <$> nonDetEltsUniqSet ks)
-toAtomic (Set ks l) (Set ks' r)
+toAtomic (Set ks _) (Set ks' r)
   | uniqSetAll (`elementOfUniqSet` ks') ks
               = Just []
   | otherwise = Nothing
@@ -216,13 +206,13 @@ guardDom k x d = Guard $ M.singleton (x, d) k
 and :: Guard -> Guard -> Maybe Guard
 and (Guard m) g = M.foldrWithKey go (Just g) m
   where
-    go (x, d) k g = do
-      Guard m <- g
-      case M.lookup (x, d) m of
-        Nothing -> return $ Guard $ M.insert (x, d) k m
+    go (x, d) k g' = do
+      Guard m' <- g'
+      case M.lookup (x, d) m' of
+        Nothing -> return $ Guard $ M.insert (x, d) k m'
         Just k' -> do
           guard (k == k')
-          g
+          g'
 
 -- Remove a conjunction from a guard
 delete :: Core.Name -> Int -> Core.Name -> Guard -> Guard
@@ -302,6 +292,10 @@ insertSlow c g cs@(ConSet m)
 toList :: ConSet -> [(K, K, Guard)]
 toList (ConSet m) = [(lhs c, rhs c, g) | (c, gs) <- H.toList m, g <- NE.toList $ S.toList gs]
 
+fromList :: [(K, K, Guard)] -> ConSet
+fromList [] = empty
+fromList ((k1, k2, g):cs) = insert k1 k2 g undefined (fromList cs)
+
 -- Surely there is a better way of doing this??
 mapMaybeSet :: Ord b => (a -> Maybe b) -> S.NESet a -> Maybe (S.NESet b)
 mapMaybeSet f = S.nonEmptySet . SS.fromList . mapMaybe f . SS.toList . S.toSet
@@ -328,10 +322,10 @@ diff (ConSet m) (ConSet m') = ConSet $ H.mapMaybeWithKey go m
 
 -- Filter guards in a coarse or fine mode
 notEmpty :: (Guard -> Bool) -> H.HashMap Constraint (S.NESet Guard) -> ConSet
-notEmpty f hm = ConSet $ H.mapWithKey go hm'
+notEmpty f hm = ConSet $ H.map go hm'
   where
     hm' = H.map (S.filter f) hm
-    go k s =
+    go s =
       case S.nonEmptySet s of
         Nothing -> S.insertSet top s -- Trivially true guard
         Just s' -> s'
@@ -371,7 +365,7 @@ saturate e xs cs = {- houseKeeping $ -} foldr (\x cs' -> filterOut x $ saturate'
     inter = domain cs L.\\ xs
 
     saturate' :: Int -> ConSet -> ConSet -> ConSet
-    saturate' x done cs@(ConSet todo)
+    saturate' x done (ConSet todo)
       | H.null todo = done
       | otherwise   = saturate' x new (filterTo x $ diff new done)
       where
@@ -403,14 +397,14 @@ cross z e c gs cs@(ConSet m) =
 
     -- Weakening rule
     weak :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
-    weak c@(ConDom k x d l) g c' g'@(Guard m)
+    weak (ConDom k x d _) g c' g'
       | x == z
       , Just g'' <- g `and` delete k x d g' = insertAtomic c' g''
     weak _ _ _ _                            = id
 
     -- Substitution rule
     subs :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
-    subs c@(DomDom x y d) g c' g'@(Guard m)
+    subs (DomDom x y d) g c' g'
       | y == z
       , Just g'' <- g `and` replace x y d g' = insertAtomic c' g''
     subs _ _ _ _                             = id

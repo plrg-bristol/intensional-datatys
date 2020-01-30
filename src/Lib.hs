@@ -12,13 +12,14 @@ import Data.Time
 import qualified Data.Map as M
 
 import GhcPlugins
--- import Binary
--- import BinIface
--- import IfaceEnv
--- import TcRnMonad
+import Binary
+import BinIface
+import IfaceEnv
+import TcRnMonad
 
 import InferM
 import InferCoreExpr
+import Interface
 
 data Flags = Flags {
   time    :: Bool,
@@ -44,17 +45,17 @@ inferGuts flags guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   when (srcDump flags) $ pprTraceM "" (ppr p)
 
   -- Reload saved typeschemes
-  --  deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
-  --  hask <- getHscEnv
-  --  env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m -> do
-  --    bh    <- liftIO $ readBinMem $ interfaceName m
-  --    cache <- mkNameCacheUpdater
-  --    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, RefinedScheme)])
-  --    return $ foldr (\(x, ts) env' -> M.insert x ts env') env tss
-  --    ) M.empty deps
+  deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
+  hask <- getHscEnv
+  env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m_name -> do
+    bh    <- liftIO $ readBinMem $ interfaceName m_name
+    cache <- mkNameCacheUpdater
+    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, RefinedScheme)])
+    return $ foldr (\(x, ts) env' -> M.insert x ts env') env tss
+    ) M.empty deps
 
   -- Infer constraints
-  tss <- runInferM (inferProg $ dependancySort p) M.empty
+  tss <- runInferM (inferProg $ dependancySort p) m env
 
   -- Display typeschemes
   liftIO $ mapM_ (\(v, ts) -> do
@@ -64,12 +65,11 @@ inferGuts flags guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
     ) $ M.toList tss
 
   -- Save typescheme to temporary file
-  -- let tss' = globalise m tss
-  --  exist <- liftIO $ doesDirectoryExist "interface"
-  --  liftIO $ unless exist (createDirectory "interface")
-  --  bh <- liftIO $ openBinMem 1000
-  --  liftIO $ putWithUserData (const $ return ()) bh (M.toList tss)
-  --  liftIO $ writeBinMem bh $ interfaceName $ moduleName m
+  exist <- liftIO $ doesDirectoryExist "interface"
+  liftIO $ unless exist (createDirectory "interface")
+  bh <- liftIO $ openBinMem 1000
+  liftIO $ putWithUserData (const $ return ()) bh (M.toList $ M.filterWithKey (\k _ -> isExternalName k) tss)
+  liftIO $ writeBinMem bh $ interfaceName $ moduleName m
 
   stop <- liftIO getCurrentTime
   when (time flags) $ liftIO $ print $ diffUTCTime stop start

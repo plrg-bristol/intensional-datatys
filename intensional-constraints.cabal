@@ -44,6 +44,7 @@ library
     , nonempty-containers
     , unordered-containers
     , hashable
+    , hashtables
     , containers
     , ghc
     , time
@@ -52,7 +53,7 @@ library
 
 test-suite intensional-constraints-test
   type: exitcode-stdio-1.0
-  main-is: SimpleTest.hs
+  main-is: Set.hs
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:

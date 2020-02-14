@@ -18,6 +18,7 @@ import IfaceEnv
 import TcRnMonad
 
 import InferM
+import Constraint
 import InferCoreExpr
 import Interface
 
@@ -50,7 +51,7 @@ inferGuts flags guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m_name -> do
     bh    <- liftIO $ readBinMem $ interfaceName m_name
     cache <- mkNameCacheUpdater
-    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, RefinedScheme)])
+    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, MixedScheme ConSet)])
     return $ foldr (\(x, ts) env' -> M.insert x ts env') env tss
     ) M.empty deps
 

@@ -1,5 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Constraint (
   SrcSpan(..),
@@ -7,9 +9,7 @@ module Constraint (
   con,
   set,
 
-  Guard(..),
-  guardDom,
-  top,
+  Guard,
 
   ConSet,
   toList,
@@ -24,8 +24,6 @@ module Constraint (
 
 import Prelude hiding ((<>), and)
 
-import Control.Monad
-
 import UniqSet
 import Unique
 import Data.Maybe
@@ -33,7 +31,6 @@ import Data.Hashable
 import qualified Data.List as L
 import qualified Data.List.NonEmpty as NE
 import qualified Data.HashMap.Lazy as H
-import qualified Data.Map as M
 import qualified Data.Set as SS
 import qualified Data.Set.NonEmpty as S
 
@@ -88,15 +85,15 @@ tag (Set _ l) = l
 tag _         = UnhelpfulSpan (Core.mkFastString "Unkown origin!")
 
 -- Possible heuristic for Ord?
-size :: K -> Maybe Int
-size (Dom _ _) = Nothing
-size (Set l _) = Just $ sizeUniqSet l
+-- size :: K -> Maybe Int
+-- size (Dom _ _) = Nothing
+-- size (Set l _) = Just $ sizeUniqSet l
 
 -- Is the first constructor set a susbet of the second
-subset :: K -> K -> Bool
-subset (Dom x d) (Dom x' d')  = x == x' && d == d'
-subset (Set ks _) (Set ks' _) = uniqSetAll (`elementOfUniqSet` ks') ks
-subset _ _                    = False
+-- subset :: K -> K -> Bool
+-- subset (Dom x d) (Dom x' d')  = x == x' && d == d'
+-- subset (Set ks _) (Set ks' _) = uniqSetAll (`elementOfUniqSet` ks') ks
+-- subset _ _                    = False
 
 
 
@@ -163,14 +160,14 @@ toAtomic (Dom x d) (Dom y d')
   | otherwise = Just [DomDom x y d]
 toAtomic (Dom x d) (Set k l)  = Just [DomSet x d k l]
 toAtomic (Set ks l) (Dom x d) = Just ((\k -> ConDom k x d l) <$> nonDetEltsUniqSet ks)
-toAtomic (Set ks _) (Set ks' r)
+toAtomic (Set ks _) (Set ks' _)
   | uniqSetAll (`elementOfUniqSet` ks') ks
               = Just []
   | otherwise = Nothing
 
 -- Is the first constraint stronger than the second?
-entailsConstraint :: Constraint -> Constraint -> Bool
-entailsConstraint c1 c2 = (lhs c1 `subset` lhs c2) && (rhs c2 `subset` rhs c1)
+-- entailsConstraint :: Constraint -> Constraint -> Bool
+-- entailsConstraint c1 c2 = (lhs c1 `subset` lhs c2) && (rhs c2 `subset` rhs c1)
 
 
 
@@ -180,69 +177,24 @@ entailsConstraint c1 c2 = (lhs c1 `subset` lhs c2) && (rhs c2 `subset` rhs c1)
 
 
 
--- A guard is a conjunction of k in dom(X(d), grouped by (X, d)
-newtype Guard = Guard (M.Map (Int, Core.Name) Core.Name)
-  deriving (Eq, Ord)
+-- A guard, i.e. a set of (X, k)
+type Guard = SS.Set (Int, Core.Name)
 
 instance Refined Guard where
-  domain (Guard m)     = map fst $ M.keys m
-  rename x y (Guard m) = Guard $ M.mapKeys (\(x', d) -> if x == x' then (y, d) else (x', d)) m
+  domain = SS.foldr (\(x, _) -> (x:)) []
+  rename x y = SS.map (\(x', k) -> if x == x' then (y, k) else (x', k))
 
-instance Outputable Guard where
-  ppr (Guard g) = sep (punctuate and [ppr k <+> char '∈' <+> text "dom" <> parens (ppr x <> parens (ppr d)) | ((x, d), k) <- M.toList g])
-    where
-      elem = unicodeSyntax (char '∈') (docToSDoc $ Pretty.text "in")
-      and  = unicodeSyntax (char '∧') (docToSDoc $ Pretty.text "&&")
-
--- Trivially true guard
-top :: Guard
-top = Guard M.empty
-
--- Guard generator
-guardDom :: Core.Name -> Int -> Core.Name -> Guard
-guardDom k x d = Guard $ M.singleton (x, d) k
-
--- Conjunction of guards
-and :: Guard -> Guard -> Maybe Guard
-and (Guard m) g = M.foldrWithKey go (Just g) m
+pprGuard :: Guard -> SDoc
+pprGuard g = sep (punctuate and [ppr k <+> char '∈' <+> text "dom" <> parens (ppr x) | (x, k) <- SS.toList g])
   where
-    go (x, d) k g' = do
-      Guard m' <- g'
-      case M.lookup (x, d) m' of
-        Nothing -> return $ Guard $ M.insert (x, d) k m'
-        Just k' -> do
-          guard (k == k')
-          g'
-
--- Remove a conjunction from a guard
-delete :: Core.Name -> Int -> Core.Name -> Guard -> Guard
-delete k x d (Guard m) = Guard $ M.update (\k' -> guard (k /= k') >> return k') (x, d) m
-
--- Replace a refinement variable y with x at a specific datatype d
-replace :: Int -> Int -> Core.Name -> Guard -> Guard
-replace x y d (Guard m) = Guard
-                        $ M.update pred (x, d) -- Add preciate to x
-                        $ M.delete (y, d) m    -- Remove predicate from y
-  where
-    pred k =
-      case M.lookup (y, d) m of
-        Nothing -> return k
-        Just k' -> guard (k == k') >> return k
-
--- Is the first guard as strong as than the second?
-entailsGuard :: Guard -> Guard -> Bool
-entailsGuard (Guard m) (Guard m') = M.foldrWithKey (\x kds k -> k && pred x kds) True m'
-  where
-    pred x k =
-      case M.lookup x m of
-        Just k' -> k == k'
-        Nothing -> False
+    elem = unicodeSyntax (char '∈') (docToSDoc $ Pretty.text "in")
+    and  = unicodeSyntax (char '∧') (docToSDoc $ Pretty.text " &&")
 
 -- Insert a guard if it is not stronger than an existing guard, and remove guards which are stronger than it
 insertGuard :: Guard -> S.NESet Guard -> S.NESet Guard
 insertGuard g s
- | any (entailsGuard g) s = s                                         -- g is stronger than an existing guard
- | otherwise = S.insertSet g $ S.filter (not . flip entailsGuard g) s -- remove guards that are stronger than g
+ | any (\g' -> SS.isSubsetOf g' g) s = s                                    -- g is stronger than an existing guard
+ | otherwise = S.insertSet g $ S.filter (\g' -> not (SS.isSubsetOf g g')) s -- remove guards that are stronger than g
 
 
 
@@ -261,7 +213,7 @@ instance Refined ConSet where
    rename x y (ConSet m) = ConSet $ H.fromList $ fmap (\(k, v) -> (rename x y k, S.map (rename x y) v)) $ H.toList m
 
 instance Outputable ConSet where
-  ppr cs = vcat [(if M.null m then Core.empty else ppr g <+> char '?') <+> ppr k1 <+> arrowt <+> ppr k2 | (k1, k2, g@(Guard m)) <- toList cs]
+  ppr cs = vcat [(if SS.null g then Core.empty else pprGuard g <+> char '?') <+> ppr k1 <+> arrowt <+> ppr k2 | (k1, k2, g) <- toList cs]
 
 -- Empty set of constraints
 empty :: ConSet
@@ -282,12 +234,6 @@ insert k1 k2 g e cs =
     Just cs' -> foldr (`insertAtomic` g) cs cs'
     Nothing  -> Core.pprPanic "The program is unsound!" (Core.ppr (k1, tag k1, k2, tag k2, g, e, cs))
 
--- Slow but steady insert
-insertSlow :: Constraint -> Guard -> ConSet -> ConSet
-insertSlow c g cs@(ConSet m)
-  | H.null $ H.filterWithKey (\c' gs' -> entailsConstraint c' c && any (entailsGuard g) gs') m = insertAtomic c g cs
-  | otherwise = cs
-
 -- ConSet behaves like [(K, K, Guard)]
 toList :: ConSet -> [(K, K, Guard)]
 toList (ConSet m) = [(lhs c, rhs c, g) | (c, gs) <- H.toList m, g <- NE.toList $ S.toList gs]
@@ -297,19 +243,19 @@ fromList [] = empty
 fromList ((k1, k2, g):cs) = insert k1 k2 g undefined (fromList cs)
 
 -- Surely there is a better way of doing this??
-mapMaybeSet :: Ord b => (a -> Maybe b) -> S.NESet a -> Maybe (S.NESet b)
-mapMaybeSet f = S.nonEmptySet . SS.fromList . mapMaybe f . SS.toList . S.toSet
+-- mapMaybeSet :: Ord b => (a -> Maybe b) -> S.NESet a -> Maybe (S.NESet b)
+-- mapMaybeSet f = S.nonEmptySet . SS.fromList . mapMaybe f . SS.toList . S.toSet
 
 -- Add a guard to an entire set
-guardWith :: Core.Name -> Int -> Core.Name -> ConSet -> ConSet
-guardWith k x d (ConSet cs) = ConSet $ H.mapMaybe (mapMaybeSet (and $ guardDom k x d)) cs
+guardWith :: Int -> Core.Name -> ConSet -> ConSet
+guardWith x k (ConSet cs) = ConSet $ H.map (S.map (SS.union $ SS.singleton (x, k))) cs
 
 -- Guard a constraint set by one of the guards
 guardAlts :: [Guard] -> ConSet -> ConSet
 guardAlts gs (ConSet cs) =
   case S.nonEmptySet $ SS.fromList gs of
     Nothing  -> empty
-    Just gs' -> ConSet $ H.mapMaybe (mapMaybeSet (uncurry and) . S.cartesianProduct gs') cs
+    Just gs' -> ConSet $ H.map (S.map (uncurry SS.union) . S.cartesianProduct gs') cs
 
 -- Difference between to Constraint sets
 diff :: ConSet -> ConSet -> ConSet
@@ -321,20 +267,14 @@ diff (ConSet m) (ConSet m') = ConSet $ H.mapMaybeWithKey go m
         Nothing  -> Just gs
 
 -- Filter guards in a coarse or fine mode
-notEmpty :: (Guard -> Bool) -> H.HashMap Constraint (S.NESet Guard) -> ConSet
-notEmpty f hm = ConSet $ H.map go hm'
-  where
-    hm' = H.map (S.filter f) hm
-    go s =
-      case S.nonEmptySet s of
-        Nothing -> S.insertSet top s -- Trivially true guard
-        Just s' -> s'
-
--- Filter a constraint set to a certain domain
--- restrict :: Grain -> [Int] -> ConSet -> ConSet
--- restrict c xs (ConSet m) = ConSet
---                        $ notEmpty c (all (`elem` xs) . domain) -- Filter guards
---                        $ H.filterWithKey (\c _ -> all (`elem` xs) $ domain c) m -- Filter constraints
+-- notEmpty :: (Guard -> Bool) -> H.HashMap Constraint (S.NESet Guard) -> ConSet
+-- notEmpty f hm = ConSet $ H.map go hm'
+--   where
+--     hm' = H.map (S.filter f) hm
+--     go s =
+--       case S.nonEmptySet s of
+--         Nothing -> S.insertSet SS.empty s -- Trivially true guard
+--         Just s' -> s'
 
 -- Filter a constraint set to remove a variable
 filterOut :: Int -> ConSet -> ConSet
@@ -348,11 +288,6 @@ filterTo x (ConSet m) = ConSet
                       $ H.mapMaybeWithKey (\c gs -> if x `elem` domain c then Just gs else S.nonEmptySet $ S.filter (elem x . domain) gs) m -- Filter guards
 
 
--- Rebuild without superfluous constraints
-houseKeeping :: ConSet -> ConSet
-houseKeeping (ConSet m) = H.foldrWithKey (\c gs cs -> foldr (insertSlow c) cs gs) empty m
-
-
 
 
 
@@ -360,7 +295,7 @@ houseKeeping (ConSet m) = H.foldrWithKey (\c gs cs -> foldr (insertSlow c) cs gs
 
 -- Close a constrain set under the resolution rules
 saturate :: Core.Expr Core.Var -> [Int] -> ConSet -> ConSet
-saturate e xs cs = {- houseKeeping $ -} foldr (\x cs' -> filterOut x $ saturate' x cs' $ filterTo x cs') cs inter
+saturate e xs cs = foldr (\x cs' -> filterOut x $ saturate' x cs' $ filterTo x cs') cs inter
   where
     inter = domain cs L.\\ xs
 
@@ -391,21 +326,18 @@ cross z e c gs cs@(ConSet m) =
     trans :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
     trans c g c' g'
       | rhs c == lhs c'
-      , z `elem` (domain c ++ domain c')
-      , Just g'' <- g `and` g' = insert (lhs c) (rhs c') g'' e
+      , z `elem` (domain c ++ domain c') = insert (lhs c) (rhs c') (g `SS.union` g') e
     trans _ _ _ _              = id
 
     -- Weakening rule
     weak :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
-    weak (ConDom k x d _) g c' g'
-      | x == z
-      , Just g'' <- g `and` delete k x d g' = insertAtomic c' g''
+    weak (ConDom k x _ _) g c' g'
+      | x == z = insertAtomic c' (g `SS.union` SS.delete (x, k) g')
     weak _ _ _ _                            = id
 
     -- Substitution rule
     subs :: Constraint -> Guard -> Constraint -> Guard -> (ConSet -> ConSet)
-    subs (DomDom x y d) g c' g'
-      | y == z
-      , Just g'' <- g `and` replace x y d g' = insertAtomic c' g''
+    subs (DomDom x y _) g c' g'
+      | y == z = insertAtomic c' (g `SS.union` rename y x g')
     subs _ _ _ _                             = id
 

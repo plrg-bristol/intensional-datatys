@@ -5,7 +5,7 @@
 module Interface (
 ) where
 
-import qualified Data.Map as M
+import qualified Data.Set as S
 
 import Binary
 import UniqSet
@@ -14,24 +14,17 @@ import Types
 import Constraint
 import InferM
 
-instance Binary RefinedScheme where
-  put_ bh (RScheme as xs cs t) = do
+instance Binary c => Binary (MixedScheme c) where
+  put_ bh (Wrap Scheme { tyvars = as, body = t, constraints = cs }) = do
     put_ bh as
-    put_ bh xs
     put_ bh cs
     put_ bh (demote t)
-  put_ bh (IScheme as xs cs t) = do
-    put_ bh as
-    put_ bh xs
-    put_ bh cs
-    put_ bh t
 
   get bh = do
     as <- get bh
-    xs <- get bh
     cs <- get bh
-    t <- get bh
-    return (IScheme as xs cs t)
+    t  <- get bh
+    return $ Wrap Scheme { tyvars = as, body = t :: IType T, constraints = cs }
 
 instance Binary ConSet where
   put_ bh cs = put_ bh (toList cs)
@@ -54,8 +47,8 @@ instance Binary K where
         return (Set (mkUniqSet s) l)
 
 instance Binary Guard where
-  put_ bh (Guard m) = put_ bh (M.toList m)
-  get bh = Guard . M.fromList <$> get bh
+  put_ bh m = put_ bh (S.toList m)
+  get bh = S.fromList <$> get bh
 
 instance Binary (IType T) where
   put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a

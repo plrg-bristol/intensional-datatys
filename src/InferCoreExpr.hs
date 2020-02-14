@@ -9,6 +9,7 @@ module InferCoreExpr (
 import Control.Monad
 
 import qualified Data.List as L
+import qualified Data.Set as S
 import qualified Data.Map as M
 
 import qualified GhcPlugins as Core
@@ -18,48 +19,49 @@ import Constraint
 import InferM
 
 -- Infer recursive bind
-inferRec :: Monad m => Core.Bind Core.Var -> InferM m Context
+inferRec :: Monad m => Core.Bind Core.Var -> InferM m (Context ConSet)
 inferRec bgs = do
   -- Add each binds within the group to context with a fresh type and no constraints
   binds <- foldM (\bs (Core.getName -> x, Core.exprType -> t) -> do
-    Forall as t' <- fromCoreScheme t
-    return $ M.insert x (RScheme as [] empty t') bs
+    scheme <- fromCoreScheme t
+    case scheme of
+      Forall as t' -> return $ M.insert x (Forall as t') bs
     ) M.empty $ Core.flattenBinds [bgs]
 
   -- Restrict type schemes
   restrict (head $ Core.rhssOfBind bgs) $
     -- Add recusrive binds and context build so far
-    putVars binds $
+    putVars binds $ fmap (fmap Wrap) $
       foldM (\bs (Core.getName -> x, rhs) -> do
 
         -- Infer each bind within the group, compiling constraints
-        t@(Forall as ut) <- infer rhs
+        scheme <- infer rhs
 
         -- Insure types are quantified by infered constraint
-        let (RScheme as' _ _ ut') = binds M.! x
-        unless (as == as') $ Core.pprPanic "Type variables don't align!" (Core.ppr (as, as'))
-        emitSubType ut  ut' rhs
-        emitSubType ut' ut rhs
+        let scheme' = binds M.! x
+        unless (tyvars scheme == tyvars scheme') $ Core.pprPanic "Type variables don't align!" (Core.ppr (scheme, scheme'))
+        emitSubType (body scheme) (body scheme) rhs
+        emitSubType (body scheme) (body scheme) rhs
 
-        return $ M.insert x t bs
+        return $ M.insert x scheme bs
         ) M.empty $ Core.flattenBinds [bgs]
 
 
 -- Infer program
-inferProg :: Monad m => Core.CoreProgram -> InferM m Context
-inferProg = foldM (\ctx bgs -> putVars ctx (M.union ctx <$> inferRec bgs)) M.empty
+inferProg :: Monad m => Core.CoreProgram -> InferM m (Context ConSet)
+inferProg = foldM (\ctx bgs -> putQVars ctx (M.union ctx <$> inferRec bgs)) M.empty
 
 -- Demand a monomorphic type
 -- This is only applied to the lhs of (->) and case expressions
-rank1 :: Monad m => m (Scheme T) -> m (Type T)
+rank1 :: Monad m => m (Scheme T ()) -> m (Type T)
 rank1 m = do
-  Forall as t <- m
-  case as of
-    [] -> return t
-    _  -> Core.pprPanic "Higher rank types are unimplemented." (Core.ppr (as, t))
+  scheme <- m
+  case scheme of
+    Mono t      -> return t
+    Forall as t -> Core.pprPanic "Higher rank types are unimplemented." (Core.ppr (as, t))
 
 
-infer :: Monad m => Core.Expr Core.Var -> InferM m (Scheme T)
+infer :: Monad m => Core.Expr Core.Var -> InferM m (Scheme T ())
 infer e@(Core.Var x) =
   case Core.isDataConId_maybe x of
     Just k
@@ -67,16 +69,18 @@ infer e@(Core.Var x) =
             -> return $ Forall [] Ambiguous -- Ignore typeclass evidence
 
       | otherwise -> do -- Infer Constructor
-        t@(Forall as t') <- fromCoreScheme $ Core.exprType e
-        let (args, res)  =  result t'
-        case res of
-          Inj x d _ -> do
-            l <- getTag
-            emitSingle (con (Core.getName k) l) (Dom x (Core.getName d)) e
-            mapM_ (\t -> emitSubType t (inj x t) e) args
+        scheme <- fromCoreScheme $ Core.exprType e
+        case scheme of
+          Forall as t' -> do
+            let (args, res)  =  result t'
+            case res of
+              Inj x d _ -> do
+                l <- getLoc
+                emitSingle (con (Core.getName k) l) (Dom x (Core.getName d)) e
+                mapM_ (\t -> emitSubType t (inj x t) e) args
 
-          Base _ _ -> return () -- Unrefinable
-        return t
+              Base _ _ -> return () -- Unrefinable
+        return scheme
 
     -- Infer variable
     Nothing -> getVar x e
@@ -93,12 +97,12 @@ infer (Core.App e1 (Core.Type e2)) = do
 
 -- Term application
 infer e@(Core.App e1 e2) = do
-  Forall as t1 <- infer e1
-  case t1 of
-    Ambiguous -> do
+  scheme <- infer e1
+  case scheme of
+    Mono Ambiguous -> do
       t2 <- infer e2
-      return $ Forall [] Ambiguous
-    t3 :=> t4 -> do
+      return scheme
+    Forall as (t3 :=> t4) -> do -- This should raise a warning for as /= []!
       t2 <- rank1 $ infer e2
       emitSubType t2 t3 e
       return $ Forall as t4
@@ -108,21 +112,23 @@ infer e@(Core.App e1 e2) = do
 infer e'@(Core.Lam x e)
   | Core.isTyVar x = do
     --Type abstraction
-    Forall as t <- infer e
+    scheme <- infer e
     a <- getExternalName x
-    return $ Forall (a:as) t
+    case scheme of
+      Forall as t -> return $ Forall (a:as) t
   | otherwise = do
     -- Variable abstraction
     t1 <- fromCore $ Core.varType x
-    Forall as t2 <- putVar (Core.getName x) (RScheme [] [] empty t1) (infer e)
-    return $ Forall as (t1 :=> t2)
+    scheme <- putVar (Core.getName x) (Mono t1) (infer e)
+    case scheme of
+      Forall as t2 -> return $ Forall as (t1 :=> t2)
 
 -- Local prog
-infer (Core.Let b e) = inferRec b >>= flip putVars (infer e)
+infer (Core.Let b e) = inferRec b >>= flip putQVars (infer e)
 
 infer e'@(Core.Case e b rt alts) = do
   -- The location of the case statement
-  l <- getTag
+  l <- getLoc
 
   -- Fresh return type
   t <- fromCore rt
@@ -131,7 +137,7 @@ infer e'@(Core.Case e b rt alts) = do
   t0 <- rank1 $ infer e
 
   -- Add the variable under scrutinee to scope
-  putVar (Core.getName b) (RScheme [] [] empty t0) $ case t0 of
+  putVar (Core.getName b) (Mono t0) $ case t0 of
 
     -- Infer a refinable case expression
     Inj x d _ -> do
@@ -145,12 +151,12 @@ infer e'@(Core.Case e b rt alts) = do
             -- Add constructor arguments introduced by the pattern
             ts <- foldM (\m b -> do
               t <- fromCore $ Core.varType b
-              return $ M.insert (Core.getName b) (RScheme [] [] empty t) m
+              return $ M.insert (Core.getName b) (Mono t) m
               ) M.empty bs
 
-            branch e k x (Core.getName d) $ do
+            branch e x k $ do
               -- Constructor arguments are from the same refinement environment
-              mapM_ (\(RScheme [] _ _ t) -> emitSubType (inj x t) t rhs) ts
+              mapM_ (\(Mono t) -> emitSubType (inj x t) t rhs) ts
 
               -- Ensure return type is valid
               ti' <- rank1 $ putVars ts (infer rhs)
@@ -171,7 +177,7 @@ infer e'@(Core.Case e b rt alts) = do
           | otherwise ->
             -- Default case
             -- Guard by constructors which have not occured
-            branchAlts e [guardDom k x (Core.getName d) | k <- fmap Core.getName (Core.tyConDataCons d) L.\\ ks] $ do
+            branchAlts e [S.singleton (x, k) | k <- fmap Core.getName (Core.tyConDataCons d) L.\\ ks] $ do
               ti' <- rank1 $ infer rhs
               emitSubType ti' t rhs
 
@@ -184,7 +190,7 @@ infer e'@(Core.Case e b rt alts) = do
             -- Add constructor arguments introduced by the pattern
             ts <- foldM (\m b -> do
               t <- fromCore $ Core.varType b
-              return $ M.insert (Core.getName b) (RScheme [] [] empty t) m
+              return $ M.insert (Core.getName b) (Mono t) m
               ) M.empty bs
 
             -- Ensure return type is valid

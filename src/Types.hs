@@ -6,7 +6,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FunctionalDependencies #-}
 
 module Types (
   Extended(..),
@@ -29,7 +28,6 @@ module Types (
   cmpShape,
 
   Promote(..),
-  demote,
 
   applyType,
   subTyVar,
@@ -231,7 +229,7 @@ inj _ Ambiguous     = Ambiguous
 -- Type application
 applyType :: Scheme e () -> Type e -> Scheme e ()
 applyType (Forall (a:as) u)   t = Forall as $ subTyVar a t u
-applyType (Mono Ambiguous)    t = Mono Ambiguous
+applyType (Mono Ambiguous)    _ = Mono Ambiguous
 applyType (Mono (Base b as))  t = Mono (Base b (as ++ [shape t]))
 applyType (Mono (Data d as))  t = Mono (Data d (as ++ [t]))
 applyType (Mono (Inj x d as)) t = Mono (Inj x d (as ++ [t]))

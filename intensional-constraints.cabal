@@ -44,7 +44,6 @@ library
     , nonempty-containers
     , unordered-containers
     , hashable
-    , hashtables
     , containers
     , ghc
     , time
@@ -53,12 +52,12 @@ library
 
 test-suite intensional-constraints-test
   type: exitcode-stdio-1.0
-  main-is: Set.hs
+  main-is: SimpleTest.hs
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:
       test
-  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:fine
+  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:time
   build-depends:
       base >=4.7
     , intensional-constraints

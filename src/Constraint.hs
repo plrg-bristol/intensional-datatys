@@ -1,6 +1,5 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 
 module Constraint (
@@ -26,7 +25,6 @@ import Prelude hiding ((<>), and)
 
 import UniqSet
 import Unique
-import Data.Maybe
 import Data.Hashable
 import qualified Data.List as L
 import qualified Data.List.NonEmpty as NE
@@ -193,8 +191,8 @@ pprGuard g = sep (punctuate and [ppr k <+> char '∈' <+> text "dom" <> parens (
 -- Insert a guard if it is not stronger than an existing guard, and remove guards which are stronger than it
 insertGuard :: Guard -> S.NESet Guard -> S.NESet Guard
 insertGuard g s
- | any (\g' -> SS.isSubsetOf g' g) s = s                                    -- g is stronger than an existing guard
- | otherwise = S.insertSet g $ S.filter (\g' -> not (SS.isSubsetOf g g')) s -- remove guards that are stronger than g
+ | any (`SS.isSubsetOf` g) s = s                                  -- g is stronger than an existing guard
+ | otherwise = S.insertSet g $ S.filter (not . SS.isSubsetOf g) s -- remove guards that are stronger than g
 
 
 

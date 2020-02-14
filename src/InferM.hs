@@ -12,6 +12,7 @@ module InferM (
 
   InferM,
   runInferM,
+  debugConstraints,
 
   getLoc,
   setLoc,
@@ -108,6 +109,12 @@ instance Monad m => MonadReader Core.Module (InferM m) where
 instance Monad m => FromCore (InferM m) T where
   tycon d args = (\x -> Inj x d args) <$> fresh
 
+-- Dump any constraints
+debugConstraints :: (Monad m, Outputable a) => String -> a -> InferM m ()
+debugConstraints t x = InferM $ \_ _ _ path fresh cs -> do
+  Core.pprTraceM t (Core.ppr (x, cs))
+  return (path, fresh, cs, ())
+
 -- The src loc of inference
 getLoc :: Monad m => InferM m SrcSpan
 getLoc = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, loc)
@@ -156,7 +163,6 @@ getVar v e = getCtx >>= getVar'
 
           let u' = foldr (uncurry rename) (body scheme) ys
           scheme' <- fromCoreScheme $ Core.varType v
-          let as' = tyvars scheme'
           let v' = body scheme'
 
           -- TODO: Why don't these align!?
@@ -230,11 +236,13 @@ slice tcs
 restrict :: Monad m => Core.Expr Core.Var -> InferM m (Context ()) -> InferM m (Context ConSet)
 restrict e m = InferM $ \mod gamma loc path fresh cs -> do
   (path', fresh', cs', ts) <- unInferM m mod gamma loc path fresh cs
-  -- Core.pprTraceM "Names" (Core.ppr (c))
   return (path', fresh', cs, restrict' ts cs')
   where
     restrict' :: Context () -> ConSet -> Context ConSet
-    restrict' ts cs = fmap (\(Wrap t) -> Wrap $ constrain cs' t) ts
-      where
-        xs  = L.nub (concatMap (\(Wrap t) -> domain t) $ M.elems ts)
-        cs' = saturate e xs cs
+    restrict' ts cs = fmap (\(Wrap t) -> Wrap $ constrain (satC ts cs) t) ts
+
+    interface :: Context () -> [Int]
+    interface ts = L.nub (concatMap (\(Wrap t) -> domain t) $ M.elems ts)
+
+    satC:: Context () -> ConSet -> ConSet
+    satC ts = saturate e (interface ts)

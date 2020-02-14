@@ -29,9 +29,9 @@ inferRec bgs = do
     ) M.empty $ Core.flattenBinds [bgs]
 
   -- Restrict type schemes
-  restrict (head $ Core.rhssOfBind bgs) $
+  restrict (head $ Core.rhssOfBind bgs) $ do
     -- Add recusrive binds and context build so far
-    putVars binds $ fmap (fmap Wrap) $
+    ans <- putVars binds $ fmap (fmap Wrap) $
       foldM (\bs (Core.getName -> x, rhs) -> do
 
         -- Infer each bind within the group, compiling constraints
@@ -40,11 +40,14 @@ inferRec bgs = do
         -- Insure types are quantified by infered constraint
         let scheme' = binds M.! x
         unless (tyvars scheme == tyvars scheme') $ Core.pprPanic "Type variables don't align!" (Core.ppr (scheme, scheme'))
-        emitSubType (body scheme) (body scheme) rhs
-        emitSubType (body scheme) (body scheme) rhs
+        emitSubType (body scheme') (body scheme) rhs
+        emitSubType (body scheme) (body scheme') rhs
 
         return $ M.insert x scheme bs
         ) M.empty $ Core.flattenBinds [bgs]
+
+    debugConstraints "aftercase" ()
+    return ans
 
 
 -- Infer program
@@ -62,17 +65,17 @@ rank1 m = do
 
 
 infer :: Monad m => Core.Expr Core.Var -> InferM m (Scheme T ())
-infer e@(Core.Var x) =
-  case Core.isDataConId_maybe x of
+infer e@(Core.Var v) =
+  case Core.isDataConId_maybe v of
     Just k
       | Core.isClassTyCon $ Core.dataConTyCon k
-            -> return $ Forall [] Ambiguous -- Ignore typeclass evidence
+            -> return $ Mono Ambiguous -- Ignore typeclass evidence
 
       | otherwise -> do -- Infer Constructor
         scheme <- fromCoreScheme $ Core.exprType e
         case scheme of
-          Forall as t' -> do
-            let (args, res)  =  result t'
+          Forall _ t' -> do
+            let (args, res) = result t'
             case res of
               Inj x d _ -> do
                 l <- getLoc
@@ -83,7 +86,7 @@ infer e@(Core.Var x) =
         return scheme
 
     -- Infer variable
-    Nothing -> getVar x e
+    Nothing -> getVar v e
 
 infer l@(Core.Lit _) = fromCoreScheme $ Core.exprType l
 
@@ -99,19 +102,19 @@ infer (Core.App e1 (Core.Type e2)) = do
 infer e@(Core.App e1 e2) = do
   scheme <- infer e1
   case scheme of
-    Mono Ambiguous -> do
-      t2 <- infer e2
-      return scheme
-    Forall as (t3 :=> t4) -> do -- This should raise a warning for as /= []!
+    Mono Ambiguous -> infer e2 >> return (Mono Ambiguous)
+
+    -- This should raise a warning for as /= []!
+    Forall as (t3 :=> t4) -> do
       t2 <- rank1 $ infer e2
       emitSubType t2 t3 e
       return $ Forall as t4
     _ -> Core.pprPanic "Term application to non-function!" (Core.ppr (Core.exprType e1, Core.exprType e2))
 
 
-infer e'@(Core.Lam x e)
+infer (Core.Lam x e)
   | Core.isTyVar x = do
-    --Type abstraction
+    -- Type abstraction
     scheme <- infer e
     a <- getExternalName x
     case scheme of
@@ -126,7 +129,7 @@ infer e'@(Core.Lam x e)
 -- Local prog
 infer (Core.Let b e) = inferRec b >>= flip putQVars (infer e)
 
-infer e'@(Core.Case e b rt alts) = do
+infer e'@(Core.Case e eb rt alts) = do
   -- The location of the case statement
   l <- getLoc
 
@@ -137,7 +140,7 @@ infer e'@(Core.Case e b rt alts) = do
   t0 <- rank1 $ infer e
 
   -- Add the variable under scrutinee to scope
-  putVar (Core.getName b) (Mono t0) $ case t0 of
+  putVar (Core.getName eb) (Mono t0) $ case t0 of
 
     -- Infer a refinable case expression
     Inj x d _ -> do
@@ -150,13 +153,13 @@ infer e'@(Core.Case e b rt alts) = do
           else do
             -- Add constructor arguments introduced by the pattern
             ts <- foldM (\m b -> do
-              t <- fromCore $ Core.varType b
-              return $ M.insert (Core.getName b) (Mono t) m
+              bt <- fromCore $ Core.varType b
+              return $ M.insert (Core.getName b) (Mono bt) m
               ) M.empty bs
 
             branch e x k $ do
               -- Constructor arguments are from the same refinement environment
-              mapM_ (\(Mono t) -> emitSubType (inj x t) t rhs) ts
+              mapM_ (\(Mono kti) -> emitSubType (inj x kti) kti rhs) ts
 
               -- Ensure return type is valid
               ti' <- rank1 $ putVars ts (infer rhs)
@@ -183,14 +186,14 @@ infer e'@(Core.Case e b rt alts) = do
 
     -- Infer an unrefinable case expression
     _ ->
-      mapM_ (\(alt, bs, rhs) ->
+      mapM_ (\(_, bs, rhs) ->
         if Core.exprIsBottom rhs
           then return () -- If rhs is bottom, it is not a valid case
           else do
             -- Add constructor arguments introduced by the pattern
             ts <- foldM (\m b -> do
-              t <- fromCore $ Core.varType b
-              return $ M.insert (Core.getName b) (Mono t) m
+              bt <- fromCore $ Core.varType b
+              return $ M.insert (Core.getName b) (Mono bt) m
               ) M.empty bs
 
             -- Ensure return type is valid
@@ -198,15 +201,13 @@ infer e'@(Core.Case e b rt alts) = do
             emitSubType ti' t rhs
         ) alts
 
-  return $ Forall [] t
+  return $ Mono t
 
 -- Track source location
 infer (Core.Tick t e) = setLoc (RealSrcSpan $ Core.sourceSpan t) $ infer e
 
 -- Infer cast
-infer (Core.Cast e _) = do
-  infer e
-  return $ Forall [] Ambiguous
+infer (Core.Cast e _) = infer e >> return (Mono Ambiguous)
 
 -- Cannot infer a coercion expression.
 -- For most programs these will never occur outside casts.

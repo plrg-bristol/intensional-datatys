@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Interface (
 ) where
@@ -11,22 +12,24 @@ import Binary
 import UniqSet
 
 import Types
-import Constraint
-import InferM
+import Scheme
+import Guard
+import ConGraph
+import IfaceType
 
-instance Binary c => Binary (MixedScheme c) where
-  put_ bh (Wrap Scheme { tyvars = as, body = t, constraints = cs }) = do
+instance (Binary (Type e d), Binary c) => Binary (Scheme e d c) where
+  put_ bh (Scheme { tyvars = as, body = t, constraints = cs }) = do
     put_ bh as
     put_ bh cs
-    put_ bh (demote t)
+    put_ bh t
 
   get bh = do
     as <- get bh
     cs <- get bh
     t  <- get bh
-    return $ Wrap Scheme { tyvars = as, body = t :: IType T, constraints = cs }
+    return $ Scheme { tyvars = as, body = t, constraints = cs }
 
-instance Binary ConSet where
+instance Binary ConGraph where
   put_ bh cs = put_ bh (toList cs)
   get bh = fromList <$> get bh
 
@@ -47,10 +50,10 @@ instance Binary K where
         return (Set (mkUniqSet s) l)
 
 instance Binary Guard where
-  put_ bh m = put_ bh (S.toList m)
-  get bh = S.fromList <$> get bh
+  put_ bh (Guard m) = put_ bh (S.toList m)
+  get bh = Guard . S.fromList <$> get bh
 
-instance Binary (IType T) where
+instance Binary (Type T IfaceTyCon) where
   put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
   put_ bh (App a b)    = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Base b as)  = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
@@ -68,7 +71,7 @@ instance Binary (IType T) where
       5 -> (:=>) <$> get bh <*> get bh
       6 -> Lit <$> get bh
 
-instance Binary (IType S) where
+instance Binary (Type S IfaceTyCon) where
   put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
   put_ bh (App a b)    = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Base b as)  = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as

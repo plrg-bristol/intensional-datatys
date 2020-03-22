@@ -1,79 +1,79 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE KindSignatures #-}
 
 module InferM (
   Context,
-  MixedScheme(..),
-
+  getExternalName,
+  emitConDom,
+  emitDomSet,
   InferM,
   runInferM,
-  debugConstraints,
-
+  getMod,
   getLoc,
   setLoc,
-
   topLevel,
+  fresh,
   branch,
-  branchAlts,
-
-  getVar,
+  debug,
   putVar,
-  putQVar,
   putVars,
-  putQVars,
-
-  emit,
-  emitSingle,
-  emitSubType,
-  restrict,
+  getVar,
+  fromCore,
+  fromCoreScheme,
+  emitSetCon,
+  emitTyCon,
+  saturate,
 ) where
 
-import Prelude hiding ((<>))
-
-import Control.Monad.Reader
-
-import qualified Data.List as L
+import Control.Monad hiding (guard)
 import qualified Data.Set as S
 import qualified Data.Map as M
 
+import Types
+import Scheme
+import Guard
+import ConGraph
+
+import Var
+import Name
+import TyCon
+import Module
+import ToIface
+import DataCon
+import CoreSubst
+import CoreUtils
+import IfaceType
+import FastString
 import SrcLoc hiding (getLoc)
 import Outputable hiding (empty)
 import qualified TyCoRep as Tcr
-import qualified GhcPlugins as Core hiding (empty, getLoc)
-
-import Types
-import Constraint
+import qualified CoreSyn as Core
 
 -- The environment variables and their types
-data MixedScheme c = forall tc l. (Outputable tc, Outputable l, Promote tc l) =>
-  Wrap (SchemeGen (TypeGen T tc l) c)
-
-instance (Refined c, Outputable c) => Outputable (MixedScheme c) where
-  ppr (Wrap w) = ppr w
-
-type Context c     = M.Map Core.Name (MixedScheme c)
+type IContext c = M.Map Name (Scheme T IfaceTyCon c)
+type Context c = M.Map Name (Scheme T TyCon c)
 
 -- The inference monad with all the bells and whistles
 -- Essentially an unrolled RWST
 newtype InferM m a = InferM {
-  unInferM :: Core.Module
-           -> Context ConSet
-           -> SrcSpan
-           -> [Core.Expr Core.Var] -- case stack
-           -> Int
-           -> ConSet
-           -> m ([Core.Expr Core.Var], Int, ConSet, a)
+  unInferM :: Module            -- current module
+           -> IContext ConGraph -- constrained environment
+           -> SrcSpan           -- current location
+           -> [Core.CoreExpr]   -- case stack
+           -> Int               -- fresh
+           -> ConGraph          -- constraints
+           -> m ([Core.CoreExpr], Int, ConGraph, a)
 }
 
-runInferM :: Monad m => InferM m a -> Core.Module -> Context ConSet -> m a
+runInferM :: Monad m => InferM m a -> Module -> IContext ConGraph -> m a
 runInferM m mod g = do
-  (_, _, _, a) <- unInferM m mod g (UnhelpfulSpan (Core.mkFastString "Unkown origin!")) [] 0 empty
+  (_, _, _, a) <- unInferM m mod g (UnhelpfulSpan (mkFastString "Top level")) [] 0 empty
   return a
+
+-- Extract the entire state for breakpoints etc.
+debug :: Monad m => InferM m (Module, IContext ConGraph, SrcSpan, [Core.CoreExpr], Int, ConGraph)
+debug = InferM $ \mod gamma loc path fresh cs -> return (path, fresh, cs, (mod, gamma, loc, path, fresh, cs))
 
 instance Functor m => Functor (InferM m) where
     fmap func m = InferM $ \mod gamma loc path fresh cs -> (\(path', fresh', cs', a) -> (path', fresh', cs', func a)) <$> unInferM m mod gamma loc path fresh cs
@@ -99,150 +99,240 @@ instance Monad m => Monad (InferM m) where
         return (path'', fresh'', cs'', b)
     {-# INLINE (>>=) #-}
 
-instance Monad m => MonadReader Core.Module (InferM m) where
-  ask = InferM $ \mod _ _ path fresh cs -> return (path, fresh, cs, mod)
-  local f m = InferM $ \mod gamma loc path fresh cs -> unInferM m (f mod) gamma loc path fresh cs
+-- Extract current module
+getMod :: Monad m => InferM m Module
+getMod = InferM $ \mod _ _ path fresh cs -> return (path, fresh, cs, mod)
 
--- instance Core.MonadUnique m => Core.MonadUnique (InferM m) where
---   getUniqueSupplyM = InferM $ \_ path fresh cs -> (path, fresh, cs,) <$> Core.getUniqueSupplyM
-
-instance Monad m => FromCore (InferM m) T where
-  tycon d args = (\x -> Inj x d args) <$> fresh
-
--- Dump any constraints
-debugConstraints :: (Monad m, Outputable a) => String -> a -> InferM m ()
-debugConstraints t x = InferM $ \_ _ _ path fresh cs -> do
-  Core.pprTraceM t (Core.ppr (x, cs))
-  return (path, fresh, cs, ())
-
--- The src loc of inference
+-- Extract current src location
 getLoc :: Monad m => InferM m SrcSpan
 getLoc = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, loc)
 
--- Run inference at a src loc
-setLoc :: Monad m => SrcSpan -> InferM m a -> InferM m a
+-- Specify a location
+setLoc :: SrcSpan -> InferM m a -> InferM m a
 setLoc loc m = InferM $ \mod gamma _ path fresh cs -> unInferM m mod gamma loc path fresh cs
 
 -- A unique integer
 fresh :: Monad m => InferM m Int
-fresh = InferM $ \_ _ loc path fresh cs -> return (path, fresh + 1, cs, fresh)
+fresh = InferM $ \_ _ _ path fresh cs -> return (path, fresh + 1, cs, fresh)
 
 -- Has the variable already been pattern matched on?
-topLevel :: Monad m => Core.Expr Core.Var -> InferM m Bool
-topLevel e = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, go path)
+topLevel :: Monad m => Core.CoreExpr -> InferM m Bool
+topLevel e = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, inStack path)
   where
-    go [] = True
-    go (e':es) = not (Core.cheapEqExpr e e') && go es
+    inStack = foldr (\e' es -> not (cheapEqExpr e e') && es) True
 
--- Guard local constraints
-branch :: Monad m => Core.Expr Core.Var -> Int -> Core.Name -> InferM m a -> InferM m a
-branch e x k m = InferM $ \mod gamma loc path fresh cs -> do
-    (_, fresh', cs', a) <- unInferM m mod gamma loc (e:path) fresh cs
-    return (path, fresh', cs `union` guardWith x k cs', a)
+-- Guard local constraints by a set of possible constructors
+branch :: Monad m => Core.CoreExpr -> [DataCon] -> Int -> TyCon -> InferM m a -> InferM m a
+branch e ks x d m = InferM $ \mod gamma loc path fresh cs -> do
+  (_, fresh', cs', a) <- unInferM m mod gamma loc (e:path) fresh cs
+  return (path, fresh', cs `union` guard (S.fromList $ getName <$> ks) x (getName d) cs', a)
 
--- Guard local constraints with one of several possible branches
-branchAlts :: Monad m => Core.Expr Core.Var -> [Guard] -> InferM m a -> InferM m a
-branchAlts e gs m = InferM $ \mod gamma loc path fresh cs -> do
-    (_, fresh', cs', a) <- unInferM m mod gamma loc (e:path) fresh cs
-    return (path, fresh', cs `union` guardAlts gs cs', a)
+-- Upgrade unconstrained scheme
+class Constraints c where
+  def :: Scheme T TyCon c -> Scheme T IfaceTyCon ConGraph
+
+instance Constraints () where
+  def Scheme{ tyvars = as, body = b } = Scheme { tyvars = as, body = toIfaceTyCon <$> b, constraints = empty }
+
+instance Constraints ConGraph where
+  def Scheme{ tyvars = as, body = b, constraints = c } = Scheme { tyvars = as, body = toIfaceTyCon <$> b, constraints = c }
+
+-- Insert variables into environment
+putVar :: Constraints c => Name -> Scheme T TyCon c -> InferM m a -> InferM m a
+putVar n t m = InferM $ \mod gamma -> unInferM m mod (M.insert n (def t) gamma)
+
+putVars :: Constraints c => Context c -> InferM m a -> InferM m a
+putVars c m = InferM $ \mod gamma -> unInferM m mod (M.union (def <$> c) gamma)
+
+getConstrainedVar :: Monad m => Name -> InferM m (Maybe (Scheme T IfaceTyCon ConGraph))
+getConstrainedVar v = InferM $ \_ gamma _ path fresh cs -> return (path, fresh, cs, M.lookup v gamma)
 
 -- Extract a variable from the environment
-getVar :: Monad m => Core.Var -> Core.Expr Core.Var -> InferM m (Scheme T ())
-getVar v e = getCtx >>= getVar'
+getVar :: Monad m => Var -> InferM m (Scheme T TyCon ())
+getVar v = do
+  var_scheme <- fromCoreScheme $ varType v
+  may_scheme <- getConstrainedVar $ getName v
+  case may_scheme of
+    Just scheme -> do
+      -- Localise constraints
+      fre_scheme <- foldM (\s x -> liftM2 (rename x) fresh $ return s) scheme (domain scheme)
+      emitIfaceTyCon' (body fre_scheme) (body var_scheme)
+
+    Nothing -> do
+      -- Maximise library type
+      case result (body var_scheme) of
+        Inj x d _ -> do
+          let Tcr.TyConApp d' _ = coreBody $ varType v
+          l <- getLoc
+          mapM_ (\k -> emitSetCon (con (getName k) l) (Dom x $ getName d')) $ tyConDataCons d'
+        _ -> return ()
+  return var_scheme
+
+-- Get the body of a core scheme
+coreBody :: Tcr.Type -> Tcr.Type
+coreBody (Tcr.ForAllTy _ t) = coreBody t
+coreBody t                  = t
+
+-- Convert a core datatype
+class DataType (e :: Extended) where
+  datatype :: Monad m => TyCon -> [Type e TyCon] -> InferM m (Type e TyCon)
+
+instance DataType S where
+  datatype d as = return $ Data d as
+
+instance DataType T where
+  datatype d as = do
+    x <- fresh
+    return $ Inj x d as
+
+-- Check whether a core datatype is refinable
+refinable :: TyCon -> Bool
+refinable tc = (length (tyConDataCons tc) > 1) && all pos (concatMap dataConOrigArgTys $ tyConDataCons tc)
   where
-    getCtx :: Monad m => InferM m (Context ConSet)
-    getCtx = InferM $ \_ gamma _ path fresh cs -> return (path, fresh, cs, gamma)
+    pos :: Tcr.Type -> Bool
+    pos (Tcr.FunTy t1 t2) = neg t1 && pos t2
+    pos _                 = True
 
-    getVar' :: Monad m => Context ConSet -> InferM m (Scheme T ())
-    getVar' gamma =
-      case gamma M.!? Core.getName v of
-        Just (Wrap scheme) -> do
-          -- Localise constraints
-          ys <- mapM (\x -> (x,) <$> fresh) $ domain (constraints scheme)
-          emit $ foldr (uncurry rename) (constraints scheme) ys
+    neg :: Tcr.Type -> Bool
+    neg (Tcr.TyConApp _ _) = False -- Could this test wether tc' is refinable?
+    neg (Tcr.TyVarTy _)     = False
+    neg (Tcr.FunTy t1 t2)   = pos t1 && neg t2
+    neg _                   = True
 
-          let u' = foldr (uncurry rename) (body scheme) ys
-          scheme' <- fromCoreScheme $ Core.varType v
-          let v' = body scheme'
+-- Prepare name for interface
+getExternalName :: (Monad m, NamedThing a) => a -> InferM m Name
+getExternalName a = do
+  let n = getName a
+  mod <- getMod
+  return $ mkExternalName (nameUnique n) mod (nameOccName n) (nameSrcSpan n)
 
-          -- TODO: Why don't these align!?
-          -- when (as /= as') $ Core.pprPanic "Type variables don't align!" (Core.ppr (as, as'))
-          -- let v'' = foldr (\(a, a') t -> subTyVar a' (Var a) t) v' (zip as as')
-          emitSubType (promote (Core.varType v) u') v' e
+-- Convert a monomorphic core type
+fromCore :: (DataType e, Monad m) => Tcr.Type -> InferM m (Type e TyCon)
+fromCore (Tcr.TyVarTy a) = Var <$> getExternalName a
+fromCore (Tcr.AppTy t1 t2)   = do
+  s1 <- fromCore t1
+  s2 <- fromCore t2
+  return $ App s1 s2
+fromCore (Tcr.TyConApp tc args)
+  | isTypeSynonymTyCon tc  -- Type synonym
+  , Just (as, u) <- synTyConDefn_maybe tc
+    = fromCore (substTy (extendTvSubstList emptySubst (zip as args)) u)
+  | refinable tc
+    = do
+        args' <- mapM fromCore args
+        datatype tc args'
+  | otherwise
+    = do
+        args' <- mapM fromCore args
+        return $ Base tc args'
+fromCore (Tcr.FunTy t1 t2) = do
+  s1 <- fromCore t1
+  s2 <- fromCore t2
+  return (s1 :=> s2)
+fromCore (Tcr.LitTy l)      = return $ Lit $ toIfaceTyLit l
+fromCore (Tcr.ForAllTy a t) = pprPanic "Unexpected polymorphic type!" $ ppr $ Tcr.ForAllTy a t
+fromCore t                  = pprPanic "Unexpected cast or coercion type!" $ ppr t
 
-          return Scheme { tyvars = tyvars scheme', body = body scheme', constraints = () }
+-- Convert a polymorphic core type
+fromCoreScheme :: (DataType e, Monad m) => Tcr.Type -> InferM m (Scheme e TyCon ())
+fromCoreScheme (Tcr.ForAllTy b t) = do
+  let a = getName $ Tcr.binderVar b
+  scheme <- fromCoreScheme t
+  return scheme{ tyvars = a : tyvars scheme }
+fromCoreScheme (Tcr.FunTy t1 t2) = do
+  s1     <- fromCore t1
+  scheme <- fromCoreScheme t2 -- Is this safe??
+  return scheme{ body = s1 :=> body scheme }
+fromCoreScheme (Tcr.CastTy t k)   = pprPanic "Unexpected cast type!" $ ppr (t, k)
+fromCoreScheme (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
+fromCoreScheme t                  = Mono <$> fromCore t
 
-        Nothing -> do
-          -- We can assume the variable is in scope as GHC hasn't emitted a warning
-          -- Assume all externally defined terms are unrefined
-          scheme <- fromCoreScheme $ Core.varType v
-          let (_, rt) = result (body scheme)
+-- Emit a single set constraint
+emitSetCon :: Monad m => K -> K -> InferM m ()
+emitSetCon k1 k2 =
+  case singleton k1 k2 of
+    Just cg -> InferM $ \_ _ _ path fresh cs -> return (path, fresh, cg `union` cs, ())
+    Nothing -> do
+      l <- getLoc
+      pprPanic "Invalid set constraint!" $ ppr (k1, k2, l)
 
-          -- Ensure library has maximal type
-          case rt of
-            Inj x d _ -> do
-              l <- getLoc
-              mapM_ (\(Core.getName -> k) -> emitSingle (con k l) (Dom x $ Core.getName d) e) (Core.tyConDataCons d)
-              return Scheme { tyvars = tyvars scheme, body = body scheme, constraints = () }
-            _ -> return Scheme { tyvars = tyvars scheme, body = body scheme, constraints = () }
+emitConDom :: Monad m => DataCon -> Int -> TyCon -> InferM m ()
+emitConDom k x d = do
+  l <- getLoc
+  emitSetCon (con (getName k) l) (Dom x $ getName d)
 
--- Insert a qualified variable into the environment
-putQVar :: Core.Name -> Scheme T ConSet -> InferM m a -> InferM m a
-putQVar n t m = InferM $ \mod gamma -> unInferM m mod (M.insert n (Wrap t) gamma)
-
--- Insert an unqualified variable
-putVar :: Core.Name -> Scheme T () -> InferM m a -> InferM m a
-putVar n t m = InferM $ \mod gamma -> unInferM m mod (M.insert n (Wrap (constrain empty t)) gamma)
-
--- Insert many variables
-putQVars :: Context ConSet -> InferM m a -> InferM m a
-putQVars vs m = InferM $ \mod gamma -> unInferM m mod (M.union vs gamma)
-
-putVars :: M.Map Core.Name (Scheme T ()) -> InferM m a -> InferM m a
-putVars vs m = InferM $ \mod gamma -> unInferM m mod (M.union (fmap (Wrap . constrain empty) vs) gamma)
-
--- Emit a constraint set to the environment
-emit :: Monad m => ConSet -> InferM m ()
-emit cs = InferM $ \_ _ _ path fresh cs' -> return (path, fresh, cs `union` cs', ())
-
--- Emit a single constraint
-emitSingle :: Monad m => K -> K -> Core.Expr Core.Var -> InferM m ()
-emitSingle k1 k2 e = InferM $ \_ _ _ path fresh cs -> return (path, fresh, insert k1 k2 S.empty e cs, ())
+emitDomSet :: Monad m => Int -> TyCon -> [DataCon] -> InferM m ()
+emitDomSet x d ks = do
+  l <- getLoc
+  emitSetCon (Dom x $ getName d) (set (getName <$> ks) l)
 
 -- Convert a subtyping constraint to a constraint set and emit
-emitSubType :: Monad m => Type T -> Type T -> Core.Expr Core.Var -> InferM m ()
-emitSubType t1 t2 e
-  | not (cmpShape t1 t2)                  = Core.pprPanic "Types must refine the same sort!" (Core.ppr (t1, t2, e))
-emitSubType (t11 :=> t12) (t21 :=> t22) e = emitSubType t21 t11 e >> emitSubType t12 t22 e
-emitSubType (Inj x d as) (Inj y _ as') e
-  | x /= y                                =  mapM_ (\(Core.getName -> n) -> emit (insert (Dom x n) (Dom y n) S.empty e empty)) (slice [d])
-                                          >> mapM_ (\(a, a') -> emitSubType a a' e) (zip as as')
-emitSubType _ _ _                         = return ()
+emitTyCon :: Monad m => Type T TyCon -> Type T TyCon -> InferM m ()
+emitTyCon (Var _) (Var _)        = return ()
+emitTyCon Ambiguous _            = return ()
+emitTyCon _ Ambiguous            = return ()
+emitTyCon t1 t2
+  | shape t1 /= shape t2 = do
+    l <- getLoc
+    pprPanic "Types must refine the same sort!" $ ppr (t1, t2, l)
+emitTyCon (t11 :=> t12) (t21 :=> t22) =
+    emitTyCon t21 t11 >> emitTyCon t12 t22
+emitTyCon (Inj x d as) (Inj y _ as')
+  | x /= y = do
+    mapM_ (\d' -> emitSetCon (Dom x (getName d')) (Dom y (getName d'))) $ slice [d]
+    mapM_ (\(a, a') -> emitTyCon a a') $ zip as as'
+emitTyCon _ _ = return ()
+
+-- Convert a subtyping constraint to a constraint set and emit
+emitIfaceTyCon :: Monad m => Type T TyCon -> Type T IfaceTyCon -> InferM m ()
+emitIfaceTyCon (Var _) (Var _)        = return ()
+emitIfaceTyCon Ambiguous _            = return ()
+emitIfaceTyCon _ Ambiguous            = return ()
+emitIfaceTyCon t1 t2
+  | shape (toIfaceTyCon <$> t1) /= shape t2 = do
+    l <- getLoc
+    pprPanic "Types must refine the same sort!" $ ppr (t1, t2, l)
+emitIfaceTyCon (t11 :=> t12) (t21 :=> t22) =
+    emitIfaceTyCon' t21 t11 >> emitIfaceTyCon t12 t22
+emitIfaceTyCon (Inj x d as) (Inj y _ as')
+  | x /= y = do
+    mapM_ (\d' -> emitSetCon (Dom x (getName d')) (Dom y (getName d'))) $ slice [d]
+    mapM_ (\(a, a') -> emitIfaceTyCon a a') $ zip as as'
+emitIfaceTyCon _ _ = return ()
+
+-- Convert a subtyping constraint to a constraint set and emit
+emitIfaceTyCon' :: Monad m => Type T IfaceTyCon -> Type T TyCon -> InferM m ()
+emitIfaceTyCon' (Var _) (Var _)        = return ()
+emitIfaceTyCon' Ambiguous _            = return ()
+emitIfaceTyCon' _ Ambiguous            = return ()
+emitIfaceTyCon' t1 t2
+  | shape t1 /= shape (toIfaceTyCon <$> t2) = do
+    l <- getLoc
+    pprPanic "Types must refine the same sort!" $ ppr (t1, t2, l)
+emitIfaceTyCon' (t11 :=> t12) (t21 :=> t22) =
+    emitIfaceTyCon t21 t11 >> emitIfaceTyCon' t12 t22
+emitIfaceTyCon' (Inj x _ as) (Inj y d as')
+  | x /= y = do
+    mapM_ (\d' -> emitSetCon (Dom x (getName d')) (Dom y (getName d'))) $ slice [d]
+    mapM_ (\(a, a') -> emitIfaceTyCon' a a') $ zip as as'
+emitIfaceTyCon' _ _ = return ()
 
 -- Take the slice of a datatype
-slice :: [Core.TyCon] -> [Core.TyCon]
+slice :: [TyCon] -> [TyCon]
 slice tcs
   | tcs' == tcs = tcs
   | otherwise   = slice tcs'
   where
     tcs' = [tc' | tc <- tcs
-                , dc <- Core.tyConDataCons tc
-                , (Tcr.TyConApp tc' _) <- Core.dataConOrigArgTys dc
+                , dc <- tyConDataCons tc
+                , (Tcr.TyConApp tc' _) <- dataConOrigArgTys dc
                 , tc' `notElem` tcs
                 , refinable tc']
                 ++ tcs
 
--- Hide local constraints and attach them to variables
-restrict :: Monad m => Core.Expr Core.Var -> InferM m (Context ()) -> InferM m (Context ConSet)
-restrict e m = InferM $ \mod gamma loc path fresh cs -> do
+-- Transitively remove local constraints and attach them to variables
+saturate :: Monad m => InferM m (Context ()) -> InferM m (Context ConGraph)
+saturate m = InferM $ \mod gamma loc path fresh cs -> do
   (path', fresh', cs', ts) <- unInferM m mod gamma loc path fresh cs
-  return (path', fresh', cs, restrict' ts cs')
-  where
-    restrict' :: Context () -> ConSet -> Context ConSet
-    restrict' ts cs = fmap (\(Wrap t) -> Wrap $ constrain (satC ts cs) t) ts
-
-    interface :: Context () -> [Int]
-    interface ts = L.nub (concatMap (\(Wrap t) -> domain t) $ M.elems ts)
-
-    satC:: Context () -> ConSet -> ConSet
-    satC ts = saturate e (interface ts)
+  let interface = restrict (domain ts) cs'
+  return (path', fresh', cs, fmap (\s -> Scheme { tyvars = tyvars s, body = body s, constraints = interface }) ts)

@@ -1,5 +1,5 @@
 .ghc*
-dist
-dist-newstyle
-interface
+dist/
+dist-newstyle/
+interface/
 *.log

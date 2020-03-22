@@ -27,23 +27,20 @@ source-repository head
 
 library
   exposed-modules:
-      Types
-      Constraint
-      InferM
-      InferCoreExpr
-      Interface
       Lib
   other-modules:
       Paths_intensional_constraints
+      Types
+      Scheme
+      Guard
+      ConGraph
+      InferM
+      InferCoreExpr
   hs-source-dirs:
       src
   ghc-options: -O2 -Wall
   build-depends:
       base >=4.7
-    , mtl
-    , nonempty-containers
-    , unordered-containers
-    , hashable
     , containers
     , ghc
     , time
@@ -67,7 +64,7 @@ test-suite intensional-constraints-test
 executable profile
   build-depends:
       base >=4.7
-    , ghc
+    , ghc >= 8.1
     , intensional-constraints
   main-is: Profile.hs
   default-language: Haskell2010

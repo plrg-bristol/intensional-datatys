@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE BangPatterns #-}
 
 module Lib
@@ -16,9 +17,12 @@ import Binary
 import BinIface
 import IfaceEnv
 import TcRnMonad
+import IfaceType
 
+import Types
+import Scheme
+import ConGraph
 import InferM
-import Constraint
 import InferCoreExpr
 import Interface
 
@@ -51,7 +55,7 @@ inferGuts flags guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m_name -> do
     bh    <- liftIO $ readBinMem $ interfaceName m_name
     cache <- mkNameCacheUpdater
-    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, MixedScheme ConSet)])
+    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, Scheme T IfaceTyCon ConGraph)])
     return $ foldr (\(x, ts) env' -> M.insert x ts env') env tss
     ) M.empty deps
 

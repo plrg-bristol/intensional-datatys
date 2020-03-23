@@ -70,7 +70,22 @@ infer (Core.Var v) =
 infer l@(Core.Lit _) = fromCoreScheme $ Core.exprType l
 
 -- Type application
-infer (Core.App e1 (Core.Type e2)) = liftM2 applyType (infer e1) (fromCore e2)
+infer (Core.App e1 (Core.Type e2)) =
+  t <- fromCore e2
+
+  when (isConstructor e1) $
+    case decomp (body scheme) of
+      (_, Inj x d _) -> emitTyCon t (inj x t)
+      _              -> return ()
+
+  liftM applyType (infer e1) t
+  where
+    isConstructor :: Core.CoreExpr -> Bool
+    isConstructor (Core.App e1 _) = isConstructor e1
+    isConstructor (Core.Var v) =
+      case Core.isDataConId_maybe v of
+        Just k  -> not (Core.isClassTyCon $ Core.dataConTyCon k)
+        Nothing -> False
 
 -- Term application
 infer (Core.App e1 e2) = infer e1 >>= \case

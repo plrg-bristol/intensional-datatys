@@ -18,6 +18,7 @@ import qualified Data.Set as S
 import Types
 
 import Name
+import Binary
 import Outputable
 
 -- Constrained polymorphic types
@@ -42,11 +43,23 @@ instance (Outputable c, Outputable d, Refined c) => Outputable (Scheme e d c) wh
        2 (hang (text "where") 2 (ppr c))
     where
       pprTyVars
-        | null as   = text ""
-        | otherwise = text "forall" <+> fsep (map ppr as) <> dot
+        | null as   = empty
+        | otherwise = forAllLit <+> fsep (map ppr as) <> dot
       pprConVars
-        | null (domain c) = text ""
-        | otherwise       = text "forall" <+> fsep (ppr <$> S.toList (domain c)) <> dot
+        | null (domain c) = empty
+        | otherwise       = forAllLit <+> fsep (ppr <$> S.toList (domain c)) <> dot
+
+instance (Binary (Type e d), Binary c) => Binary (Scheme e d c) where
+  put_ bh Scheme { tyvars = as, body = t, constraints = cs } = do
+    put_ bh as
+    put_ bh cs
+    put_ bh t
+
+  get bh = do
+    as <- get bh
+    cs <- get bh
+    t  <- get bh
+    return $ Scheme { tyvars = as, body = t, constraints = cs }
 
 pattern Mono :: Type e d -> Scheme e d ()
 pattern Mono t = Scheme {
@@ -71,11 +84,11 @@ mono s        = pprPanic "Higher rank types are unimplemented!" $ ppr s
 applyType :: Outputable d => Scheme e d () -> Type e d -> Scheme e d ()
 applyType (Forall (a:as) u)   t = Forall as $ subTyVar a t u
 applyType (Mono Ambiguous)    _ = Mono Ambiguous
-applyType (Mono (Base b as))  t = Mono (Base b (as ++ [shape t]))
-applyType (Mono (Data d as))  t = Mono (Data d (as ++ [t]))
-applyType (Mono (Inj x d as)) t = Mono (Inj x d (as ++ [t]))
-applyType (Mono (Var a))      t = Mono (App (Var a) (shape t))
-applyType (Mono (App a b))    t = Mono (App (App a b) (shape t))
+applyType (Mono (Base b as))  t = Mono $ Base b (as ++ [shape t])
+applyType (Mono (Data d as))  t = Mono $ Data d (as ++ [t])
+applyType (Mono (Inj x d as)) t = Mono $ Inj x d (as ++ [t])
+applyType (Mono (Var a))      t = Mono $ App (Var a) (shape t)
+applyType (Mono (App a b))    t = Mono $ App (App a b) (shape t)
 applyType t t'                  = pprPanic "The type is saturated!" $ ppr (t, t')
 
 -- Type variable substitution
@@ -88,7 +101,7 @@ subTyVar a t (App x y) =
     Base b as -> Base b as
     Var a     -> Var a
     App a b   -> App a b
-    _         -> pprPanic "Invalid aplication in types!" $ ppr (x, y)
+    _         -> pprPanic "Invalid application in types!" $ ppr (x, y)
 subTyVar a t (x :=> y)    = subTyVar a t x :=> subTyVar a t y
 subTyVar a t (Base b as)  = Base b (subTyVar a (shape t) <$> as)
 subTyVar a t (Data d as)  = Data d (subTyVar a t <$> as)

@@ -8,6 +8,7 @@ module ConGraph (
 ) where
 
 import Prelude hiding (lookup, (<>))
+import Control.Monad hiding (guard)
 import Data.Maybe
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -16,8 +17,9 @@ import Types
 import Guard
 
 import Name
+import Binary
 import UniqSet
-import Outputable hiding (empty)
+import Outputable hiding (empty, isEmpty)
 
 -- Nested map utilities
 -- Lookup guard between two notes
@@ -57,11 +59,15 @@ instance Refined ConGraph where
   rename x y (ConGraph m) = ConGraph $ M.map (rename x y) m
 
 instance Outputable ConGraph where
-  ppr (ConGraph cg) = vcat [ (if trivial g then text "" else ppr g <+> char '?') <+> ppr k1 <+> arrowt <+> ppr k2
+  ppr (ConGraph cg) = vcat [ ppr g <+> ppr k1 <+> arrowt <+> ppr k2
                              | (_, m) <- M.toList cg,
                                (k1, m') <- M.toList m,
                                (k2, gs) <- M.toList m',
                                g <- toList gs]
+
+-- instance Binary ConGraph where
+--   put_ bh (ConGraph cg) = put_ bh $ [ (n, [ (k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg]
+--   get bh = ConGraph . M.fromList <$> get bh
 
 -- An empty set
 empty :: ConGraph
@@ -71,20 +77,20 @@ empty = ConGraph M.empty
 singleton :: K -> K -> Maybe ConGraph
 singleton (Dom x d) (Dom y d')
   | d /= d'   = pprPanic "Constraint between types of different shape!" $ ppr (d, d')
-  | x == y    = Just $ empty
+  | x == y    = Just empty
   | otherwise = Just $ ConGraph $ M.singleton d $ M.singleton (Dom x d) $ M.singleton (Dom y d) top
 singleton (Dom x d) (Set k l)
               = Just $ ConGraph $ M.singleton d $ M.singleton (Dom x d) $ M.singleton (Set k l) top
 singleton (Set ks l) (Dom x d)
-              = Just $ ConGraph $ M.singleton d $ M.fromList [ (con k l, M.singleton (Dom x d) top) | k <- nonDetEltsUniqSet ks]
+              = Just $ ConGraph $ M.singleton d $ M.fromList [ (Set (unitUniqSet k) l, M.singleton (Dom x d) top) | k <- nonDetEltsUniqSet ks]
 singleton (Set k _) (Set k' _)
   | uniqSetAll (`elementOfUniqSet` k') k
-              = Just $ empty
+              = Just empty
   | otherwise = Nothing
 
 -- Guard a constraint graph by a set of possible guards
 guard :: S.Set Name -> Int -> Name -> ConGraph -> ConGraph
-guard ks x d (ConGraph cg) = ConGraph $ M.map (M.map (M.map ((dom ks x d) &&&))) cg
+guard ks x d (ConGraph cg) = ConGraph $ M.map (M.map (M.map (dom ks x d &&&))) cg
 
 -- Combine two constraint graphs
 union :: ConGraph -> ConGraph -> ConGraph
@@ -93,39 +99,45 @@ union (ConGraph x) (ConGraph y) = ConGraph $ M.unionWith (M.unionWith (M.unionWi
 -- TODO:
 -- Can these procedures be combined??
 -- At which point can we eliminate r??
--- Report unsound as soon as possible
 -- When to minimise
 
 -- Restrict a constraint graph to it's interface and check satisfiability
-restrict :: S.Set Int -> ConGraph -> ConGraph
-restrict interface cg = {- sat -} purge inner $ weaken inner $ trans inner cg
+restrict :: S.Set Int -> ConGraph -> Maybe ConGraph
+restrict interface cg = {- sat -} purge inner <$> (trans inner cg >>= weaken inner)
   where
     inner = domain cg S.\\ interface
 
 -- Take the transitive closure of a graph over an internal set
-trans :: S.Set Int -> ConGraph -> ConGraph
-trans xs (ConGraph g) = ConGraph $ M.map (\m -> foldr transX m xs) g
+trans :: S.Set Int -> ConGraph -> Maybe ConGraph
+trans xs (ConGraph g) = ConGraph <$> sequence (M.map (\m -> foldM transX m xs) g)
 
 -- Add transitive connections that pass through node x
-transX :: Int -> M.Map K (M.Map K GuardSet) -> M.Map K (M.Map K GuardSet)
-transX x m = M.fromSet (\i -> M.fromSet (go i) xs) xs
+transX :: M.Map K (M.Map K GuardSet) -> Int -> Maybe (M.Map K (M.Map K GuardSet))
+transX m x = sequence $ M.fromSet (\i -> sequence $ M.fromSet (go i) xs) xs
   where
-    xs      = M.keysSet m
-    go  i j = lookup i j m ||| (lookupToX i x m &&& lookupFromX x j m)
+    xs     = M.keysSet m
+    go i j =
+      let g = lookup i j m ||| (lookupToX i x m &&& lookupFromX x j m)
+      in if unsafe i j && not (isEmpty g)
+        then Nothing
+        else Just g
 
 -- Weaken every occurs of intermediate notes in the guards
-weaken :: S.Set Int -> ConGraph -> ConGraph
-weaken xs cg = S.foldr weakenX cg xs
+weaken :: S.Set Int -> ConGraph -> Maybe ConGraph
+weaken xs cg = foldM weakenX cg xs
   where
-    weakenX :: Int -> ConGraph -> ConGraph
-    weakenX x (ConGraph g) =
+    weakenX :: ConGraph -> Int -> Maybe ConGraph
+    weakenX (ConGraph g) x =
       let preds = M.foldr (M.unionWith (|||) . M.mapMaybe (lookupX x)) M.empty g
-      in ConGraph $ M.mapWithKey (subPreds preds x) g
+      in ConGraph <$> sequence (M.mapWithKey (subPreds preds x) g)
 
 -- Apply a pred map to an individual graph
-subPreds :: M.Map K GuardSet -> Int -> Name -> M.Map K (M.Map K GuardSet) -> M.Map K (M.Map K GuardSet)
-subPreds preds x d = M.map (M.map (\g -> M.foldrWithKey alt g preds))
+subPreds :: M.Map K GuardSet -> Int -> Name -> M.Map K (M.Map K GuardSet) -> Maybe (M.Map K (M.Map K GuardSet))
+subPreds preds x d = sequence . M.mapWithKey (\i -> sequence . M.mapWithKey (\j g -> if unsafe i j && not (isEmpty $ new_guard g) then Nothing else Just g ))
   where
+    new_guard :: GuardSet -> GuardSet
+    new_guard g = M.foldrWithKey alt g preds
+
     alt :: K -> GuardSet -> GuardSet -> GuardSet
     alt n g g' = g' ||| replace x d n g' &&& g
 

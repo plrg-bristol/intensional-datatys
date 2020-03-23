@@ -8,19 +8,17 @@
 module Types (
   Extended(..),
   Type(..),
-
+  Refined(..),
   inj,
   shape,
   decomp,
-  result,
-
-  Refined(..)
 ) where
 
 import Prelude hiding ((<>))
 import qualified Data.Set as S
 
 import Name
+import Binary
 import IfaceType
 import BasicTypes
 import Outputable
@@ -54,14 +52,74 @@ instance Outputable d => Outputable (Type e d) where
       pprTy prec (App t1 t2)  = hang (pprTy prec t1)
                                    2 (pprTy appPrec t2)
       pprTy _ (Base b as)     = hang (ppr b)
-                                   2 (sep $ fmap (\a -> text "@" <> pprTy appPrec a) as)
+                                   2 (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
       pprTy _ (Data d as)     = hang (ppr d)
-                                   2 (sep $ fmap (\a -> text "@" <> pprTy appPrec a) as)
+                                   2 (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
       pprTy prec (Inj x d as) = hang (maybeParen prec appPrec $ sep [text "inj", ppr x, ppr d])
-                                   2 (sep $ fmap (\a -> text "@" <> pprTy appPrec a) as)
+                                   2 (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
       pprTy prec (t1 :=> t2)  = maybeParen prec funPrec $ sep [pprTy funPrec t1, arrow <+> pprTy prec t2]
       pprTy _ (Lit l)         = ppr l
       pprTy _ Ambiguous       = unicodeSyntax (char '□') (text "ambiguous")
+
+-- Objects that are parameterised by refinement variables
+class Refined t where
+  domain :: t -> S.Set Int
+  rename :: Int -> Int -> t -> t
+
+instance Refined () where
+  domain _   = S.empty
+  rename _ _ = id
+
+instance Refined Name where
+  domain _   = S.empty
+  rename _ _ = id
+
+instance Refined (Type T d) where
+  domain (Inj x _ as) = foldr (S.union . domain) (S.singleton x) as
+  domain (a :=> b)    = S.union (domain a) (domain b)
+  domain _            = S.empty
+
+  rename x y (Inj x' d as)
+    | x == x'           = Inj y d (rename x y <$> as)
+    | otherwise         = Inj x' d (rename x y <$> as)
+  rename x y (a :=> b)  = rename x y a :=> rename x y b
+  rename _ _ t          = t
+
+instance Binary (Type T IfaceTyCon) where
+  put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
+  put_ bh (App a b)    = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
+  put_ bh (Base b as)  = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
+  put_ bh (Inj x d as) = put_ bh (4 :: Int) >> put_ bh x >> put_ bh d >> put_ bh as
+  put_ bh (a :=> b)    = put_ bh (5 :: Int) >> put_ bh a >> put_ bh b
+  put_ bh (Lit l)      = put_ bh (6 :: Int) >> put_ bh l
+
+  get bh = do
+    n <- get bh
+    case n :: Int of
+      0 -> Var <$> get bh
+      1 -> App <$> get bh <*> get bh
+      2 -> Base <$> get bh <*> get bh
+      4 -> Inj <$> get bh <*> get bh <*> get bh
+      5 -> (:=>) <$> get bh <*> get bh
+      6 -> Lit <$> get bh
+
+instance Binary (Type S IfaceTyCon) where
+  put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
+  put_ bh (App a b)    = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
+  put_ bh (Base b as)  = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
+  put_ bh (Data d as)  = put_ bh (3 :: Int) >> put_ bh d >> put_ bh as
+  put_ bh (a :=> b)    = put_ bh (5 :: Int) >> put_ bh a >> put_ bh b
+  put_ bh (Lit l)      = put_ bh (6 :: Int) >> put_ bh l
+
+  get bh = do
+    n <- get bh
+    case n :: Int of
+      0 -> Var <$> get bh
+      1 -> App <$> get bh <*> get bh
+      2 -> Base <$> get bh <*> get bh
+      3 -> Data <$> get bh <*> get bh
+      5 -> (:=>) <$> get bh <*> get bh
+      6 -> Lit <$> get bh
 
 -- Inject a sort into a refinement environment
 inj :: Int -> Type e d -> Type T d
@@ -89,31 +147,3 @@ shape Ambiguous     = Ambiguous
 decomp :: Type T d -> ([Type T d], Type T d)
 decomp (a :=> b) = let (as, r) = decomp b in (a:as, r)
 decomp t         = ([], t)
-
--- Extract the result type of a function
-result :: Type T d -> Type T d
-result = snd . decomp
-
--- Objects that are parameterised by refinement variables
-class Refined t where
-  domain :: t -> S.Set Int
-  rename :: Int -> Int -> t -> t
-
-instance Refined () where
-  domain _   = S.empty
-  rename _ _ = id
-
-instance Refined Name where
-  domain _    = S.empty
-  rename _ _ = id
-
-instance Refined (Type T d) where
-  domain (Inj x _ as) = foldr (S.union . domain) (S.singleton x) as
-  domain (a :=> b)    = S.union (domain a) (domain b)
-  domain _            = S.empty
-
-  rename x y (Inj x' d as)
-    | x == x'           = Inj y d (rename x y <$> as)
-    | otherwise         = Inj x' d (rename x y <$> as)
-  rename x y (a :=> b)  = rename x y a :=> rename x y b
-  rename _ _ t          = t

@@ -24,7 +24,6 @@ import Scheme
 import ConGraph
 import InferM
 import InferCoreExpr
-import Interface
 
 data Flags = Flags {
   time    :: Bool,

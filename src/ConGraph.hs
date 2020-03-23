@@ -24,13 +24,13 @@ import Outputable hiding (empty, isEmpty)
 -- Nested map utilities
 -- Lookup guard between two notes
 lookup :: K -> K -> M.Map K (M.Map K GuardSet) -> GuardSet
-lookup x y m = fromMaybe top (M.lookup x m >>= M.lookup y)
+lookup x y m = fromMaybe bot (M.lookup x m >>= M.lookup y)
 
 lookupToX :: K -> Int -> M.Map K (M.Map K GuardSet) -> GuardSet
-lookupToX x y m = fromMaybe top (M.lookup x m >>= lookupX y)
+lookupToX x y m = fromMaybe bot (M.lookup x m >>= lookupX y)
 
 lookupFromX :: Int -> K -> M.Map K (M.Map K GuardSet) -> GuardSet
-lookupFromX x y m = fromMaybe top (lookupX x m >>= M.lookup y)
+lookupFromX x y m = fromMaybe bot (lookupX x m >>= M.lookup y)
 
 lookupX :: Int -> M.Map K a -> Maybe a
 lookupX x m =
@@ -65,9 +65,12 @@ instance Outputable ConGraph where
                                (k2, gs) <- M.toList m',
                                g <- toList gs]
 
--- instance Binary ConGraph where
---   put_ bh (ConGraph cg) = put_ bh $ [ (n, [ (k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg]
---   get bh = ConGraph . M.fromList <$> get bh
+instance Binary ConGraph where
+  put_ bh (ConGraph cg) = put_ bh $ [ (n, [ (k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg]
+  get bh = do
+    nl <- get bh
+    let nl' = [(n, M.fromList [(k, M.fromList m') | (k, m') <- l]) | (n, l) <- nl :: [(Name, [(K, [(K, GuardSet)])])]]
+    return (ConGraph $ M.fromList nl')
 
 -- An empty set
 empty :: ConGraph
@@ -107,14 +110,17 @@ trans xs (ConGraph g) = ConGraph <$> sequence (M.map (\m -> foldM transX m xs) g
 
 -- Add transitive connections that pass through node x
 transX :: M.Map K (M.Map K GuardSet) -> Int -> Either (K, K) (M.Map K (M.Map K GuardSet))
-transX m x = sequence $ M.fromSet (\i -> sequence $ M.fromSet (go i) xs) xs
+transX m x = sequence $ M.fromSet (\i -> sequence $ M.fromSet (go i) to) from
   where
-    xs     = M.keysSet m
-    go i j =
-      let new_guard = lookup i j m ||| (lookupToX i x m &&& lookupFromX x j m)
-      in if safe i j || isEmpty new_guard
-        then Right new_guard
-        else Left (i, j)
+    from = M.keysSet m
+    to   = M.foldr (S.union . M.keysSet) S.empty m
+    go i j
+      | i == j = Right bot
+      | otherwise =
+        let new_guard = lookup i j m ||| (lookupToX i x m &&& lookupFromX x j m)
+        in if safe i j || isEmpty new_guard
+          then Right new_guard
+          else Left (i, j)
 
 -- Weaken every occurs of intermediate notes in the guards
 weaken :: S.Set Int -> ConGraph -> Either (K, K) ConGraph
@@ -136,13 +142,13 @@ subPreds preds x d =
   sequence . M.mapMaybeWithKey (\i ->
     if i == Dom x d
       then const Nothing
-      else Just . sequence . M.mapMaybeWithKey (\j g ->
-          if j == Dom x d
-            then Nothing
-            else let new_guard = M.foldrWithKey alt g preds
-              in if safe i j || isEmpty new_guard
-                then Just $ Right new_guard
-                else Just $ Left (i, j)))
+      else Just . sequence . M.mapMaybeWithKey (\j gs ->
+        if j == Dom x d
+          then Nothing
+          else let new_guard = M.foldrWithKey alt gs preds
+            in if safe i j || isEmpty new_guard
+              then Just $ Right new_guard
+              else Just $ Left (i, j)))
   where
     alt :: K -> GuardSet -> GuardSet -> GuardSet
     alt n g g' = g' ||| replace x d n g' &&& g

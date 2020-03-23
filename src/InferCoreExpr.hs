@@ -7,6 +7,7 @@ module InferCoreExpr (
 ) where
 
 import Control.Monad
+import qualified Data.List as L
 import qualified Data.Map as M
 
 import Types
@@ -34,7 +35,7 @@ inferRec bgs = do
     -- Add binds for recursive calls
     putVars binds $
                              -- Infer rhs; subtype of recursive usage
-      sequence $ M.fromList [ (n, infer rhs >>= \s -> s <$ emitTyCon (body s) (body sr))
+      sequence $ M.fromList [ (n, do { scheme <- infer rhs; emitTyCon (body scheme) (body sr); return scheme } )
                             | (x, rhs) <- Core.flattenBinds [bgs],
                               let n    = getName x,
                               let sr   = binds M.! n ]
@@ -86,6 +87,7 @@ infer (Core.App e1 (Core.Type e2)) = do
       case Core.isDataConId_maybe v of
         Just k  -> not (Core.isClassTyCon $ Core.dataConTyCon k)
         Nothing -> False
+    isConstructor _ = False
 
 -- Term application
 infer (Core.App e1 e2) = infer e1 >>= \case
@@ -113,6 +115,7 @@ infer (Core.Lam x e)
       Forall as t2 -> return $ Forall as (t1 :=> t2)
 
 -- Local prog
+-- TODO: Don't quantify by free refinement variables in the environment!!
 infer (Core.Let b e) = do
   ts <- inferRec b
   putVars ts $ infer e
@@ -158,7 +161,7 @@ infer (Core.Case e bind_e core_ret alts) = do
           when top $ emitDomSet rvar d ks
         Just rhs ->
           -- Guard default case by constructors that have not occured
-          branch e ks rvar d $ do
+          branch e (tyConDataCons d L.\\ ks) rvar d $ do
             ret_i <- mono <$> infer rhs
             emitTyCon ret_i ret
 

@@ -2,6 +2,8 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
@@ -18,8 +20,10 @@ import Prelude hiding ((<>))
 import qualified Data.Set as S
 
 import Name
+import TyCon
 import Binary
 import IfaceType
+import ToIface
 import BasicTypes
 import Outputable
 
@@ -40,8 +44,18 @@ data Type (e :: Extended) d where
   -- Ambiguous hides higher-ranked types and casts
   Ambiguous :: Type e d
 
-deriving instance Eq d => Eq (Type e d)
 deriving instance Functor (Type e)
+
+-- Compare type shapes
+instance Eq d => Eq (Type S d) where
+  Ambiguous == _         = True
+  _ == Ambiguous         = True
+  Var _ == Var _         = True
+  App f a == App g b     = f == g && a == b
+  Base f a == Base g b   = f == g && a == b
+  (a :=> b) == (c :=> d) = a == c && b == d
+  Lit l == Lit l'        = l == l'
+  _ == _                 = False
 
 -- Clone of a Outputable (Core.Type)
 instance Outputable d => Outputable (Type e d) where
@@ -120,6 +134,10 @@ instance Binary (Type S IfaceTyCon) where
       3 -> Data <$> get bh <*> get bh
       5 -> (:=>) <$> get bh <*> get bh
       6 -> Lit <$> get bh
+
+instance Binary (Type e IfaceTyCon) => Binary (Type e TyCon) where
+  put_ bh = put_ bh . fmap toIfaceTyCon
+  get bh  = undefined -- Shouldn't be invoked
 
 -- Inject a sort into a refinement environment
 inj :: Int -> Type e d -> Type T d

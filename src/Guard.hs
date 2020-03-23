@@ -8,6 +8,7 @@ module Guard (
   GuardSet,
   toList,
   top,
+  bot,
   dom,
   isEmpty,
   (|||),
@@ -89,7 +90,7 @@ safe _ _                  = True
 -- A guard, i.e. a set of constraints of the form k in (X, d)
 -- Grouped by d
 newtype Guard = Guard (M.Map Name (S.Set (Int, Name)))
-  deriving Eq
+  deriving (Eq, Ord)
 
 instance Refined Guard where
   domain (Guard g)     = M.foldr (S.union . S.map fst) S.empty g
@@ -97,7 +98,7 @@ instance Refined Guard where
 
 instance Outputable Guard where
   ppr (Guard g)
-    | all S.null g = empty
+    | all S.null g = text "top"
     | otherwise    = sep (punctuate and [dom k x d | (d, xks) <- M.toList g, (x, k) <- S.toList xks]) <+> char '?'
     where
       dom k x d = ppr k <+> elem <+> text "dom" <> parens (ppr x <> parens (ppr d))
@@ -111,47 +112,46 @@ instance Binary Guard where
     return $ Guard $ M.fromList [ (n, S.fromList l') | (n, l') <- l]
 
 -- A collection of possible guards
--- cheaper to keep a list, and minimise at one point, than a set
-newtype GuardSet = GuardSet {
-  toList :: [Guard]
-}
+-- Would it be cheaper to keep a list?
+newtype GuardSet = GuardSet (S.Set Guard)
 
 instance Refined GuardSet where
   domain (GuardSet g)     = foldr (S.union . domain) S.empty g
-  rename x y (GuardSet g) = GuardSet $ fmap (rename x y) g
+  rename x y (GuardSet g) = GuardSet $ S.map (rename x y) g
 
 instance Binary GuardSet where
-  put_ bh = put_ bh . toList
-  get  bh = GuardSet <$> get bh
+  put_ bh (GuardSet g) = put_ bh $ S.toList g
+  get  bh = GuardSet . S.fromList <$> get bh
 
--- Trivial guard
-top :: GuardSet
-top = GuardSet [Guard M.empty]
+toList :: GuardSet -> [Guard]
+toList (GuardSet g) = S.toList g
+
+-- Trivial guards
+top, bot :: GuardSet
+top = GuardSet $ S.singleton $ Guard M.empty
+bot = GuardSet S.empty
 
 -- Asserts that X contain an element from ks
 dom :: S.Set Name -> Int -> Name -> GuardSet
-dom ks x d = GuardSet [Guard $ M.singleton d $ S.singleton (x, k) | k <- S.toList ks]
+dom ks x d = GuardSet (S.map (\k -> Guard $ M.singleton d $ S.singleton (x, k)) ks)
 
 -- An unsatisfiable guard
 isEmpty :: GuardSet -> Bool
-isEmpty = null . toList
+isEmpty (GuardSet g) = S.null g
 
 -- Alternatives
 infix 2 |||
 (|||) :: GuardSet -> GuardSet -> GuardSet
-GuardSet g ||| GuardSet g' = GuardSet (g ++ g')
+GuardSet g ||| GuardSet g' = minimise $ GuardSet (S.union g' g)
 
 -- Take the conjunction of every possibility
 infix 3 &&&
 (&&&) :: GuardSet -> GuardSet -> GuardSet
-GuardSet g &&& GuardSet g' = GuardSet $ liftA2 intersect g g'
-  where
-    intersect :: Guard -> Guard -> Guard
-    intersect (Guard s) (Guard t) = Guard (M.unionWith S.union s t)
+GuardSet gs &&& GuardSet gs' = minimise $ GuardSet $ S.map (\(Guard s, Guard t) -> Guard (M.unionWith S.union s t)) $ S.cartesianProduct gs gs'
 
 -- Replace k1 with k2 in a guard and reduce
 replace :: Int -> Name -> K -> GuardSet -> GuardSet
-replace x d cs (GuardSet gs) = GuardSet $ fmap go gs
+replace x d cs (GuardSet gs) = GuardSet $ S.map go gs
   where
     go :: Guard -> Guard
     go (Guard g) =
@@ -163,20 +163,23 @@ replace x d cs (GuardSet gs) = GuardSet $ fmap go gs
 
 -- Remove guards concerning the intermediate nodes
 filterGuards :: S.Set Int -> GuardSet -> GuardSet
-filterGuards xs (GuardSet g) = GuardSet $ filter (all (`notElem` xs) . domain) g
+filterGuards xs (GuardSet g) = GuardSet $ S.filter (all (`notElem` xs) . domain) g
 
 -- Simplify by removing redundant guards/ reduce to minimal set
--- minimise :: GuardSet -> GuardSet
--- minimise s = foldr go [] s
---  where
---    go :: Guard -> GuardSet -> GuardSet
---    go g s'
---      | any (`weaker` g) s' = s'
---      | otherwise           = L.insert g $ filter (not . weaker g) s'
+minimise :: GuardSet -> GuardSet
+minimise (GuardSet g) = S.foldr go bot g
+  where
+   go :: Guard -> GuardSet -> GuardSet
+   go g (GuardSet s)
+     | any (`weaker` g) s = GuardSet s
+     | otherwise          = GuardSet $ S.insert g $ S.filter (not . weaker g) s
 
 -- Determine if the first guard is smaller than the second
--- weaker :: Guard -> Guard -> Bool
--- weaker (Guard g) (Guard g') = False
-  -- Compare size as a short cut ?
-  -- | S.size g > S.size g' = False
-  -- | otherwise = all (`` g') g
+weaker :: Guard -> Guard -> Bool
+weaker (Guard g) (Guard g') = M.null $ M.differenceWith go g g'
+  where
+    -- Check size as a possible short cut
+    go l r =
+      if S.size l > S.size r || any (`notElem` r) l
+        then Just l
+        else Nothing

@@ -156,23 +156,25 @@ getVar v = do
   case may_scheme of
     Just scheme -> do
       -- Localise constraints
-      fre_scheme <- foldM (\s x -> liftM2 (rename x) fresh $ return s) scheme (domain scheme)
+      fre_scheme <- foldM (\s x -> liftM2 (rename x) fresh $ return s) scheme (domain $ constraints $ scheme)
+      emit (constraints fre_scheme)
       emitIfaceTyCon' (body fre_scheme) (body var_scheme)
 
     Nothing ->
       -- Maximise library type
       case decomp (body var_scheme) of
         (_, Inj x d _) -> do
-          let Tcr.TyConApp d' _ = coreBody $ varType v
+          let Tcr.TyConApp d' _ = coreDecomp $ varType v
           l <- getLoc
           mapM_ (\k -> emitSetCon (con (getName k) l) (Dom x $ getName d')) $ tyConDataCons d'
         _ -> return ()
   return var_scheme
 
--- Get the body of a core scheme
-coreBody :: Tcr.Type -> Tcr.Type
-coreBody (Tcr.ForAllTy _ t) = coreBody t
-coreBody t                  = t
+-- Get the body/result of a core scheme
+coreDecomp :: Tcr.Type -> Tcr.Type
+coreDecomp (Tcr.ForAllTy _ t) = coreDecomp t
+coreDecomp (Tcr.FunTy _ t)    = coreDecomp t
+coreDecomp t                  = t
 
 -- Convert a core datatype
 class DataType (e :: Extended) where
@@ -247,6 +249,9 @@ fromCoreScheme (Tcr.FunTy t1 t2) = do
 fromCoreScheme (Tcr.CastTy t k)   = pprPanic "Unexpected cast type!" $ ppr (t, k)
 fromCoreScheme (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
 fromCoreScheme t                  = Mono <$> fromCore t
+
+emit :: Monad m => ConGraph -> InferM m ()
+emit cg = InferM $ \_ _ _ p f cs -> return (p, f, cg `union` cs, ())
 
 -- Emit a single set constraint
 emitSetCon :: Monad m => K -> K -> InferM m ()
@@ -334,6 +339,7 @@ slice tcs
 saturate :: Monad m => InferM m (Context ()) -> InferM m (Context ConGraph)
 saturate m = InferM $ \mod gamma occ_l path fresh cs -> do
   (path', fresh', cs', ts) <- unInferM m mod gamma occ_l path fresh cs
+  pprTraceM "Graph:" $ ppr cs'
   case restrict (domain ts) cs' of
     Right i -> return (path', fresh', cs, fmap (\s -> Scheme { tyvars = tyvars s, body = body s, constraints = i }) ts)
     Left (Set k left_l, Set k' right_l) -> pprPanic "Unsatisfiable constraint!" $ ppr (k, k', left_l, right_l, occ_l)

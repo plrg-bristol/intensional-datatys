@@ -1,7 +1,7 @@
 module Guard (
   K(..),
   con,
-  unsafe,
+  safe,
 
   Guard,
 
@@ -81,11 +81,10 @@ instance Binary K where
 con :: Name -> SrcSpan -> K
 con = Set . unitUniqSet
 
--- A constraint which has no atomic form
-unsafe :: K -> K -> Bool
-unsafe (Set ks _) (Set ks' _)
-  | [k] <- nonDetEltsUniqSet ks = uniqSetAll (`elementOfUniqSet` ks') ks
-unsafe _ _                      = True
+-- A constraint that has an atomic form
+safe :: K -> K -> Bool
+safe (Set k _) (Set k' _) = uniqSetAll (`elementOfUniqSet` k') k
+safe _ _                  = True
 
 -- A guard, i.e. a set of constraints of the form k in (X, d)
 -- Grouped by d
@@ -135,7 +134,7 @@ dom ks x d = GuardSet [Guard $ M.singleton d $ S.singleton (x, k) | k <- S.toLis
 
 -- An unsatisfiable guard
 isEmpty :: GuardSet -> Bool
-isEmpty (GuardSet g) = null g
+isEmpty = null . toList
 
 -- Alternatives
 infix 2 |||

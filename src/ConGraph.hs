@@ -82,11 +82,10 @@ singleton (Dom x d) (Dom y d')
 singleton (Dom x d) (Set k l)
               = Just $ ConGraph $ M.singleton d $ M.singleton (Dom x d) $ M.singleton (Set k l) top
 singleton (Set ks l) (Dom x d)
-              = Just $ ConGraph $ M.singleton d $ M.fromList [ (Set (unitUniqSet k) l, M.singleton (Dom x d) top) | k <- nonDetEltsUniqSet ks]
-singleton (Set k _) (Set k' _)
-  | uniqSetAll (`elementOfUniqSet` k') k
-              = Just empty
-  | otherwise = Nothing
+              = Just $ ConGraph $ M.singleton d $ M.fromList [ (con k l, M.singleton (Dom x d) top) | k <- nonDetEltsUniqSet ks]
+singleton k1 k2
+  | safe k1 k2 = Just empty
+  | otherwise  = Nothing
 
 -- Guard a constraint graph by a set of possible guards
 guard :: S.Set Name -> Int -> Name -> ConGraph -> ConGraph
@@ -96,52 +95,60 @@ guard ks x d (ConGraph cg) = ConGraph $ M.map (M.map (M.map (dom ks x d &&&))) c
 union :: ConGraph -> ConGraph -> ConGraph
 union (ConGraph x) (ConGraph y) = ConGraph $ M.unionWith (M.unionWith (M.unionWith (|||))) x y
 
--- TODO:
--- Can these procedures be combined??
--- At which point can we eliminate r??
--- When to minimise
-
 -- Restrict a constraint graph to it's interface and check satisfiability
-restrict :: S.Set Int -> ConGraph -> Maybe ConGraph
-restrict interface cg = {- sat -} purge inner <$> (trans inner cg >>= weaken inner)
+restrict :: S.Set Int -> ConGraph -> Either (K, K) ConGraph
+restrict interface cg = {- min . sat -} trans inner cg >>= weaken inner
   where
     inner = domain cg S.\\ interface
 
 -- Take the transitive closure of a graph over an internal set
-trans :: S.Set Int -> ConGraph -> Maybe ConGraph
+trans :: S.Set Int -> ConGraph -> Either (K, K) ConGraph
 trans xs (ConGraph g) = ConGraph <$> sequence (M.map (\m -> foldM transX m xs) g)
 
 -- Add transitive connections that pass through node x
-transX :: M.Map K (M.Map K GuardSet) -> Int -> Maybe (M.Map K (M.Map K GuardSet))
+transX :: M.Map K (M.Map K GuardSet) -> Int -> Either (K, K) (M.Map K (M.Map K GuardSet))
 transX m x = sequence $ M.fromSet (\i -> sequence $ M.fromSet (go i) xs) xs
   where
     xs     = M.keysSet m
     go i j =
-      let g = lookup i j m ||| (lookupToX i x m &&& lookupFromX x j m)
-      in if unsafe i j && not (isEmpty g)
-        then Nothing
-        else Just g
+      let new_guard = lookup i j m ||| (lookupToX i x m &&& lookupFromX x j m)
+      in if safe i j || isEmpty new_guard
+        then Right new_guard
+        else Left (i, j)
 
 -- Weaken every occurs of intermediate notes in the guards
-weaken :: S.Set Int -> ConGraph -> Maybe ConGraph
+weaken :: S.Set Int -> ConGraph -> Either (K, K) ConGraph
 weaken xs cg = foldM weakenX cg xs
   where
-    weakenX :: ConGraph -> Int -> Maybe ConGraph
+    weakenX :: ConGraph -> Int -> Either (K, K) ConGraph
     weakenX (ConGraph g) x =
-      let preds = M.foldr (M.unionWith (|||) . M.mapMaybe (lookupX x)) M.empty g
+      let preds = M.foldr (M.unionWith (|||) . M.mapMaybe (lookupX x) . M.filterWithKey (\k _ -> nonX k)) M.empty g
       in ConGraph <$> sequence (M.mapWithKey (subPreds preds x) g)
 
--- Apply a pred map to an individual graph
-subPreds :: M.Map K GuardSet -> Int -> Name -> M.Map K (M.Map K GuardSet) -> Maybe (M.Map K (M.Map K GuardSet))
-subPreds preds x d = sequence . M.mapWithKey (\i -> sequence . M.mapWithKey (\j g -> if unsafe i j && not (isEmpty $ new_guard g) then Nothing else Just g ))
-  where
-    new_guard :: GuardSet -> GuardSet
-    new_guard g = M.foldrWithKey alt g preds
+    --- Don't weaken to another intermediate node
+    nonX :: K -> Bool
+    nonX (Dom x _) = x `notElem` xs
+    nonX _         = True
 
+-- Apply a pred map to an individual graph and remove that intermediate node
+subPreds :: M.Map K GuardSet -> Int -> Name -> M.Map K (M.Map K GuardSet) -> Either (K, K) (M.Map K (M.Map K GuardSet))
+subPreds preds x d =
+  sequence . M.mapMaybeWithKey (\i ->
+    if i == Dom x d
+      then const Nothing
+      else Just . sequence . M.mapMaybeWithKey (\j g ->
+          if j == Dom x d
+            then Nothing
+            else let new_guard = M.foldrWithKey alt g preds
+              in if safe i j || isEmpty new_guard
+                then Just $ Right new_guard
+                else Just $ Left (i, j)))
+  where
     alt :: K -> GuardSet -> GuardSet -> GuardSet
     alt n g g' = g' ||| replace x d n g' &&& g
 
 -- Remove intermediate nodes and guards
+-- DEPRECIATED
 purge :: S.Set Int -> ConGraph -> ConGraph
 purge xs (ConGraph g) = ConGraph $ M.map (M.mapMaybeWithKey (mapI (M.mapMaybeWithKey (mapI $ filterGuards xs)))) g
   where

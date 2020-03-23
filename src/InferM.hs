@@ -44,6 +44,7 @@ import DataCon
 import CoreSubst
 import CoreUtils
 import IfaceType
+import UniqSet
 import FastString
 import SrcLoc hiding (getLoc)
 import Outputable hiding (empty)
@@ -109,7 +110,7 @@ getLoc = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, loc)
 
 -- Specify a location
 setLoc :: SrcSpan -> InferM m a -> InferM m a
-setLoc loc m = InferM $ \mod gamma _ path fresh cs -> unInferM m mod gamma loc path fresh cs
+setLoc loc m = InferM $ \mod gamma _ -> unInferM m mod gamma loc
 
 -- A unique integer
 fresh :: Monad m => InferM m Int
@@ -158,10 +159,10 @@ getVar v = do
       fre_scheme <- foldM (\s x -> liftM2 (rename x) fresh $ return s) scheme (domain scheme)
       emitIfaceTyCon' (body fre_scheme) (body var_scheme)
 
-    Nothing -> do
+    Nothing ->
       -- Maximise library type
-      case result (body var_scheme) of
-        Inj x d _ -> do
+      case decomp (body var_scheme) of
+        (_, Inj x d _) -> do
           let Tcr.TyConApp d' _ = coreBody $ varType v
           l <- getLoc
           mapM_ (\k -> emitSetCon (con (getName k) l) (Dom x $ getName d')) $ tyConDataCons d'
@@ -194,10 +195,10 @@ refinable tc = (length (tyConDataCons tc) > 1) && all pos (concatMap dataConOrig
     pos _                 = True
 
     neg :: Tcr.Type -> Bool
-    neg (Tcr.TyConApp _ _) = False -- Could this test wether tc' is refinable?
-    neg (Tcr.TyVarTy _)     = False
-    neg (Tcr.FunTy t1 t2)   = pos t1 && neg t2
-    neg _                   = True
+    neg (Tcr.TyConApp _ _) = False -- Could this test whether tc' is refinable?
+    neg (Tcr.TyVarTy _)    = False
+    neg (Tcr.FunTy t1 t2)  = pos t1 && neg t2
+    neg _                  = True
 
 -- Prepare name for interface
 getExternalName :: (Monad m, NamedThing a) => a -> InferM m Name
@@ -264,7 +265,7 @@ emitConDom k x d = do
 emitDomSet :: Monad m => Int -> TyCon -> [DataCon] -> InferM m ()
 emitDomSet x d ks = do
   l <- getLoc
-  emitSetCon (Dom x $ getName d) (set (getName <$> ks) l)
+  emitSetCon (Dom x $ getName d) (Set (mkUniqSet (getName <$> ks)) l)
 
 -- Convert a subtyping constraint to a constraint set and emit
 emitTyCon :: Monad m => Type T TyCon -> Type T TyCon -> InferM m ()
@@ -280,10 +281,10 @@ emitTyCon (t11 :=> t12) (t21 :=> t22) =
 emitTyCon (Inj x d as) (Inj y _ as')
   | x /= y = do
     mapM_ (\d' -> emitSetCon (Dom x (getName d')) (Dom y (getName d'))) $ slice [d]
-    mapM_ (\(a, a') -> emitTyCon a a') $ zip as as'
+    mapM_ (uncurry emitTyCon) $ zip as as'
 emitTyCon _ _ = return ()
 
--- Convert a subtyping constraint to a constraint set and emit
+-- Emit a constraint between interface types
 emitIfaceTyCon :: Monad m => Type T TyCon -> Type T IfaceTyCon -> InferM m ()
 emitIfaceTyCon (Var _) (Var _)        = return ()
 emitIfaceTyCon Ambiguous _            = return ()
@@ -297,10 +298,9 @@ emitIfaceTyCon (t11 :=> t12) (t21 :=> t22) =
 emitIfaceTyCon (Inj x d as) (Inj y _ as')
   | x /= y = do
     mapM_ (\d' -> emitSetCon (Dom x (getName d')) (Dom y (getName d'))) $ slice [d]
-    mapM_ (\(a, a') -> emitIfaceTyCon a a') $ zip as as'
+    mapM_ (uncurry emitIfaceTyCon) $ zip as as'
 emitIfaceTyCon _ _ = return ()
 
--- Convert a subtyping constraint to a constraint set and emit
 emitIfaceTyCon' :: Monad m => Type T IfaceTyCon -> Type T TyCon -> InferM m ()
 emitIfaceTyCon' (Var _) (Var _)        = return ()
 emitIfaceTyCon' Ambiguous _            = return ()
@@ -314,7 +314,7 @@ emitIfaceTyCon' (t11 :=> t12) (t21 :=> t22) =
 emitIfaceTyCon' (Inj x _ as) (Inj y d as')
   | x /= y = do
     mapM_ (\d' -> emitSetCon (Dom x (getName d')) (Dom y (getName d'))) $ slice [d]
-    mapM_ (\(a, a') -> emitIfaceTyCon' a a') $ zip as as'
+    mapM_ (uncurry emitIfaceTyCon') $ zip as as'
 emitIfaceTyCon' _ _ = return ()
 
 -- Take the slice of a datatype
@@ -332,7 +332,8 @@ slice tcs
 
 -- Transitively remove local constraints and attach them to variables
 saturate :: Monad m => InferM m (Context ()) -> InferM m (Context ConGraph)
-saturate m = InferM $ \mod gamma loc path fresh cs -> do
-  (path', fresh', cs', ts) <- unInferM m mod gamma loc path fresh cs
-  let interface = restrict (domain ts) cs'
-  return (path', fresh', cs, fmap (\s -> Scheme { tyvars = tyvars s, body = body s, constraints = interface }) ts)
+saturate m = InferM $ \mod gamma occ_l path fresh cs -> do
+  (path', fresh', cs', ts) <- unInferM m mod gamma occ_l path fresh cs
+  case restrict (domain ts) cs' of
+    Right i -> return (path', fresh', cs, fmap (\s -> Scheme { tyvars = tyvars s, body = body s, constraints = i }) ts)
+    Left (Set k left_l, Set k' right_l) -> pprPanic "Unsatisfiable constraint!" $ ppr (k, k', left_l, right_l, occ_l)

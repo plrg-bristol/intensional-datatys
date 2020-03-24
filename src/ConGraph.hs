@@ -66,7 +66,7 @@ instance Outputable ConGraph where
                                g <- toList gs]
 
 instance Binary ConGraph where
-  put_ bh (ConGraph cg) = put_ bh $ [ (n, [ (k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg]
+  put_ bh (ConGraph cg) = put_ bh [ (n, [ (k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg]
   get bh = do
     nl <- get bh
     let nl' = [(n, M.fromList [(k, M.fromList m') | (k, m') <- l]) | (n, l) <- nl :: [(Name, [(K, [(K, GuardSet)])])]]
@@ -128,13 +128,13 @@ weaken xs cg = foldM weakenX cg xs
   where
     weakenX :: ConGraph -> Int -> Either (K, K) ConGraph
     weakenX (ConGraph g) x =
-      let preds = M.foldr (M.unionWith (|||) . M.mapMaybe (lookupX x) . M.filterWithKey (\k _ -> nonX k)) M.empty g
+      let preds = M.foldr (\m -> M.unionWith (|||) $ M.mapMaybe (lookupX x) $ M.filterWithKey (\k _ -> nonX k m) m) M.empty g
       in ConGraph <$> sequence (M.mapWithKey (subPreds preds x) g)
 
     --- Don't weaken to another intermediate node
-    nonX :: K -> Bool
-    nonX (Dom x _) = x `notElem` xs
-    nonX _         = True
+    nonX :: K -> M.Map K (M.Map K GuardSet) -> Bool
+    nonX k@(Dom x _) m = (x `notElem` xs) && M.null (M.mapMaybe (M.lookup k) m)
+    nonX k           m = M.null (M.mapMaybe (M.lookup k) m)
 
 -- Apply a pred map to an individual graph and remove that intermediate node
 subPreds :: M.Map K GuardSet -> Int -> Name -> M.Map K (M.Map K GuardSet) -> Either (K, K) (M.Map K (M.Map K GuardSet))

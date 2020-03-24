@@ -106,6 +106,7 @@ instance Binary (Type T IfaceTyCon) where
   put_ bh (Inj x d as) = put_ bh (4 :: Int) >> put_ bh x >> put_ bh d >> put_ bh as
   put_ bh (a :=> b)    = put_ bh (5 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Lit l)      = put_ bh (6 :: Int) >> put_ bh l
+  put_ bh Ambiguous    = put_ bh (7 :: Int)
 
   get bh = do
     n <- get bh
@@ -116,6 +117,7 @@ instance Binary (Type T IfaceTyCon) where
       4 -> Inj <$> get bh <*> get bh <*> get bh
       5 -> (:=>) <$> get bh <*> get bh
       6 -> Lit <$> get bh
+      7 -> return Ambiguous
 
 instance Binary (Type S IfaceTyCon) where
   put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
@@ -124,6 +126,7 @@ instance Binary (Type S IfaceTyCon) where
   put_ bh (Data d as)  = put_ bh (3 :: Int) >> put_ bh d >> put_ bh as
   put_ bh (a :=> b)    = put_ bh (5 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Lit l)      = put_ bh (6 :: Int) >> put_ bh l
+  put_ bh Ambiguous    = put_ bh (7 :: Int)
 
   get bh = do
     n <- get bh
@@ -134,6 +137,7 @@ instance Binary (Type S IfaceTyCon) where
       3 -> Data <$> get bh <*> get bh
       5 -> (:=>) <$> get bh <*> get bh
       6 -> Lit <$> get bh
+      7 -> return Ambiguous
 
 instance Binary (Type e IfaceTyCon) => Binary (Type e TyCon) where
   put_ bh = put_ bh . fmap toIfaceTyCon

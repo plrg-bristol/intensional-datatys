@@ -98,7 +98,7 @@ instance Refined Guard where
 
 instance Outputable Guard where
   ppr (Guard g)
-    | all S.null g = text "top"
+    | all S.null g = empty
     | otherwise    = sep (punctuate and [dom k x d | (d, xks) <- M.toList g, (x, k) <- S.toList xks]) <+> char '?'
     where
       dom k x d = ppr k <+> elem <+> text "dom" <> parens (ppr x <> parens (ppr d))

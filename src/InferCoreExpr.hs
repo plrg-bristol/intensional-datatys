@@ -115,7 +115,6 @@ infer (Core.Lam x e)
       Forall as t2 -> return $ Forall as (t1 :=> t2)
 
 -- Local prog
--- TODO: Don't quantify by free refinement variables in the environment!!
 infer (Core.Let b e) = do
   ts <- inferRec b
   putVars ts $ infer e
@@ -181,7 +180,10 @@ infer (Core.Case e bind_e core_ret alts) = do
   return $ Mono ret
 
 -- Track source location
-infer (Core.Tick t e) = setLoc (RealSrcSpan $ Core.sourceSpan t) $ infer e
+infer (Core.Tick Core.SourceNote { Core.sourceSpan = s } e) = setLoc (RealSrcSpan s) $ infer e
+
+-- Ignore other ticks
+infer (Core.Tick _ e) = infer e
 
 -- Infer cast
 infer (Core.Cast e _) = do

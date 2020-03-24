@@ -1,4 +1,4 @@
-cabal-version: 1.12
+cabal-version: 3.0
 
 -- This file has been generated from package.yaml by hpack version 0.31.2.
 --
@@ -14,7 +14,7 @@ bug-reports:    https://github.com/eddiejones2108/intensional-constraints/issues
 author:         Eddie Jones
 maintainer:     ej16147@bristol.ac.uk
 copyright:      2019 Eddie Jones
-license:        BSD3
+license:        BSD-3-Clause
 license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
@@ -49,7 +49,7 @@ library
 
 test-suite intensional-constraints-test
   type: exitcode-stdio-1.0
-  main-is: SimpleTest.hs
+  main-is: Set.hs
   other-modules:
       Paths_intensional_constraints
   hs-source-dirs:
@@ -66,6 +66,7 @@ executable profile
       base >=4.7
     , ghc >= 8.1
     , intensional-constraints
+  ghc-options:
   main-is: Profile.hs
   default-language: Haskell2010
 

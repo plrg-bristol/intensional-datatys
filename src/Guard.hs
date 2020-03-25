@@ -49,8 +49,8 @@ instance Ord K where
   _       <= _         = False
 
 instance Refined K where
-  domain (Dom x _) = S.singleton x
-  domain (Set _ _) = S.empty
+  freevs (Dom x _) = S.singleton x
+  freevs (Set _ _) = S.empty
 
   rename x y (Dom x' d)
     | x == x'  = Dom y d
@@ -93,7 +93,7 @@ newtype Guard = Guard (M.Map Name (S.Set (Int, Name)))
   deriving (Eq, Ord)
 
 instance Refined Guard where
-  domain (Guard g)     = M.foldr (S.union . S.map fst) S.empty g
+  freevs (Guard g)     = M.foldr (S.union . S.map fst) S.empty g
   rename x y (Guard g) = Guard $ M.map (S.map (\(x', k) -> if x == x' then (y, k) else (x', k))) g
 
 instance Outputable Guard where
@@ -116,7 +116,7 @@ instance Binary Guard where
 newtype GuardSet = GuardSet (S.Set Guard)
 
 instance Refined GuardSet where
-  domain (GuardSet g)     = foldr (S.union . domain) S.empty g
+  freevs (GuardSet g)     = foldr (S.union . freevs) S.empty g
   rename x y (GuardSet g) = GuardSet $ S.map (rename x y) g
 
 instance Binary GuardSet where
@@ -163,7 +163,7 @@ replace x d cs (GuardSet gs) = GuardSet $ S.map go gs
 
 -- Remove guards concerning the intermediate nodes
 filterGuards :: S.Set Int -> GuardSet -> GuardSet
-filterGuards xs (GuardSet g) = GuardSet $ S.filter (all (`notElem` xs) . domain) g
+filterGuards xs (GuardSet g) = GuardSet $ S.filter (all (`notElem` xs) . freevs) g
 
 -- Simplify by removing redundant guards/ reduce to minimal set
 minimise :: GuardSet -> GuardSet

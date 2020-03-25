@@ -156,7 +156,7 @@ getVar v = do
   case may_scheme of
     Just scheme -> do
       -- Localise constraints
-      fre_scheme <- foldM (\s x -> liftM2 (rename x) fresh $ return s) scheme (domain $ constraints scheme)
+      fre_scheme <- foldM (\s x -> liftM2 (rename x) fresh $ return s) scheme (boundvs scheme)
       emit (constraints fre_scheme)
       emitIfaceTyCon' (body fre_scheme) (body var_scheme)
 
@@ -339,7 +339,7 @@ slice tcs
 saturate :: Monad m => InferM m (Context ()) -> InferM m (Context ConGraph)
 saturate m = InferM $ \mod gamma occ_l path fresh cs -> do
   (path', fresh', cs', ts) <- unInferM m mod gamma occ_l path fresh cs
-  -- pprTraceM "Graph:" $ ppr cs'
-  case restrict (domain ts S.\\ domain gamma) cs' of
-    Right i -> return (path', fresh', cs, fmap (\s -> Scheme { tyvars = tyvars s, body = body s, constraints = i }) ts)
+  let interface = freevs ts S.\\ freevs gamma
+  case restrict interface cs' of
+    Right i -> return (path', fresh', cs, fmap (\s -> Scheme { tyvars = tyvars s, boundvs = interface, body = body s, constraints = i }) ts)
     Left (Set k left_l, Set k' right_l) -> pprPanic "Unsatisfiable constraint!" $ ppr (k, k', left_l, right_l, occ_l)

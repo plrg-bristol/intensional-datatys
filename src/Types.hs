@@ -77,21 +77,21 @@ instance Outputable d => Outputable (Type e d) where
 
 -- Objects that are parameterised by refinement variables
 class Refined t where
-  domain :: t -> S.Set Int
+  freevs :: t -> S.Set Int
   rename :: Int -> Int -> t -> t
 
 instance Refined () where
-  domain _   = S.empty
+  freevs _   = S.empty
   rename _ _ = id
 
 instance Refined Name where
-  domain _   = S.empty
+  freevs _   = S.empty
   rename _ _ = id
 
 instance Refined (Type T d) where
-  domain (Inj x _ as) = foldr (S.union . domain) (S.singleton x) as
-  domain (a :=> b)    = S.union (domain a) (domain b)
-  domain _            = S.empty
+  freevs (Inj x _ as) = foldr (S.union . freevs) (S.singleton x) as
+  freevs (a :=> b)    = S.union (freevs a) (freevs b)
+  freevs _            = S.empty
 
   rename x y (Inj x' d as)
     | x == x'           = Inj y d (rename x y <$> as)

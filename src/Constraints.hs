@@ -1,11 +1,18 @@
-module Guard (
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE KindSignatures #-}
+
+{-# LANGUAGE FlexibleInstances #-}
+
+module Constraints (
+  Side(..),
   K(..),
-  con,
   safe,
+  toAtomic,
 
-  Guard,
+  Guard(..),
 
-  GuardSet,
+  GuardSet(..),
   toList,
   top,
   bot,
@@ -15,77 +22,114 @@ module Guard (
   (&&&),
   replace,
   filterGuards,
-  -- minimise,
 ) where
 
 import Prelude hiding ((<>))
-import Control.Applicative hiding (empty)
+import Data.Hashable
 import qualified Data.Set as S
 import qualified Data.Map as M
-
-import Types
+import qualified Data.List as L
 
 import Name
-import SrcLoc
+import SrcLoc hiding (L)
 import Binary
+import Unique
 import UniqSet
 import Outputable hiding (isEmpty)
 
--- General constructors set
-data K =
-    Dom Int Name
-  | Set (UniqSet Name) SrcSpan
+import Types
+
+-- Atomic constructors set
+data Side = L | R
+
+data K (s :: Side) where
+  Dom :: Int -> K s
+  Set :: UniqSet Name -> SrcSpan -> K R
+  Con :: Name -> SrcSpan -> K L
 
 -- Disregard srcspan in comparison
-instance Eq K where
-  Dom x d == Dom x' d' = x == x' && d == d'
-  Set s _ == Set s' _  = s == s'
-  _       == _         = False
+instance Eq (K s) where
+  Dom x   == Dom x'   = x == x'
+  Set s _ == Set s' _ = s == s'
+  Con k _ == Con k' _ = k == k'
+  _       == _        = False
 
-instance Ord K where
-  Dom x d <= Dom x' d' = (x, d) <= (x', d')
-  Set k _ <= Set k' _  = nonDetEltsUniqSet k <= nonDetEltsUniqSet k'
-  Dom _ _ <= _         = True
-  _       <= _         = False
+instance Ord (K s) where
+  Dom x   <= Dom x'   = x <= x'
+  Set k _ <= Set k' _ = nonDetEltsUniqSet k <= nonDetEltsUniqSet k'
+  Con k _ <= Con k' _ = k <= k'
+  Dom _   <= _        = True
+  _       <= _        = False
 
-instance Refined K where
-  freevs (Dom x _) = S.singleton x
-  freevs (Set _ _) = S.empty
+instance Refined (K s) where
+  freevs (Dom x)   = [x]
+  freevs (Con _ _) = []
+  freevs (Set _ _) = []
 
-  rename x y (Dom x' d)
-    | x == x'  = Dom y d
+  rename x y (Dom x')
+    | x == x'  = Dom y
   rename _ _ c = c
 
-instance Outputable K where
-  ppr (Dom x d)         = text "dom" <> parens (ppr x <> parens (ppr d))
+instance Outputable (K s) where
+  ppr (Dom x)           = text "dom" <> parens (ppr x)
+  ppr (Con k _)         = ppr k
   ppr (Set ks _)
     | isEmptyUniqSet ks = unicodeSyntax (char '∅') (ppr "{}")
     | otherwise         = pprWithBars ppr (nonDetEltsUniqSet ks)
 
-instance Binary K where
-  put_ bh (Dom x d) = put_ bh (0 :: Int) >> put_ bh x >> put_ bh d
-  put_ bh (Set s l) = put_ bh (1 :: Int) >> put_ bh (nonDetEltsUniqSet s) >> put_ bh l
+instance Binary (K L) where
+  put_ bh (Dom x)   = put_ bh False >> put_ bh x
+  put_ bh (Con k l) = put_ bh True  >> put_ bh k >> put_ bh l
 
   get bh = do
     n <- get bh
-    case n :: Int of
-      0 -> do
+    if n
+      then do
         x <- get bh
-        d <- get bh
-        return (Dom x d)
-      1 -> do
+        return (Dom x)
+      else do
+        k <- get bh
+        l <- get bh
+        return (Con k l)
+
+instance Binary (K R) where
+  put_ bh (Dom x)   = put_ bh False >> put_ bh x
+  put_ bh (Set s l) = put_ bh True  >> put_ bh (nonDetEltsUniqSet s) >> put_ bh l
+
+  get bh = do
+    n <- get bh
+    if n
+      then do
+        x <- get bh
+        return (Dom x)
+      else do
         s <- get bh
         l <- get bh
         return (Set (mkUniqSet s) l)
 
--- Convenient smart constructors
-con :: Name -> SrcSpan -> K
-con = Set . unitUniqSet
+instance Hashable (K s) where
+  hashWithSalt s (Dom x)    = hashWithSalt s x
+  hashWithSalt s (Set ks _) = hashWithSalt s (getKey <$> nonDetKeysUniqSet ks)
+  hashWithSalt s (Con k _)  = hashWithSalt s (getKey $ getUnique k)
 
--- A constraint that has an atomic form
-safe :: K -> K -> Bool
-safe (Set k _) (Set k' _) = uniqSetAll (`elementOfUniqSet` k') k
-safe _ _                  = True
+-- Is a pair of constructor sets safe
+safe :: K l -> K r -> Bool
+safe (Set ks _) (Set ks' _) = uniqSetAll (`elementOfUniqSet` ks') ks
+safe (Con k _) (Set ks _)   = elementOfUniqSet k ks
+safe (Set ks _) (Con k _)   = nonDetEltsUniqSet ks == [k]
+safe _ _                    = True
+
+-- Convert constraint to atomic form
+toAtomic :: K l -> K r -> Maybe [(K L, K R)]
+toAtomic (Dom x) (Dom y)
+  | x /= y     = Just [(Dom x, Dom y)]
+toAtomic (Dom x) (Set k l)
+               = Just [(Dom x, Set k l)]
+toAtomic (Set ks l) (Dom x)
+               = Just [(Con k l, Dom x) | k <- nonDetEltsUniqSet ks]
+toAtomic k1 k2
+  | safe k1 k2 = Just []
+  | otherwise  = Nothing
 
 -- A guard, i.e. a set of constraints of the form k in (X, d)
 -- Grouped by d
@@ -93,8 +137,8 @@ newtype Guard = Guard (M.Map Name (S.Set (Int, Name)))
   deriving (Eq, Ord)
 
 instance Refined Guard where
-  freevs (Guard g)     = M.foldr (S.union . S.map fst) S.empty g
-  rename x y (Guard g) = Guard $ M.map (S.map (\(x', k) -> if x == x' then (y, k) else (x', k))) g
+  freevs (Guard g)     = S.toList $ M.foldr (S.union . S.map fst) S.empty g
+  rename x y (Guard g) = Guard $ fmap (S.map (\(x', k) -> if x == x' then (y, k) else (x', k))) g
 
 instance Outputable Guard where
   ppr (Guard g)
@@ -102,8 +146,8 @@ instance Outputable Guard where
     | otherwise    = sep (punctuate and [dom k x d | (d, xks) <- M.toList g, (x, k) <- S.toList xks]) <+> char '?'
     where
       dom k x d = ppr k <+> elem <+> text "dom" <> parens (ppr x <> parens (ppr d))
-      elem      = unicodeSyntax (char '∈') (text " in ")
-      and       = unicodeSyntax (char '∧') (text " && ")
+      elem      = unicodeSyntax (char '∈') (text "in")
+      and       = unicodeSyntax (char '∧') (text " & ")
 
 instance Binary Guard where
   put_ bh (Guard m) = put_ bh [ (n, S.toList s) | (n ,s) <- M.toList m]
@@ -114,9 +158,10 @@ instance Binary Guard where
 -- A collection of possible guards
 -- Would it be cheaper to keep a list?
 newtype GuardSet = GuardSet (S.Set Guard)
+  deriving Eq
 
 instance Refined GuardSet where
-  freevs (GuardSet g)     = foldr (S.union . freevs) S.empty g
+  freevs (GuardSet g)     = foldr (L.union . freevs) [] g
   rename x y (GuardSet g) = GuardSet $ S.map (rename x y) g
 
 instance Binary GuardSet where
@@ -150,16 +195,14 @@ infix 3 &&&
 GuardSet gs &&& GuardSet gs' = minimise $ GuardSet $ S.map (\(Guard s, Guard t) -> Guard (M.unionWith S.union s t)) $ S.cartesianProduct gs gs'
 
 -- Replace k1 with k2 in a guard and reduce
-replace :: Int -> Name -> K -> GuardSet -> GuardSet
+replace :: Int -> Name -> K L -> GuardSet -> GuardSet
 replace x d cs (GuardSet gs) = GuardSet $ S.map go gs
   where
     go :: Guard -> Guard
     go (Guard g) =
       case cs of
-        Dom y _  -> Guard $ M.adjust (S.map (\(x', k) -> if x == x' then (y, k) else (x', k))) d g
-        Set ks _
-          | [k] <- nonDetEltsUniqSet ks  -> Guard $ M.adjust (S.filter (/= (x, k))) d g
-          | otherwise -> pprPanic "Non-atomic constraint!" $ ppr cs
+        Dom y   -> Guard $ M.adjust (S.map (\(x', k) -> if x == x' then (y, k) else (x', k))) d g
+        Con k _ -> Guard $ M.adjust (S.filter (/= (x, k))) d g
 
 -- Remove guards concerning the intermediate nodes
 filterGuards :: S.Set Int -> GuardSet -> GuardSet

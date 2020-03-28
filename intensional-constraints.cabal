@@ -1,16 +1,12 @@
 cabal-version: 3.0
 
--- This file has been generated from package.yaml by hpack version 0.31.2.
---
--- see: https://github.com/sol/hpack
---
--- hash: d32111790340aafe646d1920fd2b54676dec56ac06f0efb1e10cfdabdb3550fb
-
 name:           intensional-constraints
 version:        0.1.0.0
+synopsis:       A refinement type plugin
 description:    Please see the README on GitHub at <https://github.com/eddiejones2108/intensional-constraints#readme>
 homepage:       https://github.com/eddiejones2108/intensional-constraints#readme
 bug-reports:    https://github.com/eddiejones2108/intensional-constraints/issues
+category:       Language
 author:         Eddie Jones
 maintainer:     ej16147@bristol.ac.uk
 copyright:      2019 Eddie Jones
@@ -29,10 +25,9 @@ library
   exposed-modules:
       Lib
   other-modules:
-      Paths_intensional_constraints
       Types
       Scheme
-      Guard
+      Constraints
       ConGraph
       InferM
       InferCoreExpr
@@ -40,34 +35,33 @@ library
       src
   ghc-options: -O2 -Wall
   build-depends:
-      base >=4.7
+      base >=4 && <5
+    , ghc >=8.6 && <8.10
     , containers
-    , ghc
+    , array
+    , mtl
+    , hashable
     , time
     , directory
   default-language: Haskell2010
 
-test-suite intensional-constraints-test
+test-suite test
   type: exitcode-stdio-1.0
   main-is: Set.hs
-  other-modules:
-      Paths_intensional_constraints
   hs-source-dirs:
       test
   ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:time
   build-depends:
-      base >=4.7
+      base >=4 && <5
     , intensional-constraints
   default-language: Haskell2010
 
--- Requires ghc 8.1
-executable profile
-  build-depends:
-      base >=4.7
-    , ghc >= 8.1
-    , intensional-constraints
-  ghc-options:
-  main-is: Profile.hs
-  default-language: Haskell2010
-
-
+-- Requires ghc 8.8
+-- executable profile
+--   build-depends:
+--       base >=4 && <5
+--     , ghc >= 8.8
+--     , intensional-constraints
+--   ghc-options:
+--   main-is: Profile.hs
+--   default-language: Haskell2010

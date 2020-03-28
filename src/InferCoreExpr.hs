@@ -12,7 +12,7 @@ import qualified Data.Map as M
 
 import Types
 import Scheme
-import Guard
+import Constraints
 import ConGraph
 import InferM
 
@@ -24,7 +24,7 @@ import Outputable hiding (empty)
 import qualified GhcPlugins as Core
 
 -- Infer recursive bind
-inferRec :: Monad m => Core.CoreBind -> InferM m (Context ConGraph)
+inferRec :: Monad m => Core.CoreBind -> InferM m Context
 inferRec bgs = do
   binds <- sequence $ M.fromList [ (n, fromCoreScheme (exprType rhs))
                                  | (x, rhs) <- Core.flattenBinds [bgs],
@@ -40,10 +40,10 @@ inferRec bgs = do
                               let n    = getName x,
                               let sr   = binds M.! n ]
 -- Infer program
-inferProg :: Monad m => Core.CoreProgram -> InferM m (Context ConGraph)
+inferProg :: Monad m => Core.CoreProgram -> InferM m Context
 inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec) M.empty
 
-infer :: Monad m => Core.CoreExpr -> InferM m (Scheme T TyCon ())
+infer :: Monad m => Core.CoreExpr -> InferM m (Scheme TyCon)
 infer (Core.Var v) =
   case Core.isDataConId_maybe v of
     Just k
@@ -79,7 +79,7 @@ infer (Core.App e1 (Core.Type e2)) = do
       (_, Inj x d _) -> emitTyCon t (inj x t)
       _              -> return ()
 
-  return (applyType scheme t)
+  return (applyScheme scheme t)
   where
     isConstructor :: Core.CoreExpr -> Bool
     isConstructor (Core.App e1 _) = isConstructor e1

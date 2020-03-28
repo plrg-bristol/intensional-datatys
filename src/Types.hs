@@ -1,35 +1,38 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
+
 {-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE StandaloneDeriving #-}
+
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Types (
   Extended(..),
   Type(..),
-  Refined(..),
   inj,
   shape,
+  applyType,
   decomp,
+
+  Refined(..),
 ) where
 
 import Prelude hiding ((<>))
-import qualified Data.Set as S
+import qualified Data.List as L
 
 import Name
 import TyCon
 import Binary
-import IfaceType
 import ToIface
+import IfaceType
 import BasicTypes
 import Outputable
 
-data Extended where
-  S :: Extended -- Unrefined
-  T :: Extended -- Refined
+-- Unrefined sorts vs refined types
+data Extended = S | T
 
 -- Monomorphic types
 data Type (e :: Extended) d where
@@ -57,7 +60,7 @@ instance Eq d => Eq (Type S d) where
   Lit l == Lit l'        = l == l'
   _ == _                 = False
 
--- Clone of a Outputable (Core.Type)
+-- Clone of a Outputable Core.Type
 instance Outputable d => Outputable (Type e d) where
   ppr = pprTy topPrec
     where
@@ -74,30 +77,6 @@ instance Outputable d => Outputable (Type e d) where
       pprTy prec (t1 :=> t2)  = maybeParen prec funPrec $ sep [pprTy funPrec t1, arrow <+> pprTy prec t2]
       pprTy _ (Lit l)         = ppr l
       pprTy _ Ambiguous       = unicodeSyntax (char '□') (text "ambiguous")
-
--- Objects that are parameterised by refinement variables
-class Refined t where
-  freevs :: t -> S.Set Int
-  rename :: Int -> Int -> t -> t
-
-instance Refined () where
-  freevs _   = S.empty
-  rename _ _ = id
-
-instance Refined Name where
-  freevs _   = S.empty
-  rename _ _ = id
-
-instance Refined (Type T d) where
-  freevs (Inj x _ as) = foldr (S.union . freevs) (S.singleton x) as
-  freevs (a :=> b)    = S.union (freevs a) (freevs b)
-  freevs _            = S.empty
-
-  rename x y (Inj x' d as)
-    | x == x'           = Inj y d (rename x y <$> as)
-    | otherwise         = Inj x' d (rename x y <$> as)
-  rename x y (a :=> b)  = rename x y a :=> rename x y b
-  rename _ _ t          = t
 
 instance Binary (Type T IfaceTyCon) where
   put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
@@ -118,6 +97,7 @@ instance Binary (Type T IfaceTyCon) where
       5 -> (:=>) <$> get bh <*> get bh
       6 -> Lit <$> get bh
       7 -> return Ambiguous
+      _ -> pprPanic "Invalid binary file!" $ ppr ()
 
 instance Binary (Type S IfaceTyCon) where
   put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
@@ -138,10 +118,11 @@ instance Binary (Type S IfaceTyCon) where
       5 -> (:=>) <$> get bh <*> get bh
       6 -> Lit <$> get bh
       7 -> return Ambiguous
+      _ -> pprPanic "Invalid binary file!" $ ppr ()
 
 instance Binary (Type e IfaceTyCon) => Binary (Type e TyCon) where
   put_ bh = put_ bh . fmap toIfaceTyCon
-  get bh  = undefined -- Shouldn't be invoked
+  get bh  = pprPanic "Cannot write non-interface types to file" $ ppr ()
 
 -- Inject a sort into a refinement environment
 inj :: Int -> Type e d -> Type T d
@@ -165,7 +146,37 @@ shape (a :=> b)     = shape a :=> shape b
 shape (Lit l)       = Lit l
 shape Ambiguous     = Ambiguous
 
+-- Type application
+applyType :: Outputable d => Type e d -> Type e d -> Type e d
+applyType Ambiguous    _ = Ambiguous
+applyType (Base b as)  t = Base b (as ++ [shape t])
+applyType (Data d as)  t = Data d (as ++ [t])
+applyType (Inj x d as) t = Inj x d (as ++ [t])
+applyType (Var a)      t = App (Var a) (shape t)
+applyType (App a b)    t = App (App a b) (shape t)
+applyType t t'           = pprPanic "The type is saturated!" $ ppr (t, t')
+
 -- Decompose a function type into arguments and eventual return type
 decomp :: Type T d -> ([Type T d], Type T d)
 decomp (a :=> b) = let (as, r) = decomp b in (a:as, r)
 decomp t         = ([], t)
+
+-- Objects that are parameterised by refinement variables
+class Refined t where
+  freevs :: t -> [Int]
+  rename :: Int -> Int -> t -> t
+
+instance Refined Name where
+  freevs _   = []
+  rename _ _ = id
+
+instance Refined (Type T d) where
+  freevs (Inj x _ as) = L.nub (x:concatMap freevs as)
+  freevs (a :=> b)    = freevs a `L.union` freevs b
+  freevs _            = []
+
+  rename x y (Inj x' d as)
+    | x == x'           = Inj y d (rename x y <$> as)
+    | otherwise         = Inj x' d (rename x y <$> as)
+  rename x y (a :=> b)  = rename x y a :=> rename x y b
+  rename _ _ t          = t

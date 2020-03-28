@@ -102,10 +102,11 @@ module Set  (
             , valid
             ) where
 
-import Prelude hiding (filter,foldr,null,map)
+import Prelude hiding (fail,filter,foldr,null,map)
 import qualified Data.List as List
 import Data.Monoid (Monoid(..))
 import Data.Typeable
+import Control.Monad.Fail
 import Data.Foldable (Foldable(foldMap))
 
 {-
@@ -728,13 +729,13 @@ deleteFindMax t
 
 -- | /O(log n)/. Retrieves the minimal key of the set, and the set stripped from that element
 -- @fail@s (in the monad) when passed an empty set.
-minView :: MonadFail m => Set a -> m (a, Set a)
+minView :: (Monad m ,MonadFail m) => Set a -> m (a, Set a)
 minView Tip = fail "Set.minView: empty set"
 minView x = return (deleteFindMin x)
 
 -- | /O(log n)/. Retrieves the maximal key of the set, and the set stripped from that element
 -- @fail@s (in the monad) when passed an empty set.
-maxView :: MonadFail m => Set a -> m (a, Set a)
+maxView :: (Monad m, MonadFail m) => Set a -> m (a, Set a)
 maxView Tip = fail "Set.maxView: empty set"
 maxView x = return (deleteFindMax x)
 

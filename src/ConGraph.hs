@@ -1,7 +1,8 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
-
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE Strict #-}
+{-# LANGUAGE BangPatterns #-}
 
 module ConGraph (
   ConGraph,
@@ -18,8 +19,9 @@ import Control.Monad.Except
 import Data.Maybe
 import Data.STRef
 import Data.Array.ST hiding (freeze, thaw)
+import Data.Foldable hiding (toList)
 import Data.Hashable
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import qualified Data.List as L
 
@@ -73,7 +75,7 @@ insert k1 k2 d (ConGraph cg) =
 
 -- Overwrite bin, i.e. insert with top
 overwriteBin :: [(K L, K R)] -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L) (M.Map (K R) GuardSet)
-overwriteBin cs m = foldr (\(kl, kr) -> insertBin kl kr top) m cs
+overwriteBin cs m = L.foldl' (\k (kl, kr) -> insertBin kl kr top k) m cs
 
 -- Guard a constraint graph by a set of possible guards
 guardWith :: S.Set Name -> Int -> Name -> ConGraph -> ConGraph
@@ -121,7 +123,7 @@ thawSub sub = do
   l <- newSTRef []
   r <- newSTRef []
   let msub = SubGraph e l r
-  M.traverseWithKey (\n -> M.traverseWithKey (\m e -> insertAtomicM n m e msub)) sub
+  traverseWithKey_' (\n -> traverseWithKey_' (\m e -> insertAtomicM n m e msub)) sub
   return msub
 
 -- Make immutable copy of mutable constraint graph
@@ -133,20 +135,20 @@ freezeSub msub = do
   sub <- newSTRef M.empty
   is  <- readSTRef (left msub)
   js  <- readSTRef (right msub)
-  forM_ is $ \i ->
-    forM_ js $ \j -> do
+  forM_' is $ \i ->
+    forM_' js $ \j -> do
       ebin <- readArray (edges msub) (i, j)
-      modifySTRef sub (flip (M.foldrWithKey (flip . M.foldrWithKey . insertBin)) ebin)
+      modifySTRef sub (\s -> M.foldlWithKey' (\s' n n_to -> M.foldlWithKey' (\s'' m g -> insertBin n m g s'') s' n_to) s ebin)
   readSTRef sub
 
 -- Insert a new edge into a mutable graph
 insertAtomicM :: K L -> K R -> GuardSet -> SubGraph s -> ST s ()
-insertAtomicM n m e g = do
-  let i = getIndex n
-  let j = getIndex m
-  ebin <- readArray (edges g) (i, j)
-  writeArray (edges g) (i, j) (insertBin n m e ebin)
-  modifySTRef (left g) (L.insert i)
+insertAtomicM !n !m !e !g = do
+  let !i = getIndex n
+  let !j = getIndex m
+  !ebin <- readArray (edges g) (i, j)
+  !() <- writeArray (edges g) (i, j) (insertBin n m e ebin)
+  !() <- modifySTRef (left g) (L.insert i)
   modifySTRef (right g) (L.insert j)
 
 -- Insert an edge into a bin
@@ -158,20 +160,20 @@ insertBin n m e = M.alter go n
 
 -- Add transitive edges through nodes in xs
 trans :: [Int] -> ConGraphM s -> ExceptT (K L, K R) (ST s) ()
-trans xs (ConGraphM m) = mapM_ (forM_ xs . transX) m
+trans xs (ConGraphM m) = mapM_ (forM_' xs . transX) m
 
 transX :: SubGraph s -> Int -> ExceptT (K L, K R) (ST s) ()
 transX sg x = do
   is <- lift $ readSTRef (left sg)
   js <- lift $ readSTRef (right sg)
-  forM_ is (\i ->
-    forM_ js (\j -> do
+  forM_' is (\i ->
+    forM_' js (\j -> do
       ik_bin <- lift $ readArray (edges sg) (i, getIndex k)
       kj_bin <- lift $ readArray (edges sg) (getIndex k, j)
       -- Consider every path from these bins
-      forM_ (M.lookup k kj_bin) $ \kj_guards ->
-        M.traverseWithKey (\n -> mapM_ (\nkg ->
-          M.traverseWithKey (\m kmg -> do
+      forM_' (M.lookup k kj_bin) $ \kj_guards ->
+        traverseWithKey_' (\n -> mapM_ (\nkg ->
+          traverseWithKey_' (\m kmg -> do
             -- Add new edge if safe
             let new_guard = nkg &&& kmg
             if | new_guard == bot -> return ()
@@ -212,15 +214,15 @@ weaken xs (ConGraphM cg) = mapM_ weakenX xs
         return p
         ) cg
 
-      M.traverseWithKey (\d -> mapM (M.traverseWithKey (\p -> forM cg . replaceSubGraph x d p))) preds
+      traverseWithKey_' (\d -> mapM_ (traverseWithKey_' (\p -> forM_' cg . replaceSubGraph x d p))) preds
 
 -- Replace all guards in a subgraph
 replaceSubGraph :: Int -> Name -> K L -> GuardSet -> SubGraph s -> ExceptT (K L, K R) (ST s) ()
 replaceSubGraph x d n g sg = do
   is <- lift $ readSTRef (left sg)
   js <- lift $ readSTRef (right sg)
-  forM_ is $ \i ->
-    forM_ js $ \j -> do
+  forM_' is $ \i ->
+    forM_' js $ \j -> do
       bin <- lift $ readArray (edges sg) (i, j)
       bin' <- replaceBin x d n g bin
       lift $ writeArray (edges sg) (i, j) bin'
@@ -239,7 +241,17 @@ removeNode :: Int -> SubGraph s -> ST s ()
 removeNode n sg = do
   is <- readSTRef (left sg)
   js <- readSTRef (right sg)
-  forM_ is $ \i ->
-    forM_ js $ \j -> do
-      x <- readArray (edges sg) (i, j)
-      writeArray (edges sg) (i, j) (M.map (M.delete (Dom n)) $ M.delete (Dom n) x)
+  forM_' is $ \i -> do
+    x <- readArray (edges sg) (getIndex (Dom n), i)
+    writeArray (edges sg) (getIndex $ Dom n, i) (M.map (M.delete (Dom n)) $ M.delete (Dom n) x)
+
+    y <- readArray (edges sg) (i, getIndex (Dom n))
+    writeArray (edges sg) (i, getIndex $ Dom n) (M.map (M.delete (Dom n)) $ M.delete (Dom n) y)
+
+-- Strict forM_
+forM_' :: (Monad m, Foldable f) => f a -> (a -> m ()) -> m ()
+forM_' !xs !f = foldl' (\b a -> b >> f a) (return ()) xs
+
+-- Strict traverseWithKey
+traverseWithKey_' :: Monad m => (k -> a -> m ()) -> M.Map k a -> m ()
+traverseWithKey_' !f !m = M.foldlWithKey' (\q k a -> q >> f k a) (return ()) m

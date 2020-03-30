@@ -3,7 +3,7 @@ dist/
 dist-newstyle/
 interface/
 *.log
-out
+args
 profile.eventlog
 profile.eventlog.json
-profile.prof
+*.prof

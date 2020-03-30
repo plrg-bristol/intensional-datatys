@@ -10,9 +10,9 @@ module Constraints (
   safe,
   toAtomic,
 
-  Guard(..),
+  Guard,
 
-  GuardSet(..),
+  GuardSet,
   toList,
   top,
   bot,
@@ -21,7 +21,7 @@ module Constraints (
   (|||),
   (&&&),
   replace,
-  filterGuards,
+  remove,
 ) where
 
 import Prelude hiding ((<>))
@@ -205,17 +205,17 @@ replace x d cs (GuardSet gs) = GuardSet $ S.map go gs
         Con k _ -> Guard $ M.adjust (S.filter (/= (x, k))) d g
 
 -- Remove guards concerning the intermediate nodes
-filterGuards :: S.Set Int -> GuardSet -> GuardSet
-filterGuards xs (GuardSet g) = GuardSet $ S.filter (all (`notElem` xs) . freevs) g
+remove :: Int -> GuardSet -> GuardSet
+remove x (GuardSet g) = GuardSet $ S.filter (notElem x . freevs) g
 
 -- Simplify by removing redundant guards/ reduce to minimal set
 minimise :: GuardSet -> GuardSet
-minimise (GuardSet g) = S.foldr go bot g
+minimise (GuardSet gs) = S.foldr go bot gs
   where
    go :: Guard -> GuardSet -> GuardSet
-   go g (GuardSet s)
-     | any (`weaker` g) s = GuardSet s
-     | otherwise          = GuardSet $ S.insert g $ S.filter (not . weaker g) s
+   go g (GuardSet gs')
+     | any (`weaker` g) gs' = GuardSet gs'
+     | otherwise            = GuardSet $ S.insert g $ S.filter (not . weaker g) gs'
 
 -- Determine if the first guard is smaller than the second
 weaker :: Guard -> Guard -> Bool

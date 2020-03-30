@@ -29,6 +29,9 @@ library
       Scheme
       Constraints
       ConGraph
+      InferM.Internal
+      FromCore
+      Emit
       InferM
       InferCoreExpr
   hs-source-dirs:

@@ -54,7 +54,7 @@ inferGuts flags guts@ModGuts{mg_deps = d, mg_module = m, mg_binds = p} = do
   env  <- liftIO $ initTcRnIf '\0' hask () () $ foldM (\env m_name -> do
     bh    <- liftIO $ readBinMem $ interfaceName m_name
     cache <- mkNameCacheUpdater
-    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, Scheme T IfaceTyCon ConGraph)])
+    tss   <- liftIO (getWithUserData cache bh :: IO [(Name, Scheme IfaceTyCon)])
     return $ foldr (\(x, ts) env' -> M.insert x ts env') env tss
     ) M.empty deps
 

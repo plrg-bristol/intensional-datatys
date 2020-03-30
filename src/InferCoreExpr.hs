@@ -35,10 +35,11 @@ inferRec bgs = do
     -- Add binds for recursive calls
     putVars binds $
                              -- Infer rhs; subtype of recursive usage
-      sequence $ M.fromList [ (n, do { scheme <- infer rhs; emitTyCon (body scheme) (body sr); return scheme } )
+      sequence $ M.fromList [ (n, do { scheme <- infer rhs; emit (body scheme) (body sr); return scheme } )
                             | (x, rhs) <- Core.flattenBinds [bgs],
                               let n    = getName x,
                               let sr   = binds M.! n ]
+
 -- Infer program
 inferProg :: Monad m => Core.CoreProgram -> InferM m Context
 inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec) M.empty
@@ -56,8 +57,8 @@ infer (Core.Var v) =
         case decomp (body scheme) of
           -- Refinable datatype
           (args, Inj x d _) -> do
-            emitConDom k x d
-            mapM_ (\t -> emitTyCon t (inj x t)) args
+            emit k x d
+            mapM_ (\t -> emit t (inj x t)) args
 
           -- Unrefinedable
           _ -> return ()
@@ -65,7 +66,7 @@ infer (Core.Var v) =
         return scheme
 
     -- Infer variable
-    Nothing -> getVar v
+    Nothing -> emit v
 
 -- Type literal
 infer l@(Core.Lit _) = fromCoreScheme $ Core.exprType l
@@ -76,7 +77,7 @@ infer (Core.App e1 (Core.Type e2)) = do
   scheme <- infer e1
   when (isConstructor e1) $
     case decomp (body scheme) of
-      (_, Inj x d _) -> emitTyCon t (inj x t)
+      (_, Inj x d _) -> emit t (inj x t)
       _              -> return ()
 
   return (applyScheme scheme t)
@@ -96,7 +97,7 @@ infer (Core.App e1 e2) = infer e1 >>= \case
   -- This should raise a warning for as /= []!
   Forall as (t3 :=> t4) -> do
     t2 <- mono <$> infer e2
-    emitTyCon t2 t3
+    emit t2 t3
     return $ Forall as t4
 
   _ -> pprPanic "Term application to non-function!" $ ppr (Core.exprType e1, Core.exprType e2)
@@ -143,11 +144,11 @@ infer (Core.Case e bind_e core_ret alts) = do
 
           branch e [k] rvar d $ do
             -- Constructor arguments are from the same refinement environment
-            mapM_ (\(Mono kti) -> emitTyCon (inj rvar kti) kti) ts
+            mapM_ (\(Mono kti) -> emit (inj rvar kti) kti) ts
 
             -- Ensure return type is valid
             ret_i <- mono <$> putVars ts (infer rhs)
-            emitTyCon ret_i ret
+            emit ret_i ret
 
           -- Record constructors
           return k
@@ -157,12 +158,12 @@ infer (Core.Case e bind_e core_ret alts) = do
         Nothing -> do
           -- Ensure destructor is total if not nested
           top <- topLevel e
-          when top $ emitDomSet rvar d ks
+          when top $ emit rvar d ks
         Just rhs ->
           -- Guard default case by constructors that have not occured
           branch e (tyConDataCons d L.\\ ks) rvar d $ do
             ret_i <- mono <$> infer rhs
-            emitTyCon ret_i ret
+            emit ret_i ret
 
     -- Infer an unrefinable case expression
     _ ->
@@ -174,7 +175,7 @@ infer (Core.Case e bind_e core_ret alts) = do
 
         -- Ensure return type is valid
         ret_i <- mono <$> putVars ts (infer rhs)
-        emitTyCon ret_i ret
+        emit ret_i ret
       ) altf
 
   return $ Mono ret

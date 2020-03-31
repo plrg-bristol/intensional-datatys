@@ -1,7 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
-
+{-# LANGUAGE Strict #-}
 {-# LANGUAGE FlexibleInstances #-}
 
 module Constraints (
@@ -27,7 +27,7 @@ module Constraints (
 import Prelude hiding ((<>))
 import Data.Hashable
 import qualified Data.Set as S
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import qualified Data.List as L
 
 import Name
@@ -167,6 +167,9 @@ instance Refined GuardSet where
 instance Binary GuardSet where
   put_ bh (GuardSet g) = put_ bh $ S.toList g
   get  bh = GuardSet . S.fromList <$> get bh
+
+instance Outputable GuardSet where
+  ppr = ppr . toList
 
 toList :: GuardSet -> [Guard]
 toList (GuardSet g) = S.toList g

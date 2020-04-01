@@ -243,10 +243,9 @@ applyPreds preds (GuardSet gs) = S.foldr (\(Guard g) acc -> M.foldrWithKey (\d d
       case M.lookup x preds >>= M.lookup d of
         Just xd_preds -> M.foldrWithKey (\p pg acc ->
           case p of
-            Dom y -> (dom (S.singleton k) y d ||| pg) ||| acc
+            Dom y -> (dom (S.singleton k) y d &&& pg) ||| acc
             Con k' _
               | k == k'   -> pg ||| acc
-              | otherwise -> acc
+              | otherwise -> dom (S.singleton k) x d ||| acc
           ) bot xd_preds
-          -- if xd_preds contains k
-        Nothing -> dom (S.singleton k) x d
+        Nothing -> bot -- If there are no predecessors to X(d), we can assume it is false.

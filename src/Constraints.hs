@@ -1,7 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE FlexibleInstances #-}
 
 module Constraints (
@@ -20,14 +19,13 @@ module Constraints (
   isEmpty,
   (|||),
   (&&&),
-  replace,
-  remove,
+  applyPreds,
 ) where
 
 import Prelude hiding ((<>))
 import Data.Hashable
 import qualified Data.Set as S
-import qualified Data.Map.Strict as M
+import qualified Data.Map as M
 import qualified Data.List as L
 
 import Name
@@ -127,6 +125,8 @@ toAtomic (Dom x) (Set k l)
                = Just [(Dom x, Set k l)]
 toAtomic (Set ks l) (Dom x)
                = Just [(Con k l, Dom x) | k <- nonDetEltsUniqSet ks]
+toAtomic (Con k l) (Dom x)
+               = Just [(Con k l, Dom x)]
 toAtomic k1 k2
   | safe k1 k2 = Just []
   | otherwise  = Nothing
@@ -188,37 +188,41 @@ isEmpty :: GuardSet -> Bool
 isEmpty (GuardSet g) = S.null g
 
 -- Alternatives
+-- Assume rhs is already minimal
 infix 2 |||
 (|||) :: GuardSet -> GuardSet -> GuardSet
-GuardSet g ||| GuardSet g' = minimise $ GuardSet (S.union g' g)
-
--- Take the conjunction of every possibility
-infix 3 &&&
-(&&&) :: GuardSet -> GuardSet -> GuardSet
-GuardSet gs &&& GuardSet gs' = minimise $ GuardSet $ S.map (\(Guard s, Guard t) -> Guard (M.unionWith S.union s t)) $ S.cartesianProduct gs gs'
-
--- Replace k1 with k2 in a guard and reduce
-replace :: Int -> Name -> K L -> GuardSet -> GuardSet
-replace x d cs (GuardSet gs) = GuardSet $ S.map go gs
-  where
-    go :: Guard -> Guard
-    go (Guard g) =
-      case cs of
-        Dom y   -> Guard $ M.adjust (S.map (\(x', k) -> if x == x' then (y, k) else (x', k))) d g
-        Con k _ -> Guard $ M.adjust (S.filter (/= (x, k))) d g
-
--- Remove guards concerning the intermediate nodes
-remove :: Int -> GuardSet -> GuardSet
-remove x (GuardSet g) = GuardSet $ S.filter (notElem x . freevs) g
-
--- Simplify by removing redundant guards/ reduce to minimal set
-minimise :: GuardSet -> GuardSet
-minimise (GuardSet gs) = S.foldr go bot gs
+{-# INLINE (|||) #-}
+GuardSet g' ||| gs = S.foldr go gs g'
   where
    go :: Guard -> GuardSet -> GuardSet
    go g (GuardSet gs')
      | any (`weaker` g) gs' = GuardSet gs'
      | otherwise            = GuardSet $ S.insert g $ S.filter (not . weaker g) gs'
+
+-- Take the conjunction of every possibility
+infix 3 &&&
+(&&&) :: GuardSet -> GuardSet -> GuardSet
+{-# INLINE (&&&) #-}
+GuardSet gs &&& GuardSet gs' = minimise $ GuardSet $ S.map (\(Guard s, Guard t) -> Guard (M.unionWith S.union s t)) $ S.cartesianProduct gs gs'
+
+-- Replace X(d) with k in a guard and reduce
+replace :: Int -> Name -> K L -> GuardSet -> GuardSet
+replace x d k (GuardSet gs) = GuardSet $ S.map go gs
+  where
+    go :: Guard -> Guard
+    go (Guard g) =
+      case k of
+        Dom y   -> Guard $ M.adjust (S.map (\(x', c) -> if x == x' then (y, c) else (x', c))) d g
+        Con c _ -> Guard $ M.adjust (S.filter (/= (x, c))) d g
+
+-- Remove guards concerning the intermediate nodes
+remove :: Int -> GuardSet -> GuardSet
+remove x (GuardSet gs) = GuardSet $ S.filter (notElem x . freevs) gs
+
+-- Simplify by removing redundant guards/ reduce to minimal set
+minimise :: GuardSet -> GuardSet
+{-# INLINE minimise #-}
+minimise gs = gs ||| bot
 
 -- Determine if the first guard is smaller than the second
 weaker :: Guard -> Guard -> Bool
@@ -229,3 +233,20 @@ weaker (Guard g) (Guard g') = M.null $ M.differenceWith go g g'
       if S.size l > S.size r || any (`notElem` r) l
         then Just l
         else Nothing
+
+-- Apply predecessor maps to a guardset, i.e. remove and replace
+applyPreds :: M.Map Int (M.Map Name (M.Map (K L) GuardSet)) -> GuardSet -> GuardSet
+applyPreds preds (GuardSet gs) = S.foldr (\(Guard g) acc -> M.foldrWithKey (\d d_guards acc' -> S.foldr (\(x, k) acc'' -> go d (x, k) &&& acc'') acc' d_guards) top g ||| acc) bot gs
+  where
+    go :: Name -> (Int, Name) -> GuardSet
+    go d (x, k) =
+      case M.lookup x preds >>= M.lookup d of
+        Just xd_preds -> M.foldrWithKey (\p pg acc ->
+          case p of
+            Dom y -> (dom (S.singleton k) y d ||| pg) ||| acc
+            Con k' _
+              | k == k'   -> pg ||| acc
+              | otherwise -> acc
+          ) bot xd_preds
+          -- if xd_preds contains k
+        Nothing -> dom (S.singleton k) x d

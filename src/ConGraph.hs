@@ -1,6 +1,5 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE MultiWayIf #-}
 
 module ConGraph (
@@ -20,7 +19,7 @@ import Data.STRef
 import Data.Array.ST hiding (freeze, thaw)
 import Data.Foldable hiding (toList)
 import Data.Hashable
-import qualified Data.Map.Strict as M
+import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.List as L
 
@@ -44,8 +43,8 @@ instance (Refined k, Ord k, Refined a) => Refined (M.Map k a) where
   rename x y = M.mapKeys (rename x y) . M.map (rename x y)
 
 instance Refined ConGraph where
-  freevs (ConGraph cg)    = foldr (L.union . freevs) [] cg
-  rename x y (ConGraph m) = ConGraph $ M.map (rename x y) m
+  freevs (ConGraph cg)    = freevs cg
+  rename x y (ConGraph m) = ConGraph $ rename x y m
 
 instance Outputable ConGraph where
   ppr (ConGraph cg) = vcat [ ppr g <+> ppr k1 <+> arrowt <+> ppr k2
@@ -91,7 +90,7 @@ restrict interface cg = runST $ runExceptT $ do
   trans inner mcg
   preds <- lift $ weaken inner mcg
   -- Check sat
-  lift $ freeze inner preds mcg
+  freeze inner preds mcg
   where
     inner = freevs cg L.\\ interface
 
@@ -107,7 +106,7 @@ data SubGraph s = SubGraph {
 
 -- Default capacity
 cap :: Int
-cap = 16
+cap = 17
 
 getIndex :: K a -> Int
 getIndex k = mod (hash k) 16
@@ -126,32 +125,36 @@ thawSub sub = do
   return msub
 
 -- Make immutable copy of mutable constraint graph
-freeze :: [Int] -> M.Map Int (M.Map Name (M.Map (K L) GuardSet)) -> ConGraphM s -> ST s ConGraph
+freeze :: [Int] -> M.Map Int (M.Map Name (M.Map (K L) GuardSet)) -> ConGraphM s -> ExceptT (K L, K R) (ST s) ConGraph
 freeze xs preds (ConGraphM cg) = ConGraph <$> mapM freezeSub cg
   where
-    freezeSub :: SubGraph s -> ST s (M.Map (K L) (M.Map (K R) GuardSet))
+    freezeSub :: SubGraph s -> ExceptT (K L, K R) (ST s) (M.Map (K L) (M.Map (K R) GuardSet))
     freezeSub msub = do
-      sub <- newSTRef M.empty
-      is  <- readSTRef (left msub)
-      js  <- readSTRef (right msub)
+      sub <- lift $ newSTRef M.empty
+      is  <- lift $ readSTRef (left msub)
+      js  <- lift $ readSTRef (right msub)
       forM_ is $ \i ->
         forM_ js $ \j -> do
-          ebin <- readArray (edges msub) (i, j)
-          modifySTRef sub (\s -> M.foldlWithKey' (\s' n n_to -> M.foldlWithKey' (\s'' m g -> freezeInsert n m g s'') s' n_to) s ebin)
-      readSTRef sub
+          ebin <- lift $ readArray (edges msub) (i, j)
+          sub' <- M.foldlWithKey' (\ma n n_to -> ma >>= \a -> M.foldlWithKey' (\ma' m g -> ma' >>= \a' -> freezeInsert n m g a') (return a) n_to) (lift $ readSTRef sub) ebin
+          lift $ writeSTRef sub sub'
+      lift $ readSTRef sub
 
-    freezeInsert :: K L -> K R -> GuardSet -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L) (M.Map (K R) GuardSet)
+    freezeInsert :: K L -> K R -> GuardSet -> M.Map (K L) (M.Map (K R) GuardSet) -> ExceptT (K L, K R) (ST s) (M.Map (K L) (M.Map (K R) GuardSet))
     freezeInsert n m g s =
       case n of
-        Dom x | x `elem` xs -> s
+        Dom y | y `elem` xs -> return s
         _ ->
           case m of
-            Dom x | x `elem` xs -> s
-            _ ->
-              let new_guard = M.foldlWithKey' (\g' x ->
-                    remove x . M.foldlWithKey' (\g'' d dpreds ->
-                      M.foldlWithKey' (\g''' n pg -> g''' ||| (replace x d n g''' &&& pg)) g'' dpreds) g') g preds
-              in insertBin n m new_guard s
+            Dom y | y `elem` xs -> return s
+            _ -> do
+              let new_guard = applyPreds preds g
+              if isEmpty new_guard
+                then return s
+                else case toAtomic n m of
+                  Nothing  -> throwError (n, m)
+                  Just []  -> return s
+                  Just [_] -> return $ insertBin n m new_guard s
 
 
 -- Insert a new edge into a mutable graph
@@ -181,81 +184,57 @@ trans xs (ConGraphM m) = mapM_ (forM_ xs . transX) m
     transX sg x = do
       js <- lift $ readSTRef (right sg)
       forM_ js (\j -> do
-        kj_bin <- lift $ readArray (edges sg) (getIndex k, j)
-        forM_ (M.lookup k kj_bin) $ \kj_guards -> do
-          M.traverseWithKey (\m kmg -> 
-            case m of
-              Dom y | y `elem` xs -> return ()
-              _ -> do
-                is <- lift $ readSTRef (left sg)
-                forM_ is (\i -> do
-                  ik_bin <- lift $ readArray (edges sg) (i, getIndex k)
-                  M.traverseWithKey (\n -> mapM_ (\nkg ->
-                    case n of
-                      Dom y | y `elem` xs -> return ()
-                      _ -> do
-                        -- Add new edge if safe
-                        let new_guard = nkg &&& kmg
-                        if | isEmpty new_guard -> return ()
-                           | safe n m          -> do
-                              ijbin <- lift $ readArray (edges sg) (i, j)
-                              lift $ writeArray (edges sg) (i, j) (insertBin n m (nkg &&& kmg) ijbin)
-                           | otherwise        -> throwError (n, m)
-                      ) . M.lookup k) ik_bin
-                  )
-                ) kj_guards
+        kj_bin <- lift $ readArray (edges sg) (getIndex $ Dom x, j)
+        forM_ (M.lookup (Dom x) kj_bin) $ \kj_guards ->
+          M.traverseWithKey (\m kmg -> do
+            is <- lift $ readSTRef (left sg)
+            forM_ is (\i -> do
+              ik_bin <- lift $ readArray (edges sg) (i, getIndex $ Dom x)
+              M.traverseWithKey (\n -> mapM_ (\nkg -> do
+
+                -- Add new edge from n to m through (Dom x)
+                let new_guard = nkg &&& kmg
+                ijbin <- lift $ readArray (edges sg) (i, j)
+                lift $ writeArray (edges sg) (i, j) (insertBin n m (nkg &&& kmg) ijbin)
+
+                ) . M.lookup (Dom x)) ik_bin
+              )
+            ) kj_guards
         )
-      where
-        -- The transitive node
-        k :: K a
-        k = Dom x
 
 -- Weaken guards containing intermediate variables
 weaken :: [Int] -> ConGraphM s -> ST s (M.Map Int (M.Map Name (M.Map (K L) GuardSet)))
-weaken xs (ConGraphM cg) = foldM (\ps x -> (\xps -> if M.null xps then ps else M.insert x xps ps) <$> weakenX x) M.empty xs
+weaken xs (ConGraphM cg) = foldM (\ps x -> (\xps -> updatePreds x xps ps) <$> weakenX x) M.empty xs
   where
-    -- Replace x with it's predecesors in guards
-    weakenX x = do
-      -- Gather all predecesor of x
+    -- Predecesor of x
+    weakenX x =
       M.traverseMaybeWithKey (\_ sg -> do
+        -- Predecessors of X(d)
         is <- readSTRef (left sg)
-        p <- foldM (\p' i -> do
-          let j = getIndex (Dom x)
+        let j = getIndex (Dom x)
+        p_map <- foldM (\xd_preds i -> do
           ebin <- readArray (edges sg) (i, j)
-          return $ M.foldlWithKey' (\p'' n n_to ->
+          -- Predecessors of X(d) from bins (i, j)
+          return $ M.foldlWithKey' (\xd_preds n n_to ->
             case M.lookup (Dom x) n_to of
-              Nothing -> p'' -- n is not a predecessor
+              Nothing -> xd_preds -- n is not a predecessor
               Just g  ->
                 case n of
-                  Dom y | y `elem` xs -> p'' -- Don't weaken to another intermediate node
-                  _                   -> M.insertWith (|||) n g p''
-            ) p' ebin
+                  Dom y | y `elem` xs -> xd_preds -- Don't weaken to another intermediate node
+                  _                   -> M.insert n g xd_preds
+            ) xd_preds ebin
           ) M.empty is
         removeNode x sg
-        if M.null p
-          then return $ Nothing
-          else return $ Just p
+        if M.null p_map
+          then return Nothing
+          else return $ Just p_map
         ) cg
 
--- Replace all guards in a subgraph
-replaceSubGraph :: Int -> Name -> K L -> GuardSet -> SubGraph s -> ExceptT (K L, K R) (ST s) ()
-replaceSubGraph x d n g sg = do
-  is <- lift $ readSTRef (left sg)
-  js <- lift $ readSTRef (right sg)
-  forM_ is $ \i ->
-    forM_ js $ \j -> do
-      bin <- lift $ readArray (edges sg) (i, j)
-      bin' <- replaceBin x d n g bin
-      lift $ writeArray (edges sg) (i, j) bin'
-
--- Replace all guards in abin
-replaceBin :: Int -> Name -> K L -> GuardSet -> M.Map (K L) (M.Map (K R) GuardSet) -> ExceptT (K L, K R) (ST s) (M.Map (K L) (M.Map (K R) GuardSet))
-replaceBin x d n g = M.traverseWithKey (\r -> M.traverseWithKey (\l rlg -> do
-  let rlg' = rlg ||| (replace x d n rlg &&& g)
-  if safe r l || rlg' == bot
-    then return rlg'
-    else throwError (n, l)
-  ))
+-- Apply existing preds and then insert
+updatePreds :: Int -> M.Map Name (M.Map (K L) GuardSet) -> M.Map Int (M.Map Name (M.Map (K L) GuardSet)) -> M.Map Int (M.Map Name (M.Map (K L) GuardSet))
+updatePreds x x_preds preds =
+  let x_preds' = M.map (M.map (applyPreds preds)) x_preds
+  in M.insert x x_preds' preds
 
 -- Lazily remove a node, i.e. don't remove index
 removeNode :: Int -> SubGraph s -> ST s ()

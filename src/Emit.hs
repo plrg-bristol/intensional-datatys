@@ -112,7 +112,7 @@ instance (unit ~ Scheme TyCon, Monad m) => Emit Var (InferM m unit) where
     case may_scheme of
       Just scheme -> do
         -- Localise constraints
-        fre_scheme <- foldM (\s x -> liftM2 (rename x) fresh $ return s) scheme (boundvs scheme)
+        fre_scheme <- foldM (\s x -> liftM2 (rename x) fresh $ return s) (unbind scheme) (boundvs scheme)
         forM_ (constraints fre_scheme) emit
         emit (body fre_scheme) (body var_scheme)
 

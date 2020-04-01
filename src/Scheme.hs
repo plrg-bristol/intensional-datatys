@@ -13,6 +13,7 @@ module Scheme (
   pattern Forall,
   mono,
   iface,
+  unbind,
   applyScheme
 ) where
 
@@ -45,7 +46,7 @@ instance Refined (Type T d) => Refined (Scheme d) where
 
   rename x y s
     | x `elem` boundvs s = s
-    | y `elem` boundvs s = pprPanic "unimplemented" $ ppr (x, y)
+    | y `elem` boundvs s = pprPanic "Unimplemented!" $ ppr (x, y)
     | otherwise = Scheme {
         tyvars      = tyvars s,
         boundvs     = boundvs s,
@@ -102,6 +103,10 @@ pattern Forall as t = Scheme {
 mono :: Outputable d => Scheme d -> Type T d
 mono (Mono t) = t
 mono s        = pprPanic "Higher rank types are unimplemented!" $ ppr s
+
+-- Remove quantifiers from scheme
+unbind :: Scheme d -> Scheme d
+unbind s = s{ boundvs = [] }
 
 -- Convert a scheme into a interface scheme
 iface :: Scheme TyCon -> Scheme IfaceTyCon

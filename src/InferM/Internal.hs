@@ -36,12 +36,12 @@ type Context  = M.Map Name (Scheme TyCon)
 -- The inference monad with all the bells and whistles
 -- Essentially an unrolled RWST
 newtype InferM m a = InferM {
-  unInferM :: Module          -- current module
-           -> IContext        -- constrained environment
-           -> SrcSpan         -- current location
+  unInferM :: Module     -- current module
+           -> IContext   -- constrained environment
+           -> SrcSpan    -- current location
            -> [CoreExpr] -- case stack
-           -> Int             -- fresh
-           -> ConGraph        -- constraints
+           -> Int        -- fresh
+           -> ConGraph   -- constraints
            -> m ([CoreExpr], Int, ConGraph, a)
 }
 

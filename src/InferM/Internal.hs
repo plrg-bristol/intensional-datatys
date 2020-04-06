@@ -26,6 +26,7 @@ import CoreUtils
 import IfaceType
 import FastString
 
+import Types
 import Scheme
 import ConGraph
 
@@ -101,10 +102,10 @@ topLevel e = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, inStack
     inStack = foldr (\e' es -> not (cheapEqExpr e e') && es) True
 
 -- Guard local constraints by a set of possible constructors
-branch :: Monad m => CoreExpr -> [DataCon] -> Int -> TyCon -> InferM m a -> InferM m a
+branch :: Monad m => CoreExpr -> [DataCon] -> Int -> DataType TyCon -> InferM m a -> InferM m a
 branch e ks x d m = InferM $ \mod gamma loc path fresh cs -> do
   (_, fresh', cs', a) <- unInferM m mod gamma loc (e:path) fresh cs
-  return (path, fresh', cs `union` guardWith (S.fromList $ getName <$> ks) x (getName d) cs', a)
+  return (path, fresh', cs `union` guardWith (S.fromList $ getName <$> ks) x (getName <$> d) cs', a)
 
 -- Insert variables into environment
 putVar :: Name -> Scheme TyCon -> InferM m a -> InferM m a

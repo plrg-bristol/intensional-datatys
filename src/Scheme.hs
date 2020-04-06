@@ -13,7 +13,6 @@ module Scheme (
   pattern Forall,
   mono,
   iface,
-  unbind,
   applyScheme
 ) where
 
@@ -103,10 +102,6 @@ pattern Forall as t = Scheme {
 mono :: Outputable d => Scheme d -> Type T d
 mono (Mono t) = t
 mono s        = pprPanic "Higher rank types are unimplemented!" $ ppr s
-
--- Remove quantifiers from scheme
-unbind :: Scheme d -> Scheme d
-unbind s = s{ boundvs = [] }
 
 -- Convert a scheme into a interface scheme
 iface :: Scheme TyCon -> Scheme IfaceTyCon

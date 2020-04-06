@@ -10,17 +10,22 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Types (
+  DataType(..),
+  sum,
+  max,
+
   Extended(..),
   Type(..),
   inj,
   shape,
   applyType,
   decomp,
+  unroll,
 
   Refined(..),
 ) where
 
-import Prelude hiding ((<>))
+import Prelude hiding ((<>), sum, max)
 import qualified Data.List as L
 
 import Name
@@ -31,6 +36,37 @@ import IfaceType
 import BasicTypes
 import Outputable
 
+-- Unrolled datatypes
+data DataType d = Fst d | Snd d
+  deriving (Eq, Ord, Functor)
+
+instance NamedThing d => NamedThing (DataType d) where
+  getName (Fst d) = getName d
+  getName (Snd d) = getName d
+
+instance Outputable d => Outputable (DataType d) where
+  ppr (Fst d) = text "fst" <+> ppr d
+  ppr (Snd d) = text "snd" <+> ppr d
+
+instance Binary d => Binary (DataType d) where
+  put_ bh (Fst d) = put_ bh False >> put_ bh d
+  put_ bh (Snd d) = put_ bh True >> put_ bh d
+
+  get bh = do
+    n <- get bh
+    if n
+      then Fst <$> get bh
+      else Snd <$> get bh
+
+-- Remove distinction
+sum :: DataType d -> d
+sum (Fst d) = d
+sum (Snd d) = d
+
+max :: DataType a -> DataType b -> d -> DataType d
+max (Fst _) (Fst _) = Fst
+max _ _             = Snd
+
 -- Unrefined sorts vs refined types
 data Extended = S | T
 
@@ -39,8 +75,8 @@ data Type (e :: Extended) d where
   Var    :: Name -> Type e d
   App    :: Type S d -> Type S d -> Type e d
   Base   :: d -> [Type S d] -> Type e d
-  Data   :: d -> [Type S d] -> Type S d
-  Inj    :: Int -> d -> [Type T d] -> Type T d
+  Data   :: DataType d -> [Type S d] -> Type S d
+  Inj    :: Int -> DataType d -> [Type T d] -> Type T d
   (:=>)  :: Type e d -> Type e d -> Type e d
   Lit    :: IfaceTyLit -> Type e d
 
@@ -140,8 +176,8 @@ shape :: Type e d -> Type S d
 shape (Var a)       = Var a
 shape (App a b)     = App (shape a) (shape b)
 shape (Base b as)   = Base b (shape <$> as)
-shape (Data d as)   = Base d (shape <$> as)
-shape (Inj _ d as)  = Base d (shape <$> as)
+shape (Data d as)   = Base (sum d) (shape <$> as)
+shape (Inj _ d as)  = Base (sum d) (shape <$> as)
 shape (a :=> b)     = shape a :=> shape b
 shape (Lit l)       = Lit l
 shape Ambiguous     = Ambiguous
@@ -161,12 +197,24 @@ decomp :: Type T d -> ([Type T d], Type T d)
 decomp (a :=> b) = let (as, r) = decomp b in (a:as, r)
 decomp t         = ([], t)
 
+-- Unroll a datatype
+unroll :: Eq d => d -> Type T d -> Type T d
+unroll d (Inj x (Fst d') as)
+  | d == d'                  = Inj x (Snd d) (unroll d <$> as)
+unroll d (Inj x (Snd d') as) = Inj x (Snd d') (unroll d <$> as)
+unroll d (a :=> b)           = unroll d a :=> unroll d b
+unroll d t                   = t
+
 -- Objects that are parameterised by refinement variables
 class Refined t where
   freevs :: t -> [Int]
   rename :: Int -> Int -> t -> t
 
 instance Refined Name where
+  freevs _   = []
+  rename _ _ = id
+
+instance Refined (DataType Name) where
   freevs _   = []
   rename _ _ = id
 

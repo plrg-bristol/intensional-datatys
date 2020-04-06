@@ -33,7 +33,7 @@ import Constraints
 -- A collection of disjoint graphs for each datatype
 -- Nodes are constructor sets or refinement variables
 -- Edges are labelled by possible guards.
-newtype ConGraph = ConGraph (M.Map Name (M.Map (K L) (M.Map (K R) GuardSet)))
+newtype ConGraph = ConGraph (M.Map (DataType Name) (M.Map (K L) (M.Map (K R) GuardSet)))
   deriving Eq
 
 instance (Refined k, Ord k, Refined a) => Refined (M.Map k a) where
@@ -47,8 +47,8 @@ instance Refined ConGraph where
   rename x y (ConGraph m) = ConGraph $ rename x y m
 
 instance Outputable ConGraph where
-  ppr (ConGraph cg) = vcat [ ppr g <+> ppr k1 <+> arrowt <+> ppr k2
-                             | (_, m)   <- M.toList cg,
+  ppr (ConGraph cg) = vcat [ ppr g <+> ppr (d, k1) <+> arrowt <+> ppr (d, k2)
+                             | (d, m)   <- M.toList cg,
                                (k1, m') <- M.toList m,
                                (k2, gs) <- M.toList m',
                                g <- toList gs]
@@ -65,7 +65,7 @@ empty :: ConGraph
 empty = ConGraph M.empty
 
 -- Insert a non-atomic constraint with trivial guard
-insert :: K l -> K r -> Name -> ConGraph -> Maybe ConGraph
+insert :: K l -> K r -> DataType Name -> ConGraph -> Maybe ConGraph
 insert k1 k2 d (ConGraph cg) =
   case toAtomic k1 k2 of
     Nothing -> Nothing
@@ -76,7 +76,7 @@ overwriteBin :: [(K L, K R)] -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L
 overwriteBin cs m = L.foldl' (\k (kl, kr) -> insertBin kl kr top k) m cs
 
 -- Guard a constraint graph by a set of possible guards
-guardWith :: S.Set Name -> Int -> Name -> ConGraph -> ConGraph
+guardWith :: S.Set Name -> Int -> DataType Name -> ConGraph -> ConGraph
 guardWith ks x d (ConGraph cg) = ConGraph $ M.map (M.map (M.map (dom ks x d &&&))) cg
 
 -- Combine two constraint graphs
@@ -95,7 +95,7 @@ restrict interface cg = runST $ runExceptT $ do
     inner = freevs cg L.\\ interface
 
 -- A mutable constraint graph
-newtype ConGraphM s = ConGraphM (M.Map Name (SubGraph s))
+newtype ConGraphM s = ConGraphM (M.Map (DataType Name) (SubGraph s))
 
 -- A disjoint graph for one datatype
 data SubGraph s = SubGraph {
@@ -125,7 +125,7 @@ thawSub sub = do
   return msub
 
 -- Make immutable copy of mutable constraint graph
-freeze :: [Int] -> M.Map Int (M.Map Name (M.Map (K L) GuardSet)) -> ConGraphM s -> ExceptT (K L, K R) (ST s) ConGraph
+freeze :: [Int] -> M.Map Int (M.Map (DataType Name) (M.Map (K L) GuardSet)) -> ConGraphM s -> ExceptT (K L, K R) (ST s) ConGraph
 freeze xs preds (ConGraphM cg) = ConGraph <$> mapM freezeSub cg
   where
     freezeSub :: SubGraph s -> ExceptT (K L, K R) (ST s) (M.Map (K L) (M.Map (K R) GuardSet))
@@ -203,7 +203,7 @@ trans xs (ConGraphM m) = mapM_ (forM_ xs . transX) m
         )
 
 -- Weaken guards containing intermediate variables
-weaken :: [Int] -> ConGraphM s -> ST s (M.Map Int (M.Map Name (M.Map (K L) GuardSet)))
+weaken :: [Int] -> ConGraphM s -> ST s (M.Map Int (M.Map (DataType Name) (M.Map (K L) GuardSet)))
 weaken xs (ConGraphM cg) = foldM (\ps x -> (\xps -> updatePreds x xps ps) <$> weakenX x) M.empty xs
   where
     -- Predecesor of x
@@ -231,7 +231,7 @@ weaken xs (ConGraphM cg) = foldM (\ps x -> (\xps -> updatePreds x xps ps) <$> we
         ) cg
 
 -- Apply existing preds and then insert
-updatePreds :: Int -> M.Map Name (M.Map (K L) GuardSet) -> M.Map Int (M.Map Name (M.Map (K L) GuardSet)) -> M.Map Int (M.Map Name (M.Map (K L) GuardSet))
+updatePreds :: Int -> M.Map (DataType Name) (M.Map (K L) GuardSet) -> M.Map Int (M.Map (DataType Name) (M.Map (K L) GuardSet)) -> M.Map Int (M.Map (DataType Name) (M.Map (K L) GuardSet))
 updatePreds x x_preds preds =
   let x_preds' = M.map (M.map (applyPreds preds)) x_preds
   in M.insert x x_preds' preds

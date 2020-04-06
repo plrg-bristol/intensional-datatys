@@ -21,57 +21,57 @@ import Scheme
 import InferM.Internal
 
 -- Convert a core datatype
-class DataType (e :: Extended) where
-  datatype :: Monad m => TyCon -> [Type e TyCon] -> InferM m (Type e TyCon)
+class SrcDataType (e :: Extended) where
+  datatype :: Monad m => DataType TyCon -> [Type e TyCon] -> InferM m (Type e TyCon)
 
-instance DataType S where
+instance SrcDataType S where
   datatype d as = return $ Data d as
 
-instance DataType T where
+instance SrcDataType T where
   datatype d as = do
     x <- fresh
     return $ Inj x d as
 
 -- Convert a monomorphic core type
-fromCore :: (DataType e, Monad m) => Tcr.Type -> InferM m (Type e TyCon)
-fromCore (Tcr.TyVarTy a) = Var <$> getExternalName a
-fromCore (Tcr.AppTy t1 t2)   = do
-  s1 <- fromCore t1
-  s2 <- fromCore t2
+fromCore :: (SrcDataType e, Monad m) => [TyCon] -> Tcr.Type -> InferM m (Type e TyCon)
+fromCore u (Tcr.TyVarTy a) = Var <$> getExternalName a
+fromCore u (Tcr.AppTy t1 t2)   = do
+  s1 <- fromCore u t1
+  s2 <- fromCore u t2
   return $ App s1 s2
-fromCore (Tcr.TyConApp tc args)
+fromCore u (Tcr.TyConApp tc args)
   | isTypeSynonymTyCon tc  -- Type synonym
-  , Just (as, u) <- synTyConDefn_maybe tc
-    = fromCore (substTy (extendTvSubstList emptySubst (zip as args)) u)
+  , Just (as, s) <- synTyConDefn_maybe tc
+    = fromCore u (substTy (extendTvSubstList emptySubst (zip as args)) s)
   | refinable tc
     = do
-        args' <- mapM fromCore args
-        datatype tc args'
+        args' <- mapM (fromCore (tc:u)) args
+        datatype (if tc `elem` u then Snd tc else Fst tc) args'
   | otherwise
     = do
-        args' <- mapM fromCore args
+        args' <- mapM (fromCore (tc:u)) args
         return $ Base tc args'
-fromCore (Tcr.FunTy t1 t2) = do
-  s1 <- fromCore t1
-  s2 <- fromCore t2
+fromCore u (Tcr.FunTy t1 t2) = do
+  s1 <- fromCore u t1
+  s2 <- fromCore u t2
   return (s1 :=> s2)
-fromCore (Tcr.LitTy l)      = return $ Lit $ toIfaceTyLit l
-fromCore (Tcr.ForAllTy a t) = pprPanic "Unexpected polymorphic type!" $ ppr $ Tcr.ForAllTy a t
-fromCore t                  = pprPanic "Unexpected cast or coercion type!" $ ppr t
+fromCore u (Tcr.LitTy l)      = return $ Lit $ toIfaceTyLit l
+fromCore u (Tcr.ForAllTy a t) = pprPanic "Unexpected polymorphic type!" $ ppr $ Tcr.ForAllTy a t
+fromCore u t                  = pprPanic "Unexpected cast or coercion type!" $ ppr t
 
 -- Convert a polymorphic core type
-fromCoreScheme :: Monad m => Tcr.Type -> InferM m (Scheme TyCon)
-fromCoreScheme (Tcr.ForAllTy b t) = do
+fromCoreScheme :: Monad m => [TyCon] -> Tcr.Type -> InferM m (Scheme TyCon)
+fromCoreScheme u (Tcr.ForAllTy b t) = do
   a <- getExternalName (Tcr.binderVar b)
-  scheme <- fromCoreScheme t
+  scheme <- fromCoreScheme u t
   return scheme{ tyvars = a : tyvars scheme }
-fromCoreScheme (Tcr.FunTy t1 t2) = do
-  s1     <- fromCore t1
-  scheme <- fromCoreScheme t2 -- Is this safe??
+fromCoreScheme u (Tcr.FunTy t1 t2) = do
+  s1     <- fromCore u t1
+  scheme <- fromCoreScheme u t2 -- Is this safe??
   return scheme{ body = s1 :=> body scheme }
-fromCoreScheme (Tcr.CastTy t k)   = pprPanic "Unexpected cast type!" $ ppr (t, k)
-fromCoreScheme (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
-fromCoreScheme t                  = Mono <$> fromCore t
+fromCoreScheme u (Tcr.CastTy t k)   = pprPanic "Unexpected cast type!" $ ppr (t, k)
+fromCoreScheme u (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
+fromCoreScheme u t                  = Mono <$> fromCore u t
 
 -- Check whether a core datatype is refinable
 refinable :: TyCon -> Bool

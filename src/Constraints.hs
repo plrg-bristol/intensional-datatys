@@ -133,7 +133,7 @@ toAtomic k1 k2
 
 -- A guard, i.e. a set of constraints of the form k in (X, d)
 -- Grouped by d
-newtype Guard = Guard (M.Map Name (S.Set (Int, Name)))
+newtype Guard = Guard (M.Map (DataType Name) (S.Set (Int, Name)))
   deriving (Eq, Ord)
 
 instance Refined Guard where
@@ -180,7 +180,7 @@ top = GuardSet $ S.singleton $ Guard M.empty
 bot = GuardSet S.empty
 
 -- Asserts that X contain an element from ks
-dom :: S.Set Name -> Int -> Name -> GuardSet
+dom :: S.Set Name -> Int -> DataType Name -> GuardSet
 dom ks x d = GuardSet (S.map (\k -> Guard $ M.singleton d $ S.singleton (x, k)) ks)
 
 -- An unsatisfiable guard
@@ -206,7 +206,7 @@ infix 3 &&&
 GuardSet gs &&& GuardSet gs' = minimise $ GuardSet $ S.map (\(Guard s, Guard t) -> Guard (M.unionWith S.union s t)) $ S.cartesianProduct gs gs'
 
 -- Replace X(d) with k in a guard and reduce
-replace :: Int -> Name -> K L -> GuardSet -> GuardSet
+replace :: Int -> DataType Name -> K L -> GuardSet -> GuardSet
 replace x d k (GuardSet gs) = GuardSet $ S.map go gs
   where
     go :: Guard -> Guard
@@ -235,10 +235,10 @@ weaker (Guard g) (Guard g') = M.null $ M.differenceWith go g g'
         else Nothing
 
 -- Apply predecessor maps to a guardset, i.e. remove and replace
-applyPreds :: M.Map Int (M.Map Name (M.Map (K L) GuardSet)) -> GuardSet -> GuardSet
+applyPreds :: M.Map Int (M.Map (DataType Name) (M.Map (K L) GuardSet)) -> GuardSet -> GuardSet
 applyPreds preds (GuardSet gs) = S.foldr (\(Guard g) acc -> M.foldrWithKey (\d d_guards acc' -> S.foldr (\(x, k) acc'' -> go d (x, k) &&& acc'') acc' d_guards) top g ||| acc) bot gs
   where
-    go :: Name -> (Int, Name) -> GuardSet
+    go :: DataType Name -> (Int, Name) -> GuardSet
     go d (x, k) =
       case M.lookup x preds >>= M.lookup d of
         Just xd_preds -> M.foldrWithKey (\p pg acc ->

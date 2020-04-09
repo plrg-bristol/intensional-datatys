@@ -1,3 +1,6 @@
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds #-}
+
 module InferM.Internal (
   Context,
   InferM(..),
@@ -16,18 +19,25 @@ module InferM.Internal (
 import qualified Data.Set as S
 import qualified Data.Map as M
 
+import Type (splitForAllTys)
 import Name
 import TyCon
 import Module
 import SrcLoc hiding (getLoc)
 import DataCon
-import CoreSyn
+import Outputable hiding (empty)
 import CoreUtils
+import Var
+import CoreSubst
+import CoreSyn (CoreExpr)
+import qualified TyCoRep as Tcr
+import ToIface
 import IfaceType
 import FastString
 
 import Types
 import Scheme
+import Constraints
 import ConGraph
 
 -- The environment variables and their types
@@ -64,7 +74,7 @@ instance (Functor m, Monad m) => Applicative (InferM m) where
     {-# INLINE pure #-}
 
     InferM mf <*> InferM mx = InferM $ \mod gamma loc path fresh cs -> do
-        (path', fresh',  cs', f)   <- mf mod gamma loc path fresh cs
+        (path', fresh', cs', f)   <- mf mod gamma loc path fresh cs
         (path'', fresh'', cs'', a) <- mx mod gamma loc path' fresh' cs'
         return (path'', fresh'', cs'', f a)
     {-# INLINE (<*>) #-}
@@ -102,18 +112,37 @@ topLevel e = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, inStack
     inStack = foldr (\e' es -> not (cheapEqExpr e e') && es) True
 
 -- Guard local constraints by a set of possible constructors
-branch :: Monad m => CoreExpr -> [DataCon] -> Int -> DataType TyCon -> InferM m a -> InferM m a
-branch e ks x d m = InferM $ \mod gamma loc path fresh cs -> do
-  (_, fresh', cs', a) <- unInferM m mod gamma loc (e:path) fresh cs
-  return (path, fresh', cs `union` guardWith (S.fromList $ getName <$> ks) x (getName <$> d) cs', a)
+branch :: Monad m => Maybe CoreExpr -> [DataCon] -> Int -> Bool -> InferM m a -> InferM m a
+branch me ks x u m = InferM $ \mod gamma loc path fresh cs -> do
+  let d = dataConTyCon (head ks)
+  (_, fresh', cs', a) <- unInferM m mod gamma loc (case me of { Just e -> e:path; Nothing -> path}) fresh cs
+  return (path, fresh', cs `union` guardWith (S.fromList $ getName <$> ks) x (u, getName d) cs', a)
 
 -- Insert variables into environment
 putVar :: Name -> Scheme TyCon -> InferM m a -> InferM m a
-putVar n t m = InferM $ \mod gamma -> unInferM m mod (M.insert n (iface t) gamma)
+putVar n t m = InferM $ \mod gamma -> unInferM m mod (M.insert n (toIfaceTyCon <$> t) gamma)
 
 putVars :: Context -> InferM m a -> InferM m a
-putVars c m = InferM $ \mod gamma -> unInferM m mod (M.union (iface <$> c) gamma)
+putVars c m = InferM $ \mod gamma -> unInferM m mod (M.union (fmap toIfaceTyCon <$> c) gamma)
 
 -- Lookup constrained variable
-getVar :: Monad m => Name -> InferM m (Maybe (Scheme IfaceTyCon))
-getVar v = InferM $ \_ gamma _ path fresh cs -> return (path, fresh, cs, M.lookup v gamma)
+getVar :: Monad m => Var -> InferM m (Maybe (Scheme TyCon))
+getVar v = InferM $ \_ gamma _ path fresh cs -> return (path, fresh, cs, promote <$> M.lookup (getName v) gamma)
+  where
+    vty_body :: Tcr.Type
+    vty_body = snd $ splitForAllTys $ varType v
+
+    promote :: Scheme IfaceTyCon -> Scheme TyCon
+    promote (Scheme bvs tyvs body cs) = Scheme bvs tyvs (promote' vty_body body) cs
+
+    promote' :: Tcr.Type -> Type e IfaceTyCon -> Type e TyCon
+    promote' (Tcr.TyConApp tc args) t
+      | isTypeSynonymTyCon tc  -- Type synonym
+      , Just (as, s) <- synTyConDefn_maybe tc       = promote' (substTy (extendTvSubstList emptySubst (zip as args)) s) t
+    promote' _ (Var a)                              = Var a
+    promote' (Tcr.AppTy a' b') (App a b)            = App (promote' a' a) (promote' b' b)
+    promote' (Tcr.TyConApp d as') (Base b as)       = Base d (fmap (uncurry promote') $ zip as' as)
+    promote' (Tcr.TyConApp d as') (Inj x (u, _) as) = Inj x (u, d) (fmap (uncurry promote') $ zip as' as)
+    promote' (Tcr.FunTy a' b')  (a :=> b)           = promote' a' a :=> promote' b' b
+    promote' _ (Lit l)                              = Lit l
+    promote' _ Ambiguous                            = Ambiguous

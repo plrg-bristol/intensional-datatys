@@ -5,9 +5,10 @@ module FromCore (
   fromCore,
   fromCoreScheme,
   getExternalName,
-  refinable,
+  -- refinable,
 ) where
 
+import Prelude hiding (sum)
 import Name
 import TyCon
 import DataCon
@@ -22,10 +23,10 @@ import InferM.Internal
 
 -- Convert a core datatype
 class SrcDataType (e :: Extended) where
-  datatype :: Monad m => DataType TyCon -> [Type e TyCon] -> InferM m (Type e TyCon)
+  datatype :: Monad m => DataType TyCon -> [Type S TyCon] -> InferM m (Type e TyCon)
 
 instance SrcDataType S where
-  datatype d as = return $ Data d as
+  datatype (_, d) as = return $ Base d as
 
 instance SrcDataType T where
   datatype d as = do
@@ -43,14 +44,15 @@ fromCore u (Tcr.TyConApp tc args)
   | isTypeSynonymTyCon tc  -- Type synonym
   , Just (as, s) <- synTyConDefn_maybe tc
     = fromCore u (substTy (extendTvSubstList emptySubst (zip as args)) s)
-  | refinable tc
+  | isClassTyCon tc = return Ambiguous
+  | length (tyConDataCons tc) > 1
     = do
         args' <- mapM (fromCore (tc:u)) args
-        datatype (if tc `elem` u then Snd tc else Fst tc) args'
+        datatype (tc `elem` u, tc) args'
   | otherwise
     = do
-        args' <- mapM (fromCore (tc:u)) args
-        return $ Base tc args'
+      args' <- mapM (fromCore (tc:u)) args
+      return (Base tc args')
 fromCore u (Tcr.FunTy t1 t2) = do
   s1 <- fromCore u t1
   s2 <- fromCore u t2
@@ -74,18 +76,18 @@ fromCoreScheme u (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr
 fromCoreScheme u t                  = Mono <$> fromCore u t
 
 -- Check whether a core datatype is refinable
-refinable :: TyCon -> Bool
-refinable tc = (length (tyConDataCons tc) > 1) && all pos (concatMap dataConOrigArgTys $ tyConDataCons tc)
-  where
-    pos :: Tcr.Type -> Bool
-    pos (Tcr.FunTy t1 t2) = neg t1 && pos t2
-    pos _                 = True
-
-    neg :: Tcr.Type -> Bool
-    neg (Tcr.TyConApp _ _) = False -- Could this test whether tc' is refinable?
-    neg (Tcr.TyVarTy _)    = False
-    neg (Tcr.FunTy t1 t2)  = pos t1 && neg t2
-    neg _                  = True
+-- refinable :: TyCon -> Bool
+-- refinable tc = (length (tyConDataCons tc) > 1) && all pos (concatMap dataConOrigArgTys $ tyConDataCons tc)
+--   where
+--     pos :: Tcr.Type -> Bool
+--     pos (Tcr.FunTy t1 t2) = neg t1 && pos t2
+--     pos _                 = True
+-- 
+--     neg :: Tcr.Type -> Bool
+--     neg (Tcr.TyConApp _ _) = False -- Could this test whether tc' is refinable?
+--     neg (Tcr.TyVarTy _)    = False
+--     neg (Tcr.FunTy t1 t2)  = pos t1 && neg t2
+--     neg _                  = True
 
 -- Prepare name for interface
 -- Should be used before all type variables

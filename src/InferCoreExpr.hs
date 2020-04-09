@@ -46,6 +46,7 @@ inferRec bgs = do
 inferProg :: Monad m => Core.CoreProgram -> InferM m Context
 inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec) M.empty
 
+
 isConstructor :: Core.CoreExpr -> Bool
 isConstructor (Core.App e1 _) = isConstructor e1
 isConstructor (Core.Var v) =
@@ -53,7 +54,6 @@ isConstructor (Core.Var v) =
     Just k  -> not (Core.isClassTyCon $ Core.dataConTyCon k)
     Nothing -> False
 isConstructor _ = False
-
 
 infer :: Monad m => [TyCon] -> Core.CoreExpr -> InferM m (Scheme TyCon)
 infer u (Core.Var v) =
@@ -67,12 +67,11 @@ infer u (Core.Var v) =
         scheme <- fromCoreScheme u $ Core.varType v
         case decomp (body scheme) of
           -- Refinable datatype
-          (fmap (unroll $ Core.dataConTyCon k) -> args, t@(Inj x d _)) -> do
-            emit k x d
-            mapM_ (\t -> emit t (inj x t)) args
-            return scheme{ body = foldr (:=>) t args }
+          (args, t@(Inj x (b, d) _)) -> do
+            emit k x (b, d)
+            return scheme{body = inj x $ body scheme}
 
-          -- Unrefinedable
+          -- Unrefinable
           _ -> return scheme
 
     -- Infer variable
@@ -85,11 +84,6 @@ infer u l@(Core.Lit _) = fromCoreScheme u $ Core.exprType l
 infer u (Core.App e1 (Core.Type e2)) = do
   t <- fromCore u e2
   scheme <- infer u e1
-  when (isConstructor e1) $
-    case decomp (body scheme) of
-      (_, Inj x d _) -> emit t (inj x t)
-      _              -> return ()
-
   return (applyScheme scheme t)
 
 -- Term application
@@ -104,7 +98,7 @@ infer u (Core.App e1 e2) = infer u e1 >>= \case
     where
       u'
         | isConstructor e1
-        , (_, Inj _ d _) <- decomp t4 = sum d : u
+        , (_, Inj _ (_, d) _) <- decomp t4 = d : u
         | otherwise = u
 
   _ -> pprPanic "Term application to non-function!" $ ppr (Core.exprType e1, Core.exprType e2)
@@ -142,14 +136,14 @@ infer u (Core.Case e bind_e core_ret alts) = do
   putVar (getName bind_e) (Mono t0) $ case t0 of
 
     -- Infer a refinable case expression
-    Inj rvar d _ -> do
+    Inj rvar (b, d) _ -> do
       ks <- traverse (\(Core.DataAlt k, xs, rhs) -> do
           -- Add constructor arguments introduced by the pattern
-          ts <- sequence $ M.fromList [ (n, Mono <$> fromCore (sum d:u) (Core.varType x))
+          ts <- sequence $ M.fromList [ (n, Mono <$> fromCore (d:u) (Core.varType x))
                                       | x     <- xs,
                                         let n =  getName x ]
 
-          branch e [k] rvar d $ do
+          branch (Just e) [k] rvar b $ do
             -- Constructor arguments are from the same refinement environment
             mapM_ (\(Mono kti) -> emit (inj rvar kti) kti) ts
 
@@ -165,10 +159,10 @@ infer u (Core.Case e bind_e core_ret alts) = do
         Nothing -> do
           -- Ensure destructor is total if not nested
           top <- topLevel e
-          when top $ emit rvar d ks
+          when top $ emit rvar (b, d) ks
         Just rhs ->
           -- Guard default case by constructors that have not occured
-          branch e (tyConDataCons (sum d) L.\\ ks) rvar d $ do
+          branch (Just e) (tyConDataCons d L.\\ ks) rvar b $ do
             ret_i <- mono <$> infer u rhs
             emit ret_i ret
 
@@ -182,6 +176,13 @@ infer u (Core.Case e bind_e core_ret alts) = do
 
         -- Ensure return type is valid
         ret_i <- mono <$> putVars ts (infer u rhs)
+        emit ret_i ret
+      ) altf
+
+    -- Type variable with one case
+    Var _ ->
+      mapM_ (\(_, _, rhs) -> do
+        ret_i <- mono <$> infer u rhs
         emit ret_i ret
       ) altf
 

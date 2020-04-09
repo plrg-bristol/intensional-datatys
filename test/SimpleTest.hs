@@ -1,6 +1,6 @@
 module SimpleTest where
 
-import Prelude hiding (odd, even, head)
+import Prelude hiding (odd, even, head, tail)
 
 data Nat = Zero | Succ Nat
 
@@ -16,7 +16,19 @@ singleton :: Int -> [Int]
 singleton x = [x]
 
 head :: [a] -> a
-head (a:as) = a
+head (a:_) = a
 
-test :: Int
-test = head (singleton 5)
+tail :: [a] -> [a]
+tail (_:xs) = xs
+
+hhead :: [a] -> a
+hhead (_:a:_) = a
+
+test1 :: Int
+test1 = head (singleton 5)
+
+test2 :: Int
+test2 = hhead (singleton 5)
+
+test3 :: Int
+test3 = head (tail (singleton 5))

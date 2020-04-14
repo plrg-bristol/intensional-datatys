@@ -13,7 +13,6 @@ module Scheme (
   pattern Mono,
   pattern Forall,
   mono,
-  applyScheme
 ) where
 
 import Prelude hiding ((<>))
@@ -23,9 +22,6 @@ import Types
 import ConGraph
 
 import Name
-import TyCon
-import IfaceType
-import ToIface
 import Binary
 import Outputable hiding (empty)
 
@@ -103,8 +99,3 @@ pattern Forall as t = Scheme {
 mono :: Outputable d => Scheme d -> Type T d
 mono (Mono t) = t
 mono s        = pprPanic "Higher rank types are unimplemented!" $ ppr s
-
--- Type application
-applyScheme :: Outputable d => Scheme d -> Type T d -> Scheme d
-applyScheme (Forall (a:as) u) t = Forall as $ subTyVar a t u
-applyScheme (Mono t)          t' = Mono (applyType t t')

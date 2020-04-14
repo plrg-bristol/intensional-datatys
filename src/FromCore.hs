@@ -1,9 +1,12 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 
 module FromCore (
   fromCore,
   fromCoreScheme,
+  fromCoreCons,
+  fromCoreConsInst,
   getExternalName,
   -- refinable,
 ) where
@@ -23,57 +26,85 @@ import InferM.Internal
 
 -- Convert a core datatype
 class SrcDataType (e :: Extended) where
-  datatype :: Monad m => DataType TyCon -> [Type S TyCon] -> InferM m (Type e TyCon)
+  datatype :: Monad m => TyCon -> [Type S TyCon] -> InferM m (Type e TyCon)
 
 instance SrcDataType S where
-  datatype (_, d) as = return $ Base d as
+  datatype d = return . Data (Level0 d)
 
 instance SrcDataType T where
   datatype d as = do
     x <- fresh
-    return $ Inj x d as
+    return $ Inj x (Level0 d) as
 
 -- Convert a monomorphic core type
-fromCore :: (SrcDataType e, Monad m) => [TyCon] -> Tcr.Type -> InferM m (Type e TyCon)
-fromCore u (Tcr.TyVarTy a) = Var <$> getExternalName a
-fromCore u (Tcr.AppTy t1 t2)   = do
-  s1 <- fromCore u t1
-  s2 <- fromCore u t2
+fromCore :: (SrcDataType e, Monad m) => Tcr.Type -> InferM m (Type e TyCon)
+fromCore (Tcr.TyVarTy a) = Var <$> getExternalName a
+fromCore (Tcr.AppTy t1 t2)   = do
+  s1 <- fromCore t1
+  s2 <- fromCore t2
   return $ App s1 s2
-fromCore u (Tcr.TyConApp tc args)
+fromCore (Tcr.TyConApp tc args)
   | isTypeSynonymTyCon tc  -- Type synonym
   , Just (as, s) <- synTyConDefn_maybe tc
-    = fromCore u (substTy (extendTvSubstList emptySubst (zip as args)) s)
+    = fromCore (substTy (extendTvSubstList emptySubst (zip as args)) s)
   | isClassTyCon tc = return Ambiguous
-  | length (tyConDataCons tc) > 1
-    = do
-        args' <- mapM (fromCore (tc:u)) args
-        datatype (tc `elem` u, tc) args'
   | otherwise
     = do
-      args' <- mapM (fromCore (tc:u)) args
-      return (Base tc args')
-fromCore u (Tcr.FunTy t1 t2) = do
-  s1 <- fromCore u t1
-  s2 <- fromCore u t2
+        args' <- mapM fromCore args
+        datatype tc args'
+fromCore (Tcr.FunTy t1 t2) = do
+  s1 <- fromCore t1
+  s2 <- fromCore t2
   return (s1 :=> s2)
-fromCore u (Tcr.LitTy l)      = return $ Lit $ toIfaceTyLit l
-fromCore u (Tcr.ForAllTy a t) = pprPanic "Unexpected polymorphic type!" $ ppr $ Tcr.ForAllTy a t
-fromCore u t                  = pprPanic "Unexpected cast or coercion type!" $ ppr t
+fromCore (Tcr.LitTy l)      = return $ Lit $ toIfaceTyLit l
+fromCore (Tcr.ForAllTy a t) = pprPanic "Unexpected polymorphic type!" $ ppr $ Tcr.ForAllTy a t
+fromCore t                  = pprPanic "Unexpected cast or coercion type!" $ ppr t
 
 -- Convert a polymorphic core type
-fromCoreScheme :: Monad m => [TyCon] -> Tcr.Type -> InferM m (Scheme TyCon)
-fromCoreScheme u (Tcr.ForAllTy b t) = do
+fromCoreScheme :: Monad m => Tcr.Type -> InferM m (Scheme TyCon)
+fromCoreScheme (Tcr.ForAllTy b t) = do
   a <- getExternalName (Tcr.binderVar b)
-  scheme <- fromCoreScheme u t
+  scheme <- fromCoreScheme t
   return scheme{ tyvars = a : tyvars scheme }
-fromCoreScheme u (Tcr.FunTy t1 t2) = do
-  s1     <- fromCore u t1
-  scheme <- fromCoreScheme u t2 -- Is this safe??
+fromCoreScheme (Tcr.FunTy t1 t2) = do
+  s1     <- fromCore t1
+  scheme <- fromCoreScheme t2 -- Is this safe??
   return scheme{ body = s1 :=> body scheme }
-fromCoreScheme u (Tcr.CastTy t k)   = pprPanic "Unexpected cast type!" $ ppr (t, k)
-fromCoreScheme u (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
-fromCoreScheme u t                  = Mono <$> fromCore u t
+fromCoreScheme (Tcr.CastTy t k)   = pprPanic "Unexpected cast type!" $ ppr (t, k)
+fromCoreScheme (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
+fromCoreScheme t                  = Mono <$> fromCore t
+
+-- Extract a constructor's original type
+fromCoreCons :: Monad m => DataType DataCon -> InferM m (Scheme TyCon)
+fromCoreCons k = do
+  univ <- mapM getExternalName $ dataConUnivTyVars (underlying k)
+  args <- mapM (fmap under . fromCore) $ dataConOrigArgTys (underlying k)
+  x <- fresh
+  return $ Forall univ (foldr (:=>) (Inj x (d <$ k) (Var <$> univ)) (inj x <$> args))
+  where
+    d = dataConTyCon (underlying k)
+
+    under :: Type S TyCon -> Type S TyCon
+    under (Data d' as)
+      | d == underlying d' = Data (Level1 d) as
+    under (t :=> t')       = under t :=> under t'
+    under t                = t
+
+-- Extract a constructor's type with tyvars instantiated
+-- We assume there are no existentially quantified tyvars
+fromCoreConsInst :: Monad m => DataType DataCon -> [Type S TyCon] -> InferM m (Type T TyCon)
+fromCoreConsInst k tyargs = do
+  args <- mapM (fmap ((\t -> foldr (uncurry subTyVar) t (zip (fmap getName $ dataConUnivTyVars $ underlying k) tyargs)) . under) . fromCore) $ dataConOrigArgTys (underlying k)
+  x <- fresh
+  return $ foldr (:=>) (Inj x (d <$ k) tyargs) (reverse $ inj x <$> args)
+  where
+    d = dataConTyCon (underlying k)
+
+    under :: Type S TyCon -> Type S TyCon
+    under (Data d' as)
+      | d == underlying d' = Data (Level1 d) as
+    under (t :=> t')       = under t :=> under t'
+    under t                = t
 
 -- Check whether a core datatype is refinable
 -- refinable :: TyCon -> Bool

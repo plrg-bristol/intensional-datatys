@@ -37,7 +37,6 @@ import FastString
 
 import Types
 import Scheme
-import Constraints
 import ConGraph
 
 -- The environment variables and their types
@@ -112,11 +111,11 @@ topLevel e = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, inStack
     inStack = foldr (\e' es -> not (cheapEqExpr e e') && es) True
 
 -- Guard local constraints by a set of possible constructors
-branch :: Monad m => Maybe CoreExpr -> [DataCon] -> Int -> Bool -> InferM m a -> InferM m a
-branch me ks x u m = InferM $ \mod gamma loc path fresh cs -> do
-  let d = dataConTyCon (head ks)
+branch :: Monad m => Maybe CoreExpr -> [DataCon] -> Int -> InferM m a -> InferM m a
+branch me ks x m = InferM $ \mod gamma loc path fresh cs -> do
+  let d = Level0 (dataConTyCon $ head ks)
   (_, fresh', cs', a) <- unInferM m mod gamma loc (case me of { Just e -> e:path; Nothing -> path}) fresh cs
-  return (path, fresh', cs `union` guardWith (S.fromList $ getName <$> ks) x (u, getName d) cs', a)
+  return (path, fresh', cs `union` guardWith (S.fromList $ getName <$> ks) x (getName <$> d) cs', a)
 
 -- Insert variables into environment
 putVar :: Name -> Scheme TyCon -> InferM m a -> InferM m a
@@ -138,11 +137,12 @@ getVar v = InferM $ \_ gamma _ path fresh cs -> return (path, fresh, cs, promote
     promote' :: Tcr.Type -> Type e IfaceTyCon -> Type e TyCon
     promote' (Tcr.TyConApp tc args) t
       | isTypeSynonymTyCon tc  -- Type synonym
-      , Just (as, s) <- synTyConDefn_maybe tc       = promote' (substTy (extendTvSubstList emptySubst (zip as args)) s) t
-    promote' _ (Var a)                              = Var a
-    promote' (Tcr.AppTy a' b') (App a b)            = App (promote' a' a) (promote' b' b)
-    promote' (Tcr.TyConApp d as') (Base b as)       = Base d (fmap (uncurry promote') $ zip as' as)
-    promote' (Tcr.TyConApp d as') (Inj x (u, _) as) = Inj x (u, d) (fmap (uncurry promote') $ zip as' as)
-    promote' (Tcr.FunTy a' b')  (a :=> b)           = promote' a' a :=> promote' b' b
-    promote' _ (Lit l)                              = Lit l
-    promote' _ Ambiguous                            = Ambiguous
+      , Just (as, s) <- synTyConDefn_maybe tc    = promote' (substTy (extendTvSubstList emptySubst (zip as args)) s) t
+    promote' _ (Var a)                           = Var a
+    promote' (Tcr.AppTy a' b') (App a b)         = App (promote' a' a) (promote' b' b)
+    promote' (Tcr.TyConApp tc as') (Data d as)   = Data (tc <$ d) (uncurry promote' <$> zip as' as)
+    promote' (Tcr.TyConApp tc as') (Inj x d as)  = Inj x (tc <$ d) (uncurry promote' <$> zip as' as)
+    promote' (Tcr.FunTy a' b')  (a :=> b)        = promote' a' a :=> promote' b' b
+    promote' _ (Lit l)                           = Lit l
+    promote' _ Ambiguous                         = Ambiguous
+    promote' t i                                 = pprPanic "Interface type does not align with term type!" $ ppr (t, i)

@@ -3,21 +3,23 @@
 {-# LANGUAGE MultiWayIf #-}
 
 module ConGraph (
-  ConGraph,
+  ConGraph(..),
   empty,
   insert,
   union,
+  getPreds,
+  getSuccs,
   guardWith,
   restrict,
 ) where
 
+import Prelude hiding ((<>))
 import Control.Monad.ST
 import Control.Monad.Except
 
 import Data.Maybe
 import Data.STRef
 import Data.Array.ST hiding (freeze, thaw)
-import Data.Foldable hiding (toList)
 import Data.Hashable
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -47,11 +49,11 @@ instance Refined ConGraph where
   rename x y (ConGraph m) = ConGraph $ rename x y m
 
 instance Outputable ConGraph where
-  ppr (ConGraph cg) = vcat [ ppr g <+> ppr (d, k1) <+> arrowt <+> ppr (d, k2)
-                             | (d, m)   <- M.toList cg,
-                               (k1, m') <- M.toList m,
-                               (k2, gs) <- M.toList m',
-                               g <- toList gs]
+  ppr (ConGraph cg) = vcat [ ppr g <+> case k1 of {Dom _ -> ppr d <> parens (ppr k1); _ -> ppr k1} <+> arrowt <+> case k2 of {Dom _ -> ppr d <> parens (ppr k2); _ -> ppr k2}
+                           | (d, m)   <- M.toList cg,
+                             (k1, m') <- M.toList m,
+                             (k2, gs) <- M.toList m',
+                             g <- toList gs]
 
 instance Binary ConGraph where
   put_ bh (ConGraph cg) = put_ bh [ (n, [ (k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg]
@@ -82,6 +84,16 @@ guardWith ks x d (ConGraph cg) = ConGraph $ M.map (M.map (M.map (dom ks x d &&&)
 -- Combine two constraint graphs
 union :: ConGraph -> ConGraph -> ConGraph
 union (ConGraph x) (ConGraph y) = ConGraph $ M.unionWith (M.unionWith (M.unionWith (|||))) x y
+
+-- Get predecessors of a node
+getPreds :: Int -> DataType Name -> ConGraph -> M.Map (K L) GuardSet
+getPreds x d (ConGraph cg) =
+  case M.lookup d cg of
+    Nothing -> M.empty
+    Just m  -> M.mapMaybe (M.lookup (Dom x)) m
+
+getSuccs :: Int -> DataType Name -> ConGraph -> M.Map (K R) GuardSet
+getSuccs x d (ConGraph cg) = fromMaybe (M.empty) (M.lookup d cg >>= M.lookup (Dom x))
 
 -- Restrict a constraint graph to it's interface and check satisfiability
 restrict :: [Int] -> ConGraph -> Either (K L, K R) ConGraph
@@ -121,7 +133,7 @@ thawSub sub = do
   l <- newSTRef []
   r <- newSTRef []
   let msub = SubGraph e l r
-  M.traverseWithKey (\n -> M.traverseWithKey (\m e -> insertAtomicM n m e msub)) sub
+  _ <- M.traverseWithKey (\n -> M.traverseWithKey (\m e -> insertAtomicM n m e msub)) sub
   return msub
 
 -- Make immutable copy of mutable constraint graph
@@ -195,7 +207,7 @@ trans xs (ConGraphM m) = mapM_ (forM_ xs . transX) m
                 -- Add new edge from n to m through (Dom x)
                 let new_guard = nkg &&& kmg
                 ijbin <- lift $ readArray (edges sg) (i, j)
-                lift $ writeArray (edges sg) (i, j) (insertBin n m (nkg &&& kmg) ijbin)
+                lift $ writeArray (edges sg) (i, j) (insertBin n m new_guard ijbin)
 
                 ) . M.lookup (Dom x)) ik_bin
               )
@@ -240,10 +252,11 @@ updatePreds x x_preds preds =
 removeNode :: Int -> SubGraph s -> ST s ()
 removeNode n sg = do
   is <- readSTRef (left sg)
-  js <- readSTRef (right sg)
   forM_ is $ \i -> do
     x <- readArray (edges sg) (getIndex (Dom n), i)
     writeArray (edges sg) (getIndex $ Dom n, i) (M.map (M.delete (Dom n)) $ M.delete (Dom n) x)
 
-    y <- readArray (edges sg) (i, getIndex (Dom n))
-    writeArray (edges sg) (i, getIndex $ Dom n) (M.map (M.delete (Dom n)) $ M.delete (Dom n) y)
+  js <- readSTRef (right sg)
+  forM_ js $ \j -> do
+    y <- readArray (edges sg) (j, getIndex (Dom n))
+    writeArray (edges sg) (j, getIndex $ Dom n) (M.map (M.delete (Dom n)) $ M.delete (Dom n) y)

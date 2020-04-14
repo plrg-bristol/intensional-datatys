@@ -11,6 +11,7 @@
 
 module Types (
   DataType(..),
+  max,
 
   Extended(..),
   Type(..),
@@ -18,13 +19,12 @@ module Types (
   shape,
   applyType,
   subTyVar,
-  decomp,
-  unroll,
+  decompTy,
 
   Refined(..),
 ) where
 
-import Prelude hiding ((<>), sum, max)
+import Prelude hiding ((<>), max)
 import qualified Data.List as L
 
 import Name
@@ -35,15 +35,44 @@ import IfaceType
 import BasicTypes
 import Outputable
 
--- Unrefined sorts vs refined types
+-- Distinguish "unrolled" datatypes
+data DataType d where
+  Level0 :: { underlying :: d } -> DataType d -- Singleton datatypes
+  Level1 :: { underlying :: d } -> DataType d -- Full datatype
+  deriving (Eq, Ord, Functor)
+
+instance Outputable d => Outputable (DataType d) where
+  ppr (Level0 d) = ppr d
+  ppr (Level1 d) = char '\'' <> ppr d
+
+instance Binary d => Binary (DataType d) where
+  put_ bh (Level0 d) = put_ bh True  >> put_ bh d
+  put_ bh (Level1 d) = put_ bh False >> put_ bh d
+
+  get bh = do
+    l <- get bh
+    if l
+      then Level0 <$> get bh
+      else Level1 <$> get bh
+
+-- Inject a into the lowest level possible
+max :: DataType a -> DataType b -> DataType a
+max d Level1{} = Level1 { underlying = underlying d}
+max d _        = d
+
+-- It is necessary to distinguish unrefined sorts vs refined types
+-- Only sorts can appear as arguments to type constructors for three reasons:
+-- a) our constraint language doesn't contain type variables
+-- b) we can't construct a slice of a type variable
+-- c) modules that haven't been processed must have their types "maximised";
+--    we would, therefore, need to abstractly guard constraints by the presence of constructors which are co- and contravariant w.r.t this variable
 data Extended = S | T
 
 -- Monomorphic types
-type DataType d = (Bool, d) -- Unrolled?
 data Type (e :: Extended) d where
   Var    :: Name -> Type e d
-  App    :: Type S d -> Type S d -> Type e d
-  Base   :: d -> [Type S d] -> Type e d
+  App    :: Type e d -> Type S d -> Type e d
+  Data   :: DataType d -> [Type S d] -> Type S d
   Inj    :: Int -> DataType d -> [Type S d] -> Type T d
   (:=>)  :: Type e d -> Type e d -> Type e d
   Lit    :: IfaceTyLit -> Type e d
@@ -59,7 +88,7 @@ instance Eq d => Eq (Type S d) where
   _ == Ambiguous         = True
   Var _ == Var _         = True
   App f a == App g b     = f == g && a == b
-  Base f a == Base g b   = f == g && a == b
+  Data f a == Data g b   = underlying f == underlying g && a == b
   (a :=> b) == (c :=> d) = a == c && b == d
   Lit l == Lit l'        = l == l'
   _ == _                 = False
@@ -72,7 +101,7 @@ instance Outputable d => Outputable (Type e d) where
       pprTy _ (Var a)         = ppr a
       pprTy prec (App t1 t2)  = hang (pprTy prec t1)
                                    2 (pprTy appPrec t2)
-      pprTy _ (Base b as)     = hang (ppr b)
+      pprTy _ (Data b as)     = hang (ppr b)
                                    2 (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
       pprTy prec (Inj x d as) = hang (maybeParen prec appPrec $ sep [text "inj", ppr x, ppr d])
                                    2 (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
@@ -83,28 +112,7 @@ instance Outputable d => Outputable (Type e d) where
 instance Binary (Type T IfaceTyCon) where
   put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
   put_ bh (App a b)    = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
-  put_ bh (Base b as)  = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
-  put_ bh (Inj x d as) = put_ bh (3 :: Int) >> put_ bh x >> put_ bh d >> put_ bh as
-  put_ bh (a :=> b)    = put_ bh (4 :: Int) >> put_ bh a >> put_ bh b
-  put_ bh (Lit l)      = put_ bh (5 :: Int) >> put_ bh l
-  put_ bh Ambiguous    = put_ bh (6 :: Int)
-
-  get bh = do
-    n <- get bh
-    case n :: Int of
-      0 -> Var <$> get bh
-      1 -> App <$> get bh <*> get bh
-      2 -> Base <$> get bh <*> get bh
-      3 -> Inj <$> get bh <*> get bh <*> get bh
-      4 -> (:=>) <$> get bh <*> get bh
-      5 -> Lit <$> get bh
-      6 -> return Ambiguous
-      _ -> pprPanic "Invalid binary file!" $ ppr ()
-
-instance Binary (Type S IfaceTyCon) where
-  put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
-  put_ bh (App a b)    = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
-  put_ bh (Base b as)  = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
+  put_ bh (Inj x d as) = put_ bh (2 :: Int) >> put_ bh x >> put_ bh d >> put_ bh as
   put_ bh (a :=> b)    = put_ bh (3 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Lit l)      = put_ bh (4 :: Int) >> put_ bh l
   put_ bh Ambiguous    = put_ bh (5 :: Int)
@@ -114,7 +122,26 @@ instance Binary (Type S IfaceTyCon) where
     case n :: Int of
       0 -> Var <$> get bh
       1 -> App <$> get bh <*> get bh
-      2 -> Base <$> get bh <*> get bh
+      2 -> Inj <$> get bh <*> get bh <*> get bh
+      3 -> (:=>) <$> get bh <*> get bh
+      4 -> Lit <$> get bh
+      5 -> return Ambiguous
+      _ -> pprPanic "Invalid binary file!" $ ppr ()
+
+instance Binary (Type S IfaceTyCon) where
+  put_ bh (Var a)      = put_ bh (0 :: Int) >> put_ bh a
+  put_ bh (App a b)    = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
+  put_ bh (Data b as)  = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
+  put_ bh (a :=> b)    = put_ bh (3 :: Int) >> put_ bh a >> put_ bh b
+  put_ bh (Lit l)      = put_ bh (4 :: Int) >> put_ bh l
+  put_ bh Ambiguous    = put_ bh (5 :: Int)
+
+  get bh = do
+    n <- get bh
+    case n :: Int of
+      0 -> Var <$> get bh
+      1 -> App <$> get bh <*> get bh
+      2 -> Data <$> get bh <*> get bh
       3 -> (:=>) <$> get bh <*> get bh
       4 -> Lit <$> get bh
       5 -> return Ambiguous
@@ -122,13 +149,13 @@ instance Binary (Type S IfaceTyCon) where
 
 instance Binary (Type e IfaceTyCon) => Binary (Type e TyCon) where
   put_ bh = put_ bh . fmap toIfaceTyCon
-  get bh  = pprPanic "Cannot write non-interface types to file" $ ppr ()
+  get _   = pprPanic "Cannot write non-interface types to file" $ ppr ()
 
 -- Inject a sort into a refinement environment
 inj :: Int -> Type e d -> Type T d
 inj _ (Var a)       = Var a
-inj _ (App a b)     = App a b
-inj _ (Base b as)   = Base b as
+inj x (App a b)     = App (inj x a) b
+inj x (Data d as)   = Inj x d as
 inj x (Inj _ d as)  = Inj x d as
 inj x (a :=> b)     = inj x a :=> inj x b
 inj _ (Lit l)       = Lit l
@@ -136,21 +163,21 @@ inj _ Ambiguous     = Ambiguous
 
 -- The shape of a type
 shape :: Type e d -> Type S d
-shape (Var a)           = Var a
-shape (App a b)         = App (shape a) (shape b)
-shape (Base b as)       = Base b (shape <$> as)
-shape (Inj _ (_, d) as) = Base d (shape <$> as)
-shape (a :=> b)         = shape a :=> shape b
-shape (Lit l)           = Lit l
-shape Ambiguous         = Ambiguous
+shape (Var a)      = Var a
+shape (App a b)    = App (shape a) b
+shape (Data d as)  = Data d as
+shape (Inj _ d as) = Data d as
+shape (a :=> b)    = shape a :=> shape b
+shape (Lit l)      = Lit l
+shape Ambiguous    = Ambiguous
 
 -- Type application
-applyType :: Outputable d => Type e d -> Type e d -> Type e d
+applyType :: Outputable d => Type e d -> Type S d -> Type e d
 applyType Ambiguous    _ = Ambiguous
-applyType (Base b as)  t = Base b (as ++ [shape t])
-applyType (Inj x d as) t = Inj x d (as ++ [shape t])
-applyType (Var a)      t = App (Var a) (shape t)
-applyType (App a b)    t = App (App a b) (shape t)
+applyType (Data b as)  t = Data b (as ++ [t])
+applyType (Inj x d as) t = Inj x d (as ++ [t])
+applyType (Var a)      t = App (Var a) t
+applyType (App a b)    t = App (App a b) t
 applyType t t'           = pprPanic "The type is saturated!" $ ppr (t, t')
 
 -- Type variable substitution
@@ -158,27 +185,16 @@ subTyVar :: Outputable d => Name -> Type e d -> Type e d -> Type e d
 subTyVar a t (Var a')
   | a == a'    = t
   | otherwise  = Var a'
-subTyVar a t (App x y) =
-  case applyType (subTyVar a (shape t) x) $ subTyVar a (shape t) y of
-    Base b as -> Base b as
-    Var a     -> Var a
-    App a b   -> App a b
-    _         -> pprPanic "Invalid application in types!" $ ppr (x, y)
+subTyVar a t (App x y)    = applyType (subTyVar a t x) $ subTyVar a (shape t) y
 subTyVar a t (x :=> y)    = subTyVar a t x :=> subTyVar a t y
-subTyVar a t (Base b as)  = Base b (subTyVar a (shape t) <$> as)
+subTyVar a t (Data b as)  = Data b (subTyVar a t <$> as)
 subTyVar a t (Inj x d as) = Inj x d (subTyVar a (shape t) <$> as)
 subTyVar _ _ t            = t
 
--- Decompose a function type into arguments and eventual return type
-decomp :: Type T d -> ([Type T d], Type T d)
-decomp (a :=> b) = let (as, r) = decomp b in (a:as, r)
-decomp t         = ([], t)
-
--- Unroll a datatype
-unroll :: Eq d => d -> Type T d -> Type T d
-unroll d (Inj x (b, d') as) = Inj x (b || d == d', d') as
-unroll d (a :=> b)          = unroll d a :=> unroll d b
-unroll d t                  = t
+-- Decompose a functions into its arguments and eventual return type
+decompTy :: Type e d -> ([Type e d], Type e d)
+decompTy (a :=> b) = let (as, r) = decompTy b in (as++[a], r)
+decompTy t         = ([], t)
 
 -- Objects that are parameterised by refinement variables
 class Refined t where
@@ -194,9 +210,9 @@ instance Refined (DataType Name) where
   rename _ _ = id
 
 instance Refined (Type T d) where
-  freevs (Inj x _ as) = [x]
-  freevs (a :=> b)    = freevs a `L.union` freevs b
-  freevs _            = []
+  freevs (Inj x _ _) = [x]
+  freevs (a :=> b)   = freevs a `L.union` freevs b
+  freevs _           = []
 
   rename x y (Inj x' d as)
     | x == x'           = Inj y d as

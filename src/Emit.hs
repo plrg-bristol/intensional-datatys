@@ -10,7 +10,7 @@ module Emit (
   emit,
 ) where
 
-import Prelude hiding (sum, max)
+import Prelude hiding (max)
 import Control.Monad
 import qualified Data.Map as M
 
@@ -68,9 +68,12 @@ instance (unit ~ (), Monad m) => Emit (Type T TyCon) (Type T TyCon -> InferM m u
       pprPanic "Types must refine the same sort!" $ ppr (t1, t2, l)
   emit (t11 :=> t12) (t21 :=> t22) =
       emit t21 t11 >> emit t12 t22
-  emit (Inj x (b, d) as) (Inj y (b', d') as')
+  emit (Inj x d as) (Inj y d' as')
     | x /= y = do
-      emit (Dom x) (Dom y) (b || b', getName d)
+      when (d /= d') $
+        -- Merge levels
+        mergeLevel x (getName <$> d) y (getName <$> d')
+      emit (Dom x) (Dom y) (getName <$> max d d')
       slice x y d as
   emit _ _ = return ()
 
@@ -85,9 +88,12 @@ instance (unit ~ (), Monad m) => Emit (Type T TyCon) (Type T IfaceTyCon -> Infer
       pprPanic "Types must refine the same sort!" $ ppr (t1, t2, l)
   emit (t11 :=> t12) (t21 :=> t22) =
       emit t21 t11 >> emit t12 t22
-  emit (Inj x (b, d) as) (Inj y (b', d') as')
+  emit (Inj x d as) (Inj y d' as')
     | x /= y = do
-      emit (Dom x) (Dom y) (b || b', getName d)
+      when ((toIfaceTyCon <$> d) /= d') $
+        -- Merge levels
+        mergeLevel x (getName <$> d) y (getName (underlying d) <$ d')
+      emit (Dom x) (Dom y) (getName <$> max d d')
       slice x y d as
   emit _ _ = return ()
 
@@ -102,10 +108,13 @@ instance (unit ~ (), Monad m) => Emit (Type T IfaceTyCon) (Type T TyCon -> Infer
       pprPanic "Types must refine the same sort!" $ ppr (t1, t2, l)
   emit (t11 :=> t12) (t21 :=> t22) =
       emit t21 t11 >> emit t12 t22
-  emit (Inj x (b', d') as) (Inj y (b, d) as')
+  emit (Inj x d as) (Inj y d' as')
     | x /= y = do
-      emit (Dom x) (Dom y) (b || b', getName d)
-      slice x y d as'
+      when (d /= (toIfaceTyCon <$> d')) $
+        -- Merge levels
+        mergeLevel x (getName (underlying d') <$ d) y (getName <$> d')
+      emit (Dom x) (Dom y) (getName <$> max d' d)
+      slice x y d' as'
   emit _ _ = return ()
 
 -- Extract a variable from the environment and import constraints
@@ -121,11 +130,11 @@ instance (unit ~ Scheme TyCon, Monad m) => Emit Var (InferM m unit) where
 
       Nothing -> do
         -- Maximise library type
-        var_scheme <- fromCoreScheme [] $ varType v
-        case decomp (body var_scheme) of
+        var_scheme <- fromCoreScheme $ varType v
+        case decompTy (body var_scheme) of
           (_, Inj x d _) -> do
             l <- getLoc
-            mapM_ (\k -> emit (Con (getName k) l) (Dom x) $ fmap getName $ d) $ varDataCons v
+            mapM_ (\k -> emit (Con (getName k) l) (Dom x) $ getName <$> d) $ varDataCons v
           _ -> return ()
         return var_scheme
 
@@ -139,30 +148,27 @@ varDataCons = dcs . resty . varType
 
     dcs (Tcr.TyConApp d' _)  = tyConDataCons d'
 
--- Get constructors argis
--- Expand synonyms!
-dataConArgs :: Monad m => TyCon -> [Type S TyCon] -> InferM m [(DataCon, [Type S TyCon])]
-dataConArgs d as' = mapM (\k -> mapM (inst k) (dataConOrigArgTys k) >>= \args -> return (k, args)) $ tyConDataCons d
-  where
-    inst :: Monad m => DataCon -> Tcr.Type -> InferM m (Type S TyCon)
-    inst k arg = do
-      t <- fromCore [] arg
-      as <- mapM getExternalName $ dataConUnivTyVars k
-      return $ foldr (uncurry subTyVar) t (zip as as')
-
 -- Take the slice of a datatype including parity
-slice :: Monad m => Int -> Int -> TyCon -> [Type S TyCon] -> InferM m ()
+slice :: Monad m => Int -> Int -> DataType TyCon -> [Type S TyCon] -> InferM m ()
 slice x y = loop [] True
   where
     loop ds p d as
-      | d `elem` ds = return ()
-      | otherwise   = dataConArgs d as >>= mapM_ (\(k, args) -> branch Nothing [k] x False $ mapM_ (step (d:ds) p) args)
+      | underlying d `elem` ds = return ()
+      | otherwise              = mapM_ (\k -> branch Nothing [k] x (fromCoreConsInst (k <$ d) as >>= (mapM_ (step ds p) . fst . decompTy))) (tyConDataCons $ underlying d)
 
-    -- If d has one constructor end here
-    step ds p (Base d' as') = do
+    step ds p (Inj _ d' as') = do
       if p
-        then emit (Dom x) (Dom y) (d' `elem` ds, getName d')
-        else emit (Dom y) (Dom x) (d' `elem` ds, getName d')
-      loop ds p d' as'
+        then emit (Dom x) (Dom y) (getName <$> d')
+        else emit (Dom y) (Dom x) (getName <$> d')
+      loop (underlying d':ds) p d' as'
     step ds p (a :=> b) = step ds (not p) a >> step ds p b
-    step ds p _         = return ()
+    step _ _ _          = return ()
+
+-- Copy constraints to a new level
+mergeLevel :: Monad m => Int -> DataType Name -> Int -> DataType Name -> InferM m ()
+mergeLevel x xd y yd = InferM $ \mod gamma occ_l path fresh cg -> do
+  let xps = getPreds x xd cg
+  let cg'' = M.foldrWithKey (\xp g cg' -> cg' `union` ConGraph (M.singleton yd $ M.singleton xp $ M.singleton (Dom x) g)) cg xps
+
+  let yss = getSuccs y yd cg
+  return (path, fresh, cg'' `union` ConGraph (M.singleton xd $ M.singleton (Dom y) yss), ())

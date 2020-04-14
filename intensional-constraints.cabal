@@ -53,7 +53,7 @@ test-suite test
   main-is: Set.hs
   hs-source-dirs:
       test
-  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:time
+  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:srcDump -fplugin-opt Lib:time
   build-depends:
       base >=4 && <5
     , intensional-constraints

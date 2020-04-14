@@ -19,9 +19,7 @@ import IfaceEnv
 import TcRnMonad
 import IfaceType
 
-import Types
 import Scheme
-import ConGraph
 import InferM
 import InferCoreExpr
 

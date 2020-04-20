@@ -115,19 +115,23 @@ infer (Core.Case e bind_e core_ret alts) = do
     -- Infer a refinable case expression
     Inj rvar d as -> do
       ks <-
-        traverse
+        mapMaybeM
           ( \(Core.DataAlt k, xs, rhs) -> do
-              -- Add constructor arguments introduced by the pattern
-              xs_ty <- fst . decompTy <$> fromCoreConsInst (k <$ d) as
-              let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
-              branch (Just e) ([k] <$ d) rvar $ do
-                -- Constructor arguments are from the same refinement environment
-                mapM_ (\(Mono kti) -> emit (inj rvar kti) kti) ts
-                -- Ensure return type is valid
-                ret_i <- mono <$> putVars ts (infer rhs)
-                emit ret_i ret
-              -- Record constructors
-              return k
+              reach <- isBranchReachable e (k <$ d)
+              if reach
+                then do
+                  -- Add constructor arguments introduced by the pattern
+                  xs_ty <- fst . decompTy <$> fromCoreConsInst (k <$ d) as
+                  let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
+                  branch (Just e) ([k] <$ d) rvar $ do
+                    -- Constructor arguments are from the same refinement environment
+                    mapM_ (\(Mono kti) -> emit (inj rvar kti) kti) ts
+                    -- Ensure return type is valid
+                    ret_i <- mono <$> putVars ts (infer rhs)
+                    emit ret_i ret
+                  -- Record constructors
+                  return (Just k)
+                else return Nothing
           )
           alts'
       case def of
@@ -143,14 +147,14 @@ infer (Core.Case e bind_e core_ret alts) = do
     -- Infer an unrefinable case expression
     Base d as ->
       forM_ altf $ \(Core.DataAlt k, xs, rhs) -> do
-        -- Add constructor arguments introduced by the pattern
-        xs_ty <- fst . decompTy <$> fromCoreConsInst (Level0 k) as
-        let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
-        -- Ensure return type is valid
-        ret_i <- mono <$> putVars ts (infer rhs)
-        emit ret_i ret
-        -- Record constructors
-        return k
+        reach <- isBranchReachable e (Level0 k)
+        when reach $ do
+          -- Add constructor arguments introduced by the pattern
+          xs_ty <- fst . decompTy <$> fromCoreConsInst (Level0 k) as
+          let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
+          -- Ensure return type is valid
+          ret_i <- mono <$> putVars ts (infer rhs)
+          emit ret_i ret
     -- Type variable with one case
     Var _ ->
       mapM_
@@ -171,3 +175,14 @@ infer (Core.Cast e _) = do
 -- Cannot infer a coercion expression.
 -- For most programs these will never occur outside casts.
 infer _ = error "Unimplemented"
+
+mapMaybeM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMaybeM op = foldr f (return [])
+  where
+    f x xs = do
+      x <- op x
+      case x of
+        Nothing -> xs
+        Just x -> do
+          xs <- xs
+          return (x : xs)

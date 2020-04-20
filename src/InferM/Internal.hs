@@ -12,6 +12,7 @@ module InferM.Internal
     getLoc,
     setLoc,
     topLevel,
+    isBranchReachable,
     trivial,
     branch,
     putVar,
@@ -20,7 +21,6 @@ module InferM.Internal
   )
 where
 
-import Prelude hiding (mod)
 import ConGraph
 import CoreSubst
 import CoreSyn (CoreExpr)
@@ -41,6 +41,7 @@ import TyCon
 import Type (splitForAllTys)
 import Types
 import Var
+import Prelude hiding (mod)
 
 -- The environment variables and their types
 type IContext = M.Map Name (Scheme IfaceTyCon)
@@ -62,10 +63,10 @@ newtype InferM m a = InferM
       Flags -> -- command line flags
       IContext -> -- constrained environment
       SrcSpan -> -- current location
-      [CoreExpr] -> -- case stack
+      [(DataType [DataCon], CoreExpr)] -> -- case stack
       Int -> -- fresh
       ConGraph -> -- constraints
-      m ([CoreExpr], Int, ConGraph, a)
+      m ([(DataType [DataCon], CoreExpr)], Int, ConGraph, a)
   }
 
 runInferM :: Monad m => InferM m a -> Flags -> IContext -> m a
@@ -74,7 +75,7 @@ runInferM m flags g = do
   return a
 
 -- Extract the entire state for breakpoints etc.
-debug :: Monad m => InferM m (Flags, IContext, SrcSpan, [CoreExpr], Int, ConGraph)
+debug :: Monad m => InferM m (Flags, IContext, SrcSpan, [(DataType [DataCon], CoreExpr)], Int, ConGraph)
 debug = InferM $ \flags gamma loc path fresh cs -> return (path, fresh, cs, (flags, gamma, loc, path, fresh, cs))
 
 instance Functor m => Functor (InferM m) where
@@ -125,7 +126,16 @@ fresh = InferM $ \_ _ _ path fresh cs -> return (path, fresh + 1, cs, fresh)
 topLevel :: Monad m => CoreExpr -> InferM m Bool
 topLevel e = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, inStack path)
   where
-    inStack = foldr (\e' es -> not (cheapEqExpr e e') && es) True
+    inStack = foldr (\(_, e') es -> not (cheapEqExpr e e') && es) True
+
+-- Is the branch reachable
+isBranchReachable :: Monad m => CoreExpr -> DataType DataCon -> InferM m Bool
+isBranchReachable e k = InferM $ \_ _ loc path fresh cs -> return (path, fresh, cs, inStack path)
+  where
+    inStack = foldr (\(ks, e') es -> (not (cheapEqExpr e e') || homoElem k ks) && es) True
+    homoElem (Level0 k) (Level0 ks) = k `elem` ks
+    homoElem (Level1 k) (Level1 ks) = k `elem` ks
+    homoElem _ _ = False
 
 -- Is a datatype unrefinable
 trivial :: TyCon -> Bool
@@ -140,7 +150,7 @@ branch me ks x m = InferM $ \flags gamma loc path fresh cs -> do
       (_, fresh', cs', a) <- unInferM m flags gamma loc path fresh cs
       return (path, fresh', cs `union` cs', a)
     else do
-      (_, fresh', cs', a) <- unInferM m flags gamma loc (case me of Just e -> e : path; Nothing -> path) fresh cs
+      (_, fresh', cs', a) <- unInferM m flags gamma loc (case me of Just e -> (ks, e) : path; Nothing -> path) fresh cs
       return (path, fresh', cs `union` guardWith (getName <$> underlying ks) x (getName <$> d) cs', a)
 
 -- Insert variables into environment

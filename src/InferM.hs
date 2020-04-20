@@ -1,13 +1,13 @@
 {-# LANGUAGE GADTs #-}
 
 module InferM
-  (
-    Flags(..),
+  ( Flags (..),
     Context,
     InferM,
     runInferM,
     setLoc,
     topLevel,
+    isBranchReachable,
     branch,
     putVar,
     putVars,
@@ -36,7 +36,6 @@ saturate :: Monad m => InferM m Context -> InferM m Context
 saturate m = InferM $ \mod gamma occ_l path fresh cg -> do
   (path', fresh', cg', ts) <- unInferM m mod gamma occ_l path fresh cg
   let interface = freevs ts L.\\ freevs gamma
-  pprTraceM "pre-sat" $ ppr cg'
   case restrict interface cg' of
     Right cs ->
       return (path', fresh', cg, (\s -> s {boundvs = interface, constraints = Just cs}) <$> ts)

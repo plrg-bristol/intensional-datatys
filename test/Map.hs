@@ -236,7 +236,7 @@ size t
 -- @return@ the result in the monad or @fail@ in it the key isn't in the 
 -- map. Often, the monad to use is 'Maybe', so you get either 
 -- @('Just' result)@ or @'Nothing'@.
-lookup :: (Monad m,Ord k) => k -> Map k a -> m a
+lookup :: (MonadFail m,Ord k) => k -> Map k a -> m a
 lookup k t = case lookup' k t of
     Just x -> return x
     Nothing -> fail "Data.Map.lookup: Key not found"
@@ -470,7 +470,7 @@ findIndex k t
 
 -- /O(log n)/. Lookup the /index/ of a key. The index is a number from
 -- /0/ up to, but not including, the 'size' of the map. 
-lookupIndex :: (Monad m,Ord k) => k -> Map k a -> m Int
+lookupIndex :: (MonadFail m,Ord k) => k -> Map k a -> m Int
 lookupIndex k t = case lookup 0 t of
     Nothing -> fail "Data.Map.lookupIndex: Key not found."
     Just x -> return x
@@ -575,25 +575,25 @@ updateMaxWithKey f t
 
 -- /O(log n)/. Retrieves the minimal (key,value) pair of the map, and the map stripped from that element
 -- @fail@s (in the monad) when passed an empty map.
-minViewWithKey :: Monad m => Map k a -> m ((k,a), Map k a)
+minViewWithKey :: MonadFail m => Map k a -> m ((k,a), Map k a)
 minViewWithKey Tip = fail "Map.minView: empty map"
 minViewWithKey x = return (deleteFindMin x)
 
 -- /O(log n)/. Retrieves the maximal (key,value) pair of the map, and the map stripped from that element
 -- @fail@s (in the monad) when passed an empty map.
-maxViewWithKey :: Monad m => Map k a -> m ((k,a), Map k a)
+maxViewWithKey :: MonadFail m => Map k a -> m ((k,a), Map k a)
 maxViewWithKey Tip = fail "Map.maxView: empty map"
 maxViewWithKey x = return (deleteFindMax x)
 
 -- /O(log n)/. Retrieves the minimal key\'s value of the map, and the map stripped from that element
 -- @fail@s (in the monad) when passed an empty map.
-minView :: Monad m => Map k a -> m (a, Map k a)
+minView :: MonadFail m => Map k a -> m (a, Map k a)
 minView Tip = fail "Map.minView: empty map"
 minView x = return (first snd $ deleteFindMin x)
 
 -- /O(log n)/. Retrieves the maximal key\'s value of the map, and the map stripped from that element
 -- @fail@s (in the monad) when passed an empty map.
-maxView :: Monad m => Map k a -> m (a, Map k a)
+maxView :: MonadFail m => Map k a -> m (a, Map k a)
 maxView Tip = fail "Map.maxView: empty map"
 maxView x = return (first snd $ deleteFindMax x)
 

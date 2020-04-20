@@ -30,8 +30,8 @@ library
       Constraints
       ConGraph
       InferM.Internal
-      FromCore
-      Emit
+      InferM.FromCore
+      InferM.Emit
       InferM
       InferCoreExpr
   hs-source-dirs:
@@ -50,10 +50,10 @@ library
 
 test-suite test
   type: exitcode-stdio-1.0
-  main-is: Set.hs
+  main-is: Sequence.hs
   hs-source-dirs:
       test
-  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:srcDump -fplugin-opt Lib:time
+  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:time
   build-depends:
       base >=4 && <5
     , intensional-constraints

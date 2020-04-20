@@ -1,2 +1,5 @@
-1) Don't constraint datatypes with one constructor
-2) exprIsBottom isn't detecting jump??
+
+2) exprIsBottom isn't detecting jump??	-> Does a new join point anal pass exist
+
+4) User warnings e.g. ambiguous
+5) User must explicitly turn on ambiguous

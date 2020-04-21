@@ -30,12 +30,13 @@ class SrcDataType (e :: Extended) where
   datatype :: Monad m => TyCon -> [Type S TyCon] -> InferM m (Type e TyCon)
 
 instance SrcDataType S where
-  datatype d = return . Data (Level0 d)
+  datatype d as = defaultLevel d >>= (\d' -> return $ Data d' as)
 
 instance SrcDataType T where
   datatype d as = do
     x <- fresh
-    return $ Inj x (Level0 d) as
+    d' <- defaultLevel d
+    return $ Inj x d' as
 
 -- Convert a monomorphic core type
 fromCore :: (SrcDataType e, Monad m) => Tcr.Type -> InferM m (Type e TyCon)
@@ -80,32 +81,34 @@ fromCoreScheme t = Mono <$> fromCore t
 -- Extract a constructor's original type
 fromCoreCons :: Monad m => DataType DataCon -> InferM m (Scheme TyCon)
 fromCoreCons k = do
+  u <- isUnroll
   univ <- mapM getExternalName $ dataConUnivAndExTyCoVars (underlying k)
-  args <- mapM (fmap under . fromCore) $ dataConOrigArgTys (underlying k)
+  args <- mapM (fmap (under u) . fromCore) $ dataConOrigArgTys (underlying k)
   x <- fresh
   return $ Forall univ (foldr (:=>) (Inj x (d <$ k) (Var <$> univ)) (inj x <$> args))
   where
     d = dataConTyCon (underlying k)
-    under :: Type S TyCon -> Type S TyCon
-    under (Data d' as)
-      | d == underlying d' = Data (Level1 d) as
-    under (t :=> t') = under t :=> under t'
-    under t = t
+    under :: Bool -> Type S TyCon -> Type S TyCon
+    under u (Data d' as)
+      | u && d == underlying d' = Data (Level1 d) as
+    under u (t :=> t') = under u t :=> under u t'
+    under u t = t
 
 -- Extract a constructor's type with tyvars instantiated
 -- We assume there are no existentially quantified tyvars
 fromCoreConsInst :: Monad m => DataType DataCon -> [Type S TyCon] -> InferM m (Type T TyCon)
 fromCoreConsInst k tyargs = do
-  args <- mapM (fmap ((\t -> foldr (uncurry subTyVar) t (zip (fmap getName $ dataConUnivAndExTyCoVars $ underlying k) tyargs)) . under) . fromCore) $ dataConOrigArgTys (underlying k)
+  u <- isUnroll
+  args <- mapM (fmap ((\t -> foldr (uncurry subTyVar) t (zip (fmap getName $ dataConUnivAndExTyCoVars $ underlying k) tyargs)) . under u) . fromCore) $ dataConOrigArgTys (underlying k)
   x <- fresh
   return $ foldr (:=>) (Inj x (d <$ k) tyargs) (reverse $ inj x <$> args)
   where
     d = dataConTyCon (underlying k)
-    under :: Type S TyCon -> Type S TyCon
-    under (Data d' as)
-      | d == underlying d' = Data (Level1 d) as
-    under (t :=> t') = under t :=> under t'
-    under t = t
+    under :: Bool -> Type S TyCon -> Type S TyCon
+    under u (Data d' as)
+      | u && d == underlying d' = Data (Level1 d) as
+    under u (t :=> t') = under u t :=> under u t'
+    under u t = t
 
 -- Check whether a core datatype is refinable
 refinable :: TyCon -> Bool

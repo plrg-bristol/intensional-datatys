@@ -42,6 +42,7 @@ library
     , ghc >=8.6 && <8.10
     , containers
     , array
+    , dlist
     , mtl
     , hashable
     , time

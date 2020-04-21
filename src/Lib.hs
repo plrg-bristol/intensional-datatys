@@ -30,9 +30,9 @@ interfaceName = ("interface/" ++) . moduleNameString
 
 inferGuts :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
-  let flags = Flags {time = "time" `elem` cmd, srcDump = "srcDump" `elem` cmd, contra = "contra" `elem` cmd, mod = m}
+  let flags = Flags {contra = "contra" `elem` cmd, mod = m, unroll = "unroll" `elem` cmd}
   start <- liftIO getCurrentTime
-  when (srcDump flags) $ pprTraceM "" (ppr p)
+  when ("srcDump" `elem` cmd) $ pprTraceM "" (ppr p)
   -- Reload saved typeschemes
   deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
   hask <- getHscEnv
@@ -48,26 +48,29 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
         M.empty
         deps
   -- Infer constraints
-  tss <- runInferM (inferProg $ dependancySort p) flags env
-  -- Display typeschemes
-  liftIO
-    $ mapM_
-      ( \(v, ts) -> do
-          putStrLn ""
-          putStrLn $ showSDocUnsafe $ ppr (v, ts)
-          putStrLn ""
-      )
-    $ M.toList tss
-  -- Save typescheme to temporary file
-  exist <- liftIO $ doesDirectoryExist "interface"
-  liftIO $ unless exist (createDirectory "interface")
-  bh <- liftIO $ openBinMem 1000
-  liftIO $ putWithUserData (const $ return ()) bh (M.toList $ M.filterWithKey (\k _ -> isExternalName k) tss)
-  liftIO $ writeBinMem bh $ interfaceName $ moduleName m
-  stop <- liftIO getCurrentTime
-  when (time flags) $ do
-    liftIO $ print $ diffUTCTime stop start
-    liftIO $ print (M.size tss)
+  egamma <- runInferM (inferProg $ dependancySort p) flags env
+  case egamma of
+    Left (Error msg loc k1 k2) -> pprPanic msg (ppr (k1, k2, loc))
+    Right gamma -> do
+      -- Display typeschemes
+      liftIO
+        $ mapM_
+          ( \(v, ts) -> do
+              putStrLn ""
+              putStrLn $ showSDocUnsafe $ ppr (v, ts)
+              putStrLn ""
+          )
+        $ M.toList gamma
+      -- Save typescheme to temporary file
+      exist <- liftIO $ doesDirectoryExist "interface"
+      liftIO $ unless exist (createDirectory "interface")
+      bh <- liftIO $ openBinMem 1000
+      liftIO $ putWithUserData (const $ return ()) bh (M.toList $ M.filterWithKey (\k _ -> isExternalName k) gamma)
+      liftIO $ writeBinMem bh $ interfaceName $ moduleName m
+      stop <- liftIO getCurrentTime
+      when ("time" `elem` cmd) $ do
+        liftIO $ print $ diffUTCTime stop start
+        liftIO $ print (M.size gamma)
   return guts
 
 -- Sort a program in order of dependancies

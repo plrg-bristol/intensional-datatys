@@ -37,32 +37,38 @@ import Prelude hiding ((<>), max)
 data DataType d where
   Level0 :: {underlying :: d} -> DataType d -- Singleton datatypes
   Level1 :: {underlying :: d} -> DataType d -- Full datatype
+  Neutral :: {underlying :: d} -> DataType d
   deriving (Eq, Ord, Functor)
 
 instance Outputable d => Outputable (DataType d) where
-  ppr (Level0 d) = ppr d
   ppr (Level1 d) = char '\'' <> ppr d
+  ppr dt = ppr $ underlying dt
 
 instance Binary d => Binary (DataType d) where
-  put_ bh (Level0 d) = put_ bh True >> put_ bh d
-  put_ bh (Level1 d) = put_ bh False >> put_ bh d
+  put_ bh (Level0 d) = put_ bh (0 :: Int) >> put_ bh d
+  put_ bh (Level1 d) = put_ bh (1 :: Int) >> put_ bh d
+  put_ bh (Neutral d) = put_ bh (2 :: Int) >> put_ bh d
 
   get bh = do
     l <- get bh
-    if l
-      then Level0 <$> get bh
-      else Level1 <$> get bh
+    case l :: Int of
+      0 -> Level0 <$> get bh
+      1 -> Level1 <$> get bh
+      2 -> Neutral <$> get bh
 
 instance Hashable Name where
   hashWithSalt x n = hashWithSalt x (getKey $ getUnique n)
 
 instance Hashable d => Hashable (DataType d) where
-  hashWithSalt x (Level0 d) = hashWithSalt x (False, d)
-  hashWithSalt x (Level1 d) = hashWithSalt x (True, d)
+  hashWithSalt x (Level0 d) = hashWithSalt x (0 :: Int, d)
+  hashWithSalt x (Level1 d) = hashWithSalt x (1 :: Int, d)
+  hashWithSalt x (Neutral d) = hashWithSalt x (2 :: Int, d)
 
 -- Inject a into the lowest level possible
 max :: DataType a -> DataType b -> DataType a
 max d Level1 {} = Level1 {underlying = underlying d}
+max Neutral {underlying = d} Level0 {} = Level0 {underlying = d}
+max Neutral {underlying = d} Level1 {} = Level1 {underlying = d}
 max d _ = d
 
 --  It is necessary to distinguish unrefined sorts vs refined types

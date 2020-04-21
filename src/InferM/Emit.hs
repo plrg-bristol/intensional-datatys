@@ -35,15 +35,15 @@ class Emit t r where
   emit :: t -> r
 
 instance (unit ~ (), Monad m) => Emit ConGraph (InferM m unit) where
-  emit cg = InferM $ \_ _ _ p f cs -> return (p, f, cg `union` cs, ())
+  emit cg = InferM $ \_ _ _ p f f' cs -> return $ Right (p, f, f', cg `union` cs, ())
 
 -- Emit non-atomic set constraint
 instance (unit ~ (), Monad m) => Emit (K a) (K b -> DataType TyCon -> InferM m unit) where
   emit _ _ d | trivial (underlying d) = return ()
-  emit k1 k2 d = InferM $ \_ _ l path fresh cs ->
+  emit k1 k2 d = InferM $ \_ _ l path fresh old_fresh cs ->
     case insert k1 k2 (getName <$> d) cs of
-      Just cs' -> return (path, fresh, cs', ())
-      Nothing -> pprPanic "Invalid set constraint!" $ ppr (k1, k2, l)
+      Just cs' -> return $ Right (path, fresh, old_fresh, cs', ())
+      Nothing -> return $ Left (Error "Invalid set constraint!" l k1 k2)
 
 -- Emit k in X(d)
 instance (unit ~ (), Monad m) => Emit DataCon (Int -> DataType TyCon -> InferM m unit) where
@@ -174,8 +174,8 @@ slice x y = loop [] True
 
 -- Copy constraints to a new level
 mergeLevel :: Monad m => Int -> DataType Name -> Int -> DataType Name -> InferM m ()
-mergeLevel x xd y yd = InferM $ \mod gamma occ_l path fresh cg -> do
+mergeLevel x xd y yd = InferM $ \mod gamma occ_l path fresh old_fresh cg -> do
   let xps = getPreds x xd cg
   let cg'' = M.foldrWithKey (\xp g -> union $ guardDirect g (fromJust $ insert xp (Dom x) yd empty)) cg xps
   let yss = getSuccs y yd cg
-  return (path, fresh, M.foldrWithKey (\ys g -> union $ guardDirect g (fromJust $ insert (Dom y) ys xd empty)) cg'' yss, ())
+  return $ Right (path, fresh, old_fresh, M.foldrWithKey (\ys g -> union $ guardDirect g (fromJust $ insert (Dom y) ys xd empty)) cg'' yss, ())

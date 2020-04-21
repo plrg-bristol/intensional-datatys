@@ -59,7 +59,7 @@ infer (Core.Var v) =
       | Core.isClassTyCon $ Core.dataConTyCon k -> return $ Mono Ambiguous
       -- Infer constructor
       | otherwise -> do
-        scheme <- fromCoreCons (Level0 k)
+        scheme <- defaultLevel k >>= fromCoreCons
         case decompTy (body scheme) of
           -- Refinable constructor
           (_, Inj x d _) -> emit k x d >> return scheme
@@ -147,10 +147,10 @@ infer (Core.Case e bind_e core_ret alts) = do
     -- Infer an unrefinable case expression
     Base d as ->
       forM_ altf $ \(Core.DataAlt k, xs, rhs) -> do
-        reach <- isBranchReachable e (Level0 k)
+        reach <- defaultLevel k >>= isBranchReachable e
         when reach $ do
           -- Add constructor arguments introduced by the pattern
-          xs_ty <- fst . decompTy <$> fromCoreConsInst (Level0 k) as
+          xs_ty <- fst . decompTy <$> (defaultLevel k >>= (\k' -> fromCoreConsInst k' as))
           let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
           -- Ensure return type is valid
           ret_i <- mono <$> putVars ts (infer rhs)

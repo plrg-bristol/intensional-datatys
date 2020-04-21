@@ -34,13 +34,12 @@ import Prelude hiding ((<>))
 -- A collection of disjoint graphs for each datatype
 -- Nodes are constructor sets or refinement variables
 -- Edges are labelled by possible guards.
+-- ConGraphs should have a free variable map
 newtype ConGraph = ConGraph (M.Map (DataType Name) (M.Map (K L) (M.Map (K R) GuardSet)))
   deriving (Eq)
 
 instance (Refined k, Ord k, Refined a) => Refined (M.Map k a) where
-  freevs m =
-    let keydom = foldr (L.union . freevs) [] $ M.keysSet m
-     in foldr (L.union . freevs) keydom m
+  freevs m = foldr (L.union . freevs) (foldr (L.union . freevs) [] $ M.keysSet m) m
   rename x y = M.mapKeys (rename x y) . M.map (rename x y)
 
 instance Refined ConGraph where
@@ -103,14 +102,12 @@ getSuccs x d (ConGraph cg) = fromMaybe M.empty (M.lookup d cg >>= M.lookup (Dom 
 
 -- Restrict a constraint graph to it's interface and check satisfiability
 restrict :: [Int] -> ConGraph -> Either (K L, K R) ConGraph
-restrict interface cg = runST $ runExceptT $ do
+restrict inner cg = runST $ runExceptT $ do
   mcg <- lift $ thaw cg
   trans inner mcg
   preds <- lift $ weaken inner mcg
   -- Check sat
   freeze inner preds mcg
-  where
-    inner = freevs cg L.\\ interface
 
 -- A mutable constraint graph
 newtype ConGraphM s = ConGraphM (M.Map (DataType Name) (SubGraph s))
@@ -139,7 +136,7 @@ thawSub sub = do
   l <- newSTRef []
   r <- newSTRef []
   let msub = SubGraph e l r
-  _ <- M.traverseWithKey (\n -> M.traverseWithKey (\m e -> insertAtomicM n m e msub)) sub
+  _ <- M.traverseWithKey (\n -> M.traverseWithKey (\m g -> insertAtomicM n m (minimise g) msub)) sub
   return msub
 
 -- Make immutable copy of mutable constraint graph
@@ -154,24 +151,20 @@ freeze xs preds (ConGraphM cg) = ConGraph <$> mapM freezeSub cg
       forM_ is $ \i ->
         forM_ js $ \j -> do
           ebin <- lift $ readArray (edges msub) (i, j)
-          sub' <- M.foldlWithKey' (\ma n n_to -> ma >>= \a -> M.foldlWithKey' (\ma' m g -> ma' >>= \a' -> freezeInsert n m g a') (return a) n_to) (lift $ readSTRef sub) ebin
-          lift $ writeSTRef sub sub'
+          ebin' <-
+            M.traverseWithKey
+              ( \l ->
+                  M.traverseWithKey
+                    ( \r g -> do
+                        let new_guard = applyPreds preds g
+                        if safe l r || isEmpty new_guard
+                          then return $ minimise new_guard
+                          else throwError (l, r)
+                    )
+              )
+              ebin
+          lift $ writeSTRef sub (M.unionWith M.union ebin' sub_curr)
       lift $ readSTRef sub
-    freezeInsert :: K L -> K R -> GuardSet -> M.Map (K L) (M.Map (K R) GuardSet) -> ExceptT (K L, K R) (ST s) (M.Map (K L) (M.Map (K R) GuardSet))
-    freezeInsert n m g s =
-      case n of
-        Dom y | y `elem` xs -> return s
-        _ ->
-          case m of
-            Dom y | y `elem` xs -> return s
-            _ -> do
-              let new_guard = applyPreds preds g
-              if isEmpty new_guard
-                then return s
-                else case toAtomic n m of
-                  Nothing -> throwError (n, m)
-                  Just [] -> return s
-                  Just [_] -> return $ insertBin n m new_guard s
 
 -- Insert a new edge into a mutable graph
 insertAtomicM :: K L -> K R -> GuardSet -> SubGraph s -> ST s ()
@@ -185,9 +178,7 @@ insertAtomicM n m e g = do
 
 -- Insert an edge into a bin
 insertBin :: K L -> K R -> GuardSet -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L) (M.Map (K R) GuardSet)
-insertBin n m e gs
-  | isEmpty e = gs
-  | otherwise = M.alter go n gs
+insertBin n m e = M.alter go n
   where
     go (Just b) = Just $ M.insertWith (|||) m e b
     go Nothing = Just $ M.singleton m e

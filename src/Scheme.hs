@@ -16,6 +16,8 @@ where
 
 import Binary
 import ConGraph
+import Control.Monad
+import qualified Data.IntSet as I
 import qualified Data.List as L
 import Name
 import Outputable hiding (empty)
@@ -32,10 +34,7 @@ data Scheme d = Scheme
   deriving (Functor)
 
 instance Refined (Type T d) => Refined (Scheme d) where
-  freevs s =
-    case constraints s of
-      Nothing -> freevs (body s) L.\\ boundvs s
-      Just cs -> (freevs (body s) `L.union` freevs cs) L.\\ boundvs s
+  freevs s = freevs (body s) L.\\ boundvs s
 
   rename x y s
     | x `elem` boundvs s = s

@@ -22,8 +22,8 @@ import Types
 import Prelude hiding (sum)
 
 -- Infer constraints for a (mutually-)recursive bind
-inferRec :: Monad m => Core.CoreBind -> InferM m Context
-inferRec bgs = do
+inferRec :: Monad m => Bool -> Core.CoreBind -> InferM m Context
+inferRec top bgs = do
   binds <-
     sequence $
       M.fromList
@@ -31,24 +31,26 @@ inferRec bgs = do
           | (x, rhs) <- Core.flattenBinds [bgs],
             let n = getName x
         ]
-  -- Restrict type schemes
-  saturate
-    $
-    -- Add binds for recursive calls
-    putVars binds
-    $
-    -- Infer rhs; subtype of recursive usage
-    sequence
-    $ M.fromList
-      [ (n, do scheme <- infer rhs; emit (body scheme) (body sr); return scheme)
-        | (x, rhs) <- Core.flattenBinds [bgs],
-          let n = getName x,
-          let sr = binds M.! n
-      ]
+  let a =
+        -- Add binds for recursive calls
+        putVars binds
+          $
+          -- Infer rhs; subtype of recursive usage
+          sequence
+          $ M.fromList
+            [ (n, do scheme <- infer rhs; emit (body scheme) (body sr); return scheme)
+              | (x, rhs) <- Core.flattenBinds [bgs],
+                let n = getName x,
+                let sr = binds M.! n
+            ]
+  -- g <- gen_let
+  if top -- || g
+    then saturate a
+    else a
 
 -- Infer constraints for a module
 inferProg :: Monad m => Core.CoreProgram -> InferM m Context
-inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec) M.empty
+inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec True) M.empty
 
 -- Infer constraints for a program expression
 infer :: Monad m => Core.CoreExpr -> InferM m (Scheme TyCon)
@@ -100,7 +102,7 @@ infer (Core.Lam x e)
       Forall as t2 -> return $ Forall as (t1 :=> t2)
 -- Local prog
 infer (Core.Let b e) = do
-  ts <- inferRec b
+  ts <- inferRec True b
   putVars ts $ infer e
 infer (Core.Case e bind_e core_ret alts) = do
   -- Fresh return type
@@ -150,13 +152,13 @@ infer (Core.Case e bind_e core_ret alts) = do
         reach <- defaultLevel k >>= isBranchReachable e
         when reach $ do
           -- Add constructor arguments introduced by the pattern
-          xs_ty <- fst . decompTy <$> (defaultLevel k >>= (\k' -> fromCoreConsInst k' as))
+          xs_ty <- fst . decompTy <$> (defaultLevel k >>= (`fromCoreConsInst` as))
           let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
           -- Ensure return type is valid
           ret_i <- mono <$> putVars ts (infer rhs)
           emit ret_i ret
-    -- Type variable with one case
-    Var _ ->
+    -- Ambiguous
+    _ -> do
       mapM_
         ( \(_, _, rhs) -> do
             ret_i <- mono <$> infer rhs

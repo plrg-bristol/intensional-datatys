@@ -34,7 +34,10 @@ data Scheme d = Scheme
   deriving (Functor)
 
 instance Refined (Type T d) => Refined (Scheme d) where
-  freevs s = freevs (body s) L.\\ boundvs s
+  freevs s =
+    case constraints s of
+      Nothing -> freevs (body s) L.\\ boundvs s
+      Just cs -> L.union (freevs (body s)) (freevs cs) L.\\ boundvs s
 
   rename x y s
     | x `elem` boundvs s = s

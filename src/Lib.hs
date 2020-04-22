@@ -50,7 +50,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
   -- Infer constraints
   egamma <- runInferM (inferProg $ dependancySort p) flags env
   case egamma of
-    Left (Error msg loc k1 k2) -> pprPanic msg (ppr (k1, k2, loc))
+    Left (Error msg loc d k1 k2) -> pprPanic msg (ppr (d, k1, k2, loc))
     Right gamma -> do
       -- Display typeschemes
       liftIO

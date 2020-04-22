@@ -62,7 +62,7 @@ data Flags = Flags
 
 -- Invalid constraint information
 data Error where
-  Error :: String -> SrcSpan -> K a -> K b -> Error
+  Error :: String -> SrcSpan -> DataType Name -> K a -> K b -> Error
 
 -- The inference monad with all the bells and whistles
 -- Essentially an unrolled ExceptT RWST

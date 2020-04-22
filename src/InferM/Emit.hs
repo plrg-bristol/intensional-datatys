@@ -43,7 +43,7 @@ instance (unit ~ (), Monad m) => Emit (K a) (K b -> DataType TyCon -> InferM m u
   emit k1 k2 d = InferM $ \_ _ l path fresh old_fresh cs ->
     case insert k1 k2 (getName <$> d) cs of
       Just cs' -> return $ Right (path, fresh, old_fresh, cs', ())
-      Nothing -> return $ Left (Error "Invalid set constraint!" l k1 k2)
+      Nothing -> return $ Left (Error "Invalid set constraint!" l (getName <$> d) k1 k2)
 
 -- Emit k in X(d)
 instance (unit ~ (), Monad m) => Emit DataCon (Int -> DataType TyCon -> InferM m unit) where

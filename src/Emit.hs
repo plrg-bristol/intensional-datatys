@@ -127,7 +127,7 @@ instance Monad m => Emit Var (InferM s m (Scheme TyCon (GuardSet s))) where
             (L.sort $ boundvs scheme)
         fre_scheme <- renameAll xys scheme {boundvs = []}
 
-        case constraints scheme of
+        case constraints fre_scheme of
           Nothing -> return fre_scheme
           Just cg -> do
             g <- use branchGuard

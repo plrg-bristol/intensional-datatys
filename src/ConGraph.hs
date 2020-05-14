@@ -37,7 +37,7 @@ type SubGraph s = M.Map (K L) (M.Map (K R) (GuardSet s))
 
 -- Merger maps with a monad function
 unionWithM :: (Ord a, Monad m) => (b -> b -> m b) -> M.Map a b -> M.Map a b -> m (M.Map a b)
-unionWithM f x y = sequence $ M.unionWith (\x y -> liftM2 (,) x y >>= uncurry f) (return <$> x) (return <$> y)
+unionWithM f = mergeA _ _ (zipWithAMatched (const f))
 
 -- Insert several atomic constraints with the same guard
 insertSub :: GsM state s m => K L -> K R -> GuardSet s -> SubGraph s -> m (SubGraph s)

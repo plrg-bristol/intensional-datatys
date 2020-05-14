@@ -1,277 +1,231 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module ConGraph
   ( ConGraph,
+    ConGraphGen,
     empty,
     insert,
     union,
-    getPreds,
-    getSuccs,
     guardWith,
-    guardDirect,
+    mergeLevel,
     restrict,
   )
 where
 
-import qualified Binary as B
+import Binary
 import Constraints
+import Control.Monad
 import Control.Monad.Except
-import Control.Monad.ST
-import Control.Monad.State
-import Data.Array.ST hiding (freeze, thaw)
-import Data.Hashable
+import Data.Functor.Identity
 import qualified Data.List as L
-import qualified Data.Map.Strict as M
+import qualified Data.Map as M
 import Data.Maybe
-import Data.STRef
-import qualified Data.Set as S
-import FastString
-import Name
-import Outputable hiding (empty, isEmpty)
-import SrcLoc hiding (L)
+import DataTypes
+import GhcPlugins hiding (L, empty, isEmpty, singleton)
+import Guards
 import Types
-import Prelude hiding ((<>), lookup)
+import Prelude hiding ((<>))
 
--- A collection of disjoint graphs for each datatype
--- Nodes are constructor sets or refinement variables
--- Edges are labelled by possible guards.
--- ConGraphs should have a free variable map
-newtype ConGraph = ConGraph (M.Map (DataType Name) (M.Map (K L) (M.Map (K R) GuardSet)))
-  deriving (Eq)
+-- A constraint graph for a fixed datatype
+type SubGraph s = M.Map (K L) (M.Map (K R) (GuardSet s))
 
-instance (Refined k, Ord k, Refined a) => Refined (M.Map k a) where
-  freevs m = foldr (L.union . freevs) (foldr (L.union . freevs) [] $ M.keysSet m) m
-  rename x y = M.mapKeys (rename x y) . M.map (rename x y)
+-- Merger maps with a monad function
+unionWithM :: (Ord a, Monad m) => (b -> b -> m b) -> M.Map a b -> M.Map a b -> m (M.Map a b)
+unionWithM f x y = sequence $ M.unionWith (\x y -> liftM2 (,) x y >>= uncurry f) (return <$> x) (return <$> y)
 
-instance Refined ConGraph where
-  freevs (ConGraph cg) = freevs cg
-  rename x y (ConGraph m) = ConGraph $ rename x y m
-
-instance Outputable ConGraph where
-  ppr (ConGraph cg) =
-    vcat
-      [ ppr g <+> case k1 of { Dom _ -> ppr d <> parens (ppr k1); _ -> ppr k1 } <+> arrowt <+> case k2 of Dom _ -> ppr d <> parens (ppr k2); _ -> ppr k2
-        | (d, m) <- M.toList cg,
-          (k1, m') <- M.toList m,
-          (k2, gs) <- M.toList m',
-          g <- toList gs
-      ]
-
-instance B.Binary ConGraph where
-  put_ bh (ConGraph cg) = B.put_ bh [(n, [(k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg]
-  get bh = do
-    nl <- B.get bh
-    let nl' = [(n, M.fromList [(k, M.fromList m') | (k, m') <- l]) | (n, l) <- nl]
-    return (ConGraph $ M.fromList nl')
-
--- An empty set
-empty :: ConGraph
-empty = ConGraph M.empty
-
--- Insert a non-atomic constraint with trivial guard
-insert :: K l -> K r -> DataType Name -> ConGraph -> Maybe ConGraph
-insert k1 k2 d (ConGraph cg) =
-  case toAtomic k1 k2 of
-    Nothing -> Nothing
-    Just cs -> Just $ ConGraph $ M.alter (Just . overwriteBin cs . fromMaybe M.empty) d cg
-
--- Overwrite bin, i.e. insert with top
-overwriteBin :: [(K L, K R)] -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L) (M.Map (K R) GuardSet)
-overwriteBin cs m = foldr (\(kl, kr) k -> insertBin kl kr Top k) m cs
-
--- Insert an edge into a bin
-insertBin :: K L -> K R -> GuardSet -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L) (M.Map (K R) GuardSet)
-insertBin n m e = M.alter go n
+-- Insert several atomic constraints with the same guard
+insertSub :: GsM state s m => K L -> K R -> GuardSet s -> SubGraph s -> m (SubGraph s)
+insertSub kl kr g = M.alterF go kl
   where
-    go (Just b) = Just $ M.insertWith (:||) m e b
-    go Nothing = Just $ M.singleton m e
+    go (Just b) = Just <$> unionWithM (|||) (M.singleton kr g) b
+    go Nothing = return (Just $ M.singleton kr g)
 
--- Guard a constraint graph by a set of possible guards
-guardWith :: [Name] -> Int -> DataType Name -> ConGraph -> ConGraph
-guardWith ks x = guardDirect . dom ks x
+-- Insert several atomic constraints with the same lhs
+insertMany :: GsM state s m => K L -> M.Map (K R) (GuardSet s) -> SubGraph s -> m (SubGraph s)
+insertMany kl m = M.alterF go kl
+  where
+    go (Just m') = Just <$> unionWithM (|||) m m'
+    go Nothing = return (Just m)
+
+-- Combine subgraphs
+unionSub :: GsM state s m => SubGraph s -> SubGraph s -> m (SubGraph s)
+unionSub = unionWithM (unionWithM (|||))
+
+-- Take the transitive closure of a subgraph
+transSub :: GsM state s m => [RVar] -> SubGraph s -> m (SubGraph s)
+transSub xs orig_graph = do
+  -- explore spanning-tree from interface nodes
+  (ns, g) <- foldM go ([], orig_graph) $ fmap Dom xs
+
+  -- explore spanning-tree from source constructors
+  snd <$> foldM go (ns, g) [Con k l | (Con k l) <- M.keys orig_graph]
+  where
+    go (ns, g) n =
+      case M.lookup n orig_graph of
+        Nothing -> return (ns, g)
+        Just from_n
+          | n `elem` ns -> return (ns, g)
+          | otherwise ->
+            M.foldrWithKey
+              ( \m guard state -> do
+                  case m of
+                    Set _ _ -> state
+                    Dom x -> do
+                      s <- state
+                      (ns', g') <- go s (Dom x)
+                      case M.lookup (Dom x) g' of
+                        Nothing -> return (ns', g')
+                        Just from_d -> do
+                          n_via_d <- mapM (||| guard) from_d
+                          g'' <- insertMany n n_via_d g'
+                          return (ns', g'')
+              )
+              (return (n : ns, g))
+              from_n
+
+-- Collect the predecessors of intermediate nodes
+predsSub :: [RVar] -> SubGraph s -> M.Map RVar (M.Map (K L) (GuardSet s))
+predsSub xs orig_graph =
+  M.fromList $
+    fmap
+      ( \x ->
+          ( x,
+            M.mapMaybeWithKey
+              ( \n rs ->
+                  if interface n
+                    then M.lookup (Dom x) rs
+                    else Nothing
+              )
+              orig_graph
+          )
+      )
+      xs
+  where
+    interface :: K L -> Bool
+    interface Con {} = True
+    interface (Dom x) = x `notElem` xs
+
+-- A collection of disjoint subgraphs for each datatypes
+-- Nodes are constructor sets or refinement variables
+-- Edges are labelled by possible guards
+type ConGraph s = ConGraphGen (GuardSet s)
+
+data ConGraphGen g = ConGraph
+  { subgraphs :: M.Map (DataType Name) (M.Map (K L) (M.Map (K R) g)),
+    _domain :: [RVar]
+  }
+  deriving (Eq, Functor, Foldable, Traversable)
+
+instance Outputable (ConGraphGen [[Guard]]) where
+  ppr (ConGraph cg _) =
+    vcat
+      [ ppr g <+> pprCon k1 d <+> arrowt <+> pprCon k2 d
+        | (d, sg) <- M.toList cg,
+          (k1, to) <- M.toList sg,
+          (k2, gs) <- M.toList to,
+          g <- gs
+      ]
+    where
+      pprCon k@(Dom _) d = ppr d <> parens (ppr k)
+      pprCon k _ = ppr k
+
+instance Binary (ConGraphGen [[Guard]]) where
+  put_ bh (ConGraph cg d) = put_ bh [(n, [(k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg] >> put_ bh d
+  get bh = do
+    nl <- get bh
+    d <- get bh
+    let nl' = [(n, M.fromList [(k, M.fromList m') | (k, m') <- l]) | (n, l) <- nl]
+    return (ConGraph (M.fromList nl') d)
+
+instance (GsM state s m, Refined g m) => Refined (ConGraphGen g) m where
+  domain = return . _domain
+
+  rename x y (ConGraph cg d) = do
+    cg' <-
+      mapM
+        ( fmap (M.mapKeys (runIdentity . rename x y))
+            . mapM (fmap (M.mapKeys (runIdentity . rename x y)) . mapM (rename x y))
+        )
+        cg
+    return (ConGraph cg' ((y : d) L.\\ [x]))
+
+-- An empty constraint set
+empty :: ConGraphGen g
+empty = ConGraph M.empty []
+
+-- Insert an atomic constraint
+insert :: GsM state s m => K L -> K R -> GuardSet s -> DataType Name -> ConGraph s -> m (ConGraph s)
+insert k1 k2 g dty (ConGraph cg dom) = do
+  cg' <- M.alterF (fmap Just . insertSub k1 k2 g . fromMaybe M.empty) dty cg
+  let dk1 = runIdentity $ domain k1
+  let dk2 = runIdentity $ domain k2
+  dg <- domain g
+  return (ConGraph cg' (dk1 `L.union` dk2 `L.union` dg `L.union` dom))
 
 -- Guard a constraint graph with by a set of possible guards
-guardDirect :: GuardSet -> ConGraph -> ConGraph
-guardDirect g (ConGraph cg) = ConGraph $ M.map (M.map (M.map (g :&&))) cg
+guardWith :: GsM state s m => GuardSet s -> ConGraph s -> m (ConGraph s)
+guardWith g = mapM (&&& g)
 
 -- Combine two constraint graphs
-union :: ConGraph -> ConGraph -> ConGraph
-union (ConGraph x) (ConGraph y) = ConGraph $ M.unionWith (M.unionWith (M.unionWith (:||))) x y
+union :: GsM state s m => ConGraph s -> ConGraph s -> m (ConGraph s)
+union (ConGraph x d) (ConGraph y d') = do
+  xy <- unionWithM unionSub x y
+  return (ConGraph xy (d `L.union` d'))
 
--- Get predecessors of a node
-getPreds :: Int -> DataType Name -> ConGraph -> M.Map (K L) GuardSet
-getPreds x d (ConGraph cg) =
-  case M.lookup d cg of
-    Nothing -> M.empty
-    Just m -> M.mapMaybe (M.lookup (Dom x)) m
+-- Duplicate constraints between levels
+mergeLevel :: GsM state s m => RVar -> RVar -> DataType Name -> DataType Name -> ConGraph s -> m (ConGraph s)
+mergeLevel x y xd yd cg@(ConGraph sg _) = do
+  -- Add each pred of x to the datatype y level
+  cg' <-
+    M.foldrWithKey
+      (\xp g mcg -> mcg >>= insert xp (Dom x) g yd)
+      (return cg)
+      x_preds
 
-getSuccs :: Int -> DataType Name -> ConGraph -> M.Map (K R) GuardSet
-getSuccs x d (ConGraph cg) = fromMaybe M.empty (M.lookup d cg >>= M.lookup (Dom x))
-
-transDisjoint :: [Int] -> ConGraph -> ConGraph
-transDisjoint interface (ConGraph sgs) = ConGraph $ M.map go sgs
+  -- Add each succ of y to the x datatype level
+  M.foldrWithKey
+    (\ys g mcg -> mcg >>= insert (Dom y) ys g xd)
+    (return cg')
+    y_succs
   where
-    sources sg = fmap Dom interface ++ [Con k l | (Con k l) <- M.keys sg]
-    go sg = trans (sources sg) sg
-
-trans :: [K L] -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L) (M.Map (K R) GuardSet)
-trans vs graph = snd $ execState (mapM_ go vs) ([], graph)
-  where
-    go :: K L -> State ([K L], M.Map (K L) (M.Map (K R) GuardSet)) ()
-    go v =
-      case M.lookup v graph of
-        Nothing -> return ()
-        Just from_v -> do
-          (seen, acc) <- get
-          unless (v `elem` seen) $ do
-            put (v : seen, acc)
-            M.traverseWithKey
-              ( \d g ->
-                  case d of
-                    Dom x -> do
-                      go (Dom x)
-                      (seen, acc) <- get
-                      case M.lookup (Dom x) acc of
-                        Nothing -> return ()
-                        Just from_d ->
-                          put (seen, M.insertWith (M.unionWith (:||)) v (M.map (:&& g) from_d) acc)
-                    Set ks l -> do
-                      (seen, acc) <- get
-                      put (seen, M.insertWith (M.unionWith (:||)) v (M.singleton (Set ks l) g) acc)
-              )
-              from_v
-            return ()
-
-predDisjoint :: S.Set Int -> ConGraph -> M.Map (DataType Name) (M.Map Int (M.Map (K L) GuardSet))
-predDisjoint is (ConGraph sgs) = M.map (predTree is) sgs
-
--- Collect preds of a intermediate nodes i
-predTree :: S.Set Int -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map Int (M.Map (K L) GuardSet)
-predTree is sg = M.fromSet (\i -> M.mapMaybeWithKey (\l rs -> guard (interface l) >> M.lookup (Dom i) rs) sg) is
-  where
-    interface :: K a -> Bool
-    interface Con {} = True
-    interface (Dom x) = S.notMember x is
+    x_preds = case M.lookup xd sg of
+      Nothing -> M.empty
+      Just m -> M.mapMaybe (M.lookup (Dom x)) m
+    y_succs = fromMaybe M.empty (M.lookup yd sg >>= M.lookup (Dom y))
 
 -- Restrict a constraint graph to it's interface and check satisfiability
-restrict :: [Int] -> S.Set Int -> ConGraph -> Either (DataType Name, K L, K R) ConGraph
-restrict interface inner cg = do
-  let (ConGraph cg') = transDisjoint interface cg
-  let pre = predDisjoint inner $ ConGraph cg'
-  cg'' <-
+restrict :: GsM state s m => [RVar] -> ConGraph s -> ExceptT (DataType Name, K L, K R) m (ConGraph s)
+restrict interface (ConGraph cg d) = do
+  cg' <- mapM (transSub interface) cg
+  let preds = predsSub (d L.\\ interface) <$> cg'
+  sgs <-
     M.traverseWithKey
       ( \d ->
           M.traverseMaybeWithKey
             ( \l rs ->
                 case l of
-                  Dom x | S.member x inner -> return Nothing
+                  Dom x | x `notElem` interface -> return Nothing
                   _ ->
                     Just
                       <$> M.traverseMaybeWithKey
                         ( \r g ->
                             case r of
-                              Dom x | S.member x inner -> return Nothing
+                              Dom x | x `notElem` interface -> return Nothing
                               _ -> do
-                                let new_guard = applyPreds pre g
-                                if safe l r || isEmpty new_guard
+                                new_guard <- applyPreds preds g
+                                e <- isEmpty new_guard
+                                if safe l r || e
                                   then return $ Just new_guard
-                                  else Left (d, l, r)
+                                  else throwError (d, l, r)
                         )
                         rs
             )
       )
       cg'
-  return $ ConGraph cg''
--- -- Fill in blank edges
--- square :: M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L) (M.Map (K R) GuardSet)
--- square m = M.mapWithKey (\l rgs -> M.union rgs to) m
---   where
---     to = M.fromSet (const bot) (foldMap M.keysSet m)
---
--- -- Make immutable copy of mutable constraint graph
--- freeze :: [Int] -> ConGraph -> Either (K L, K R) ConGraph
--- freeze xs (ConGraph cg) = ConGraph <$> mapM freezeSub cg
---   where
---     freezeSub :: M.Map (K L) (M.Map (K R) GuardSet) -> Either (K L, K R) (M.Map (K L) (M.Map (K R) GuardSet))
---     freezeSub =
---       M.traverseMaybeWithKey
---         ( \l rgs ->
---             if interface l
---               then
---                 Just
---                   <$> M.traverseMaybeWithKey
---                     ( \r g ->
---                         if interface r
---                           then
---                             let new_guard = weaken xs (ConGraph cg) g
---                              in if isEmpty new_guard
---                                   then Right Nothing
---                                   else
---                                     if safe l r
---                                       then Right $ Just $ minimise new_guard
---                                       else Left (l, r)
---                           else return Nothing
---                     )
---                     rgs
---               else return Nothing
---         )
---     interface :: K a -> Bool
---     interface (Dom x) = x `notElem` xs
---     interface _ = True
---
---
--- -- Take the transitive closure of a graph over an internal set
--- trans :: S.Set Int -> ConGraph -> ConGraph
--- trans xs (ConGraph g) = ConGraph $ M.map (\m -> foldr transX m xs) g
---
--- -- Add transitive connections that pass through node x
--- transX :: Int -> M.Map (K L) (M.Map (K R) GuardSet) -> M.Map (K L) (M.Map (K R) GuardSet)
--- transX x m = M.mapWithKey (M.mapWithKey . go) m
---   where
---     go :: K L -> K R -> GuardSet -> GuardSet
---     go l r g = fromMaybe g $ do
---       lgs <- M.lookup l m
---       rgs <- M.lookup (Dom x) m
---       lg <- M.lookup (Dom x) lgs
---       rg <- M.lookup r rgs
---       return (g ||| (lg &&& rg))
---
--- -- Weaken guards containing intermediate variables
--- weaken :: [Int] -> ConGraph -> GuardSet -> GuardSet
--- weaken xs (ConGraph cg) gs = bind gs $ \(Guard g) ->
---   M.foldrWithKey
---     ( \d xks acc ->
---         case M.lookup d cg of
---           Nothing -> acc
---           Just sg ->
---             S.foldr
---               ( \(x, k) acc ->
---                   if x `elem` xs
---                     then
---                       M.foldrWithKey
---                         ( \l g acc' ->
---                             case l of
---                               Dom y
---                                 | y `elem` xs -> acc'
---                                 | otherwise -> (g &&& dom [k] y d) ||| acc'
---                               Con k' _
---                                 | k == k' -> g ||| acc'
---                                 | otherwise -> acc'
---                         )
---                         acc
---                         $ M.mapMaybe (M.lookup (Dom x)) sg
---                     else dom [k] x d &&& acc
---               )
---               acc
---               xks
---     )
---     top
---     g
---
--- -- Apply existing preds and then insert
--- updatePreds :: Int -> M.Map (DataType Name) (M.Map (K L) GuardSet) -> M.Map Int (M.Map (DataType Name) (M.Map (K L) GuardSet)) -> M.Map Int (M.Map (DataType Name) (M.Map (K L) GuardSet))
--- updatePreds x x_preds preds =
---   let x_preds' = M.map (M.map (applyPreds preds)) x_preds
---    in M.insert x x_preds' preds
+  return (ConGraph sgs interface)

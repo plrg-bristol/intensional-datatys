@@ -7,11 +7,16 @@ module InferCoreExpr
   )
 where
 
+import Control.Lens hiding (Context)
 import Control.Monad
 import CoreUtils
 import qualified Data.List as L
 import qualified Data.Map as M
+import DataTypes
+import Emit
+import FromCore
 import qualified GhcPlugins as Core
+import Guards
 import InferM
 import Name
 import Outputable hiding (empty)
@@ -21,8 +26,13 @@ import TyCon
 import Types
 import Prelude hiding (sum)
 
+defaultLevel :: Monad m => d -> InferM s m (DataType d)
+defaultLevel k = do
+  u <- view unrollDataTypes
+  if u then return (Level0 k) else return (Neutral k)
+
 -- Infer constraints for a (mutually-)recursive bind
-inferRec :: Monad m => Bool -> Core.CoreBind -> InferM m Context
+inferRec :: Monad m => Bool -> Core.CoreBind -> InferM s m (Context s)
 inferRec top bgs = do
   binds <-
     sequence $
@@ -32,28 +42,31 @@ inferRec top bgs = do
             let n = getName x
         ]
   let a =
-        -- Add binds for recursive calls
-        putVars binds
+        locally varEnv (putVars binds) -- Add binds for recursive calls
           $
           -- Infer rhs; subtype of recursive usage
           sequence
           $ M.fromList
-            [ (n, do scheme <- infer rhs; emit (body scheme) (body sr); return scheme)
+            [ (n, locally inferLoc (const $ getSrcSpan n) $ do
+                scheme <- infer rhs
+                emit (body scheme) (body sr)
+                return scheme)
               | (x, rhs) <- Core.flattenBinds [bgs],
                 let n = getName x,
                 let sr = binds M.! n
             ]
-  -- g <- gen_let
-  if top -- || g
-    then saturate a
+
+  g <- view genLet
+  if top || g
+    then locally inferLoc (const $ getSrcSpan $ fst $ head $ Core.flattenBinds [bgs]) $ saturate a -- If generalising let or a top-level definition
     else a
 
 -- Infer constraints for a module
-inferProg :: Monad m => Core.CoreProgram -> InferM m Context
-inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec True) M.empty
+inferProg :: Monad m => Core.CoreProgram -> InferM s m (Context s)
+inferProg = foldM (\ctx -> fmap (M.union ctx) . locally varEnv (putVars ctx) . inferRec True) M.empty
 
 -- Infer constraints for a program expression
-infer :: Monad m => Core.CoreExpr -> InferM m (Scheme TyCon)
+infer :: Monad m => Core.CoreExpr -> InferM s m (Scheme TyCon (GuardSet s))
 infer (Core.Var v) =
   case Core.isDataConId_maybe v of
     Just k
@@ -79,13 +92,13 @@ infer (Core.App e1 (Core.Type e2)) = do
     Forall (a : as) t ->
       return $ Forall as (subTyVar a t' t)
     Mono Ambiguous -> return $ Mono Ambiguous
-    _ -> pprPanic "Type is already saturated!" $ ppr scheme
+    _ -> mapM toList scheme >>= pprPanic "Type is already saturated!" . ppr
 -- Term application
 infer (Core.App e1 e2) = infer e1 >>= \case
   Forall as Ambiguous -> Forall as Ambiguous <$ infer e2
   -- This should raise a warning for as /= []!
   Forall as (t3 :=> t4) -> do
-    t2 <- mono <$> infer e2
+    t2 <- infer e2 >>= mono
     emit t2 t3
     return $ Forall as t4
   _ -> pprPanic "Term application to non-function!" $ ppr (Core.exprType e1, Core.exprType e2)
@@ -98,12 +111,12 @@ infer (Core.Lam x e)
   | otherwise = do
     -- Variable abstraction
     t1 <- fromCore $ Core.varType x
-    putVar (getName x) (Mono t1) (infer e) >>= \case
+    locally varEnv (putVar (getName x) (Mono t1)) (infer e) >>= \case
       Forall as t2 -> return $ Forall as (t1 :=> t2)
 -- Local prog
 infer (Core.Let b e) = do
   ts <- inferRec True b
-  putVars ts $ infer e
+  locally varEnv (putVars ts) $ infer e
 infer (Core.Case e bind_e core_ret alts) = do
   -- Fresh return type
   ret <- fromCore core_ret
@@ -111,25 +124,25 @@ infer (Core.Case e bind_e core_ret alts) = do
   let altf = filter (\(_, _, rhs) -> not $ Core.exprIsBottom rhs) alts
   let (alts', def) = Core.findDefault altf
   -- Infer expression on which to pattern match
-  t0 <- mono <$> infer e
+  t0 <- infer e >>= mono
   -- Add the variable under scrutinee to scope
-  putVar (getName bind_e) (Mono t0) $ case t0 of
+  locally varEnv (putVar (getName bind_e) (Mono t0)) $ case t0 of
     -- Infer a refinable case expression
     Inj rvar d as -> do
       ks <-
         mapMaybeM
           ( \(Core.DataAlt k, xs, rhs) -> do
-              reach <- isBranchReachable e (k <$ d)
+              reach <- views branchPath (isBranchReachable e k)
               if reach
                 then do
                   -- Add constructor arguments introduced by the pattern
                   xs_ty <- fst . decompTy <$> fromCoreConsInst (k <$ d) as
                   let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
-                  branch (Just e) ([k] <$ d) rvar $ do
+                  branch e [k] rvar d $ do
                     -- Constructor arguments are from the same refinement environment
                     mapM_ (\(Mono kti) -> emit (inj rvar kti) kti) ts
                     -- Ensure return type is valid
-                    ret_i <- mono <$> putVars ts (infer rhs)
+                    ret_i <- locally varEnv (putVars ts) (infer rhs >>= mono)
                     emit ret_i ret
                   -- Record constructors
                   return (Just k)
@@ -139,35 +152,41 @@ infer (Core.Case e bind_e core_ret alts) = do
       case def of
         Nothing -> do
           -- Ensure destructor is total if not nested
-          top <- topLevel e
+          top <- views branchPath (topLevel e)
           when top $ emit rvar d ks
         Just rhs ->
           -- Guard default case by constructors that have not occured
-          branch (Just e) ((tyConDataCons (underlying d) L.\\ ks) <$ d) rvar $ do
-            ret_i <- mono <$> infer rhs
+          branch e (tyConDataCons (underlying d) L.\\ ks) rvar d $ do
+            ret_i <- infer rhs >>= mono
             emit ret_i ret
     -- Infer an unrefinable case expression
     Base d as ->
-      forM_ altf $ \(Core.DataAlt k, xs, rhs) -> do
-        reach <- defaultLevel k >>= isBranchReachable e
-        when reach $ do
-          -- Add constructor arguments introduced by the pattern
-          xs_ty <- fst . decompTy <$> (defaultLevel k >>= (`fromCoreConsInst` as))
-          let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
+      forM_ altf $ \case
+        (Core.DataAlt k, xs, rhs) -> do
+          k' <- defaultLevel k
+          reach <- views branchPath (isBranchReachable e k)
+          when reach $ do
+            -- Add constructor arguments introduced by the pattern
+            xs_ty <- fst . decompTy <$> fromCoreConsInst k' as
+            let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
+            -- Ensure return type is valid
+            ret_i <- locally varEnv (putVars ts) (infer rhs) >>= mono
+            emit ret_i ret
+        (_, _, rhs) -> do
           -- Ensure return type is valid
-          ret_i <- mono <$> putVars ts (infer rhs)
+          ret_i <- infer rhs >>= mono
           emit ret_i ret
     -- Ambiguous
     _ -> do
       mapM_
         ( \(_, _, rhs) -> do
-            ret_i <- mono <$> infer rhs
+            ret_i <- infer rhs >>= mono
             emit ret_i ret
         )
         altf
   return $ Mono ret
 -- Track source location
-infer (Core.Tick Core.SourceNote {Core.sourceSpan = s} e) = setLoc (RealSrcSpan s) $ infer e
+infer (Core.Tick Core.SourceNote {Core.sourceSpan = s} e) = locally inferLoc (const $ RealSrcSpan s) $ infer e
 -- Ignore other ticks
 infer (Core.Tick _ e) = infer e
 -- Infer cast

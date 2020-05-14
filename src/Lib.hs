@@ -16,6 +16,7 @@ import IfaceType
 import InferCoreExpr
 import InferM
 import Scheme
+import Guards
 import System.Directory
 import TcRnMonad
 import Prelude hiding (mod)
@@ -30,7 +31,6 @@ interfaceName = ("interface/" ++) . moduleNameString
 
 inferGuts :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
-  let flags = Flags {contra = "contra" `elem` cmd, mod = m, unroll = "unroll" `elem` cmd}
   start <- liftIO getCurrentTime
   when ("srcDump" `elem` cmd) $ pprTraceM "" (ppr p)
   -- Reload saved typeschemes
@@ -42,15 +42,15 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
         ( \env m_name -> do
             bh <- liftIO $ readBinMem $ interfaceName m_name
             cache <- mkNameCacheUpdater
-            tss <- liftIO (getWithUserData cache bh :: IO [(Name, Scheme IfaceTyCon)])
+            tss <- liftIO (getWithUserData cache bh :: IO [(Name, Scheme IfaceTyCon [[Guard]])])
             return $ foldr (\(x, ts) env' -> M.insert x ts env') env tss
         )
         M.empty
         deps
   -- Infer constraints
-  egamma <- runInferM (inferProg $ dependancySort p) flags env
+  egamma <- runInferM (inferProg (dependancySort p) >>= mapM (mapM toList)) True True True m env
   case egamma of
-    Left (Error msg loc d k1 k2) -> pprPanic msg (ppr (d, k1, k2, loc))
+    Left err -> pprPanic "Constraints are unsatisfiable!" (ppr err)
     Right gamma -> do
       -- Display typeschemes
       liftIO

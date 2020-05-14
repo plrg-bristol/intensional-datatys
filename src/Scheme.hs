@@ -1,9 +1,10 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Scheme
@@ -11,46 +12,41 @@ module Scheme
     pattern Mono,
     pattern Forall,
     mono,
+    promoteSch,
   )
 where
 
 import Binary
 import ConGraph
-import Control.Monad
-import qualified Data.IntSet as I
+import Data.Bifunctor
+import Data.Functor.Identity
 import qualified Data.List as L
-import Name
-import Outputable hiding (empty)
+import DataTypes
+import GhcPlugins hiding (Type, empty)
+import Guards
+import IfaceType
+import qualified TyCoRep as Tcr
 import Types
 import Prelude hiding ((<>))
 
 -- Constrained polymorphic types
-data Scheme d = Scheme
+data Scheme d g = Scheme
   { tyvars :: [Name],
     boundvs :: [Int],
     body :: Type T d,
-    constraints :: Maybe ConGraph
+    constraints :: Maybe (ConGraphGen g)
   }
-  deriving (Functor)
 
-instance Refined (Type T d) => Refined (Scheme d) where
-  freevs s =
-    case constraints s of
-      Nothing -> freevs (body s) L.\\ boundvs s
-      Just cs -> L.union (freevs (body s)) (freevs cs) L.\\ boundvs s
+deriving instance (Foldable (Scheme d))
 
-  rename x y s
-    | x `elem` boundvs s = s
-    | y `elem` boundvs s = pprPanic "Unimplemented!" $ ppr (x, y)
-    | otherwise =
-      Scheme
-        { tyvars = tyvars s,
-          boundvs = boundvs s,
-          body = rename x y $ body s,
-          constraints = rename x y <$> constraints s
-        }
+deriving instance (Functor (Scheme d))
 
-instance Outputable d => Outputable (Scheme d) where
+deriving instance (Traversable (Scheme d))
+
+instance Bifunctor Scheme where
+  bimap f g (Scheme ty bvs bod cons) = Scheme ty bvs (fmap f bod) (fmap (fmap g) cons)
+
+instance Outputable d => Outputable (Scheme d [[Guard]]) where
   ppr scheme =
     case constraints scheme of
       Just cs
@@ -68,12 +64,35 @@ instance Outputable d => Outputable (Scheme d) where
         | null (boundvs scheme) = text ""
         | otherwise = forAllLit <+> fsep (ppr <$> boundvs scheme) <> dot
 
-instance Binary (Type T d) => Binary (Scheme d) where
+instance Binary (Type T d) => Binary (Scheme d [[Guard]]) where
   put_ bh scheme = put_ bh (tyvars scheme) >> put_ bh (boundvs scheme) >> put_ bh (body scheme) >> put_ bh (constraints scheme)
 
   get bh = Scheme <$> get bh <*> get bh <*> get bh <*> get bh
 
-pattern Mono :: Type T d -> Scheme d
+instance (GsM state s m, Refined g m, Refined (Type T d) Identity) => Refined (Scheme d g) m where
+  domain s = do
+    let db = runIdentity (domain (body s))
+    case constraints s of
+      Nothing -> return (db L.\\ boundvs s)
+      Just cg -> do
+        dcg <- domain cg
+        return ((db `L.union` dcg) L.\\ boundvs s)
+
+  rename x y s
+    | x `elem` boundvs s = return s
+    | y `elem` boundvs s = pprPanic "Alpha renaming of polymorphic types is not implemented!!" $ ppr (x, y)
+    | otherwise = do
+      let bod = runIdentity (rename x y $ body s)
+      cg <- mapM (rename x y) $ constraints s
+      return $
+        Scheme
+          { tyvars = tyvars s,
+            boundvs = boundvs s,
+            body = bod,
+            constraints = cg
+          }
+
+pattern Mono :: Type T d -> Scheme d g
 pattern Mono t =
   Scheme
     { tyvars = [],
@@ -82,7 +101,7 @@ pattern Mono t =
       constraints = Nothing
     }
 
-pattern Forall :: [Name] -> Type T d -> Scheme d
+pattern Forall :: [Name] -> Type T d -> Scheme d g
 pattern Forall as t =
   Scheme
     { tyvars = as,
@@ -92,6 +111,10 @@ pattern Forall as t =
     }
 
 -- Demand a monomorphic type
-mono :: Outputable d => Scheme d -> Type T d
-mono (Mono t) = t
-mono s = pprPanic "Higher rank types are unimplemented!" $ ppr s
+mono :: (GsM state s m, Outputable d) => Scheme d (GuardSet s) -> m (Type T d)
+mono (Mono t) = return t
+mono s = pprPanic "Higher rank types are unimplemented!" . ppr <$> mapM toList s
+
+-- Lift a scheme from interface with the help of a core type
+promoteSch :: Tcr.Type -> Scheme IfaceTyCon g -> Scheme TyCon g
+promoteSch shape (Scheme bvs tyvs body cs) = Scheme bvs tyvs (promoteTy shape body) cs

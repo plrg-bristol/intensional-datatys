@@ -4,12 +4,13 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Types
-  ( DataType (..),
-    max,
+  ( RVar,
+    Refined (..),
     Extended (..),
     Type (..),
     inj,
@@ -17,59 +18,29 @@ module Types
     applyType,
     subTyVar,
     decompTy,
-    Refined (..),
+    unrollUnder,
+    promoteTy,
   )
 where
 
-import BasicTypes
 import Binary
-import Data.Hashable
+import Control.Monad
+import Data.Functor.Identity
 import qualified Data.List as L
+import DataTypes
+import GhcPlugins hiding (Expr (..), Type)
 import IfaceType
-import Name
-import Outputable
 import ToIface
-import TyCon
-import Unique
-import Prelude hiding ((<>), max)
+import qualified TyCoRep as Tcr
+import Prelude hiding ((<>))
 
--- Distinguish "unrolled" datatypes
-data DataType d where
-  Level0 :: {underlying :: d} -> DataType d -- Singleton datatypes
-  Level1 :: {underlying :: d} -> DataType d -- Full datatype
-  Neutral :: {underlying :: d} -> DataType d
-  deriving (Eq, Ord, Functor)
+-- Refinement variable
+type RVar = Int
 
-instance Outputable d => Outputable (DataType d) where
-  ppr (Level1 d) = char '\'' <> ppr d
-  ppr dt = ppr $ underlying dt
-
-instance Binary d => Binary (DataType d) where
-  put_ bh (Level0 d) = put_ bh (0 :: Int) >> put_ bh d
-  put_ bh (Level1 d) = put_ bh (1 :: Int) >> put_ bh d
-  put_ bh (Neutral d) = put_ bh (2 :: Int) >> put_ bh d
-
-  get bh = do
-    l <- get bh
-    case l :: Int of
-      0 -> Level0 <$> get bh
-      1 -> Level1 <$> get bh
-      2 -> Neutral <$> get bh
-
-instance Hashable Name where
-  hashWithSalt x n = hashWithSalt x (getKey $ getUnique n)
-
-instance Hashable d => Hashable (DataType d) where
-  hashWithSalt x (Level0 d) = hashWithSalt x (0 :: Int, d)
-  hashWithSalt x (Level1 d) = hashWithSalt x (1 :: Int, d)
-  hashWithSalt x (Neutral d) = hashWithSalt x (2 :: Int, d)
-
--- Inject a into the lowest level possible
-max :: DataType a -> DataType b -> DataType a
-max d Level1 {} = Level1 {underlying = underlying d}
-max Neutral {underlying = d} Level0 {} = Level0 {underlying = d}
-max Neutral {underlying = d} Level1 {} = Level1 {underlying = d}
-max d _ = d
+-- The class of objects that contain refinement variables
+class Refined t m where
+  domain :: t -> m [RVar]
+  rename :: RVar -> RVar -> t -> m t
 
 --  It is necessary to distinguish unrefined sorts vs refined types
 --  Only sorts can appear as arguments to type constructors for three reasons:
@@ -78,7 +49,9 @@ max d _ = d
 --  c) modules that haven't been processed must have their types "maximised";
 --     we would, therefore, need to abstractly guard constraints by the presence of constructors which are co- and contravariant w.r.t this variable
 --
---  This is distinct from Base types which represent those with contravariant constructors when the contra flag is off
+--  This is distinct from Base types which represent both:
+--  a) datatypes with contravariant constructors (when the contra flag is off)
+--  b) datatypes with only one constructor
 data Extended = S | T
 
 -- Monomorphic types
@@ -87,7 +60,7 @@ data Type (e :: Extended) d where
   App :: Type e d -> Type S d -> Type e d
   Base :: d -> [Type S d] -> Type e d
   Data :: DataType d -> [Type S d] -> Type S d
-  Inj :: Int -> DataType d -> [Type S d] -> Type T d
+  Inj :: RVar -> DataType d -> [Type S d] -> Type T d
   (:=>) :: Type e d -> Type e d -> Type e d
   Lit :: IfaceTyLit -> Type e d
   -- Ambiguous hides higher-ranked types and casts
@@ -103,6 +76,8 @@ instance Eq d => Eq (Type S d) where
   App f a == App g b = f == g && a == b
   Base f a == Base g b = f == g && a == b
   Data f a == Data g b = underlying f == underlying g && a == b
+  Data f a == Base g b = underlying f == g && a == b
+  Base f a == Data g b = underlying g == f && a == b
   (a :=> b) == (c :=> d) = a == c && b == d
   Lit l == Lit l' = l == l'
   _ == _ = False
@@ -183,8 +158,19 @@ instance Binary (Type e IfaceTyCon) => Binary (Type e TyCon) where
   put_ bh = put_ bh . fmap toIfaceTyCon
   get _ = pprPanic "Cannot write non-interface types to file" $ ppr ()
 
+instance Refined (Type T d) Identity where
+  domain (Inj x _ as) = return [x]
+  domain (a :=> b) = liftM2 L.union (domain a) (domain b)
+  domain _ = return []
+
+  rename x y (Inj x' d as)
+    | x == x' = return (Inj y d as)
+    | otherwise = return (Inj x' d as)
+  rename x y (a :=> b) = liftM2 (:=>) (rename x y a) (rename x y b)
+  rename _ _ t = return t
+
 -- Inject a sort into a refinement environment
-inj :: Int -> Type e d -> Type T d
+inj :: RVar -> Type e d -> Type T d
 inj _ (Var a) = Var a
 inj x (App a b) = App (inj x a) b
 inj _ (Base d as) = Base d as
@@ -229,29 +215,34 @@ subTyVar _ _ t = t
 
 -- Decompose a functions into its arguments and eventual return type
 decompTy :: Type e d -> ([Type e d], Type e d)
-decompTy (a :=> b) = let (as, r) = decompTy b in (as ++ [a], r)
+decompTy (a :=> b) =
+  let (as, r) = decompTy b
+   in (as ++ [a], r)
 decompTy t = ([], t)
 
--- Objects that are parameterised by refinement variables
-class Refined t where
-  freevs :: t -> [Int]
-  rename :: Int -> Int -> t -> t
+-- Unroll a datatype when it is "under" itself
+unrollUnder :: Eq d => d -> Type e d -> Type e d
+unrollUnder d (Data d' as)
+  | d == underlying d' = Data (Level1 d) (unrollUnder d <$> as)
+unrollUnder d (Base d' as) = Base d' (unrollUnder d <$> as)
+unrollUnder d (Inj x d' as)
+  | d == underlying d' = Inj x (Level1 d) (unrollUnder d <$> as)
+unrollUnder d (t :=> t') = unrollUnder d t :=> unrollUnder d t'
+unrollUnder d (App a b) = App (unrollUnder d a) (unrollUnder d b)
+unrollUnder _ t = t
 
-instance Refined Name where
-  freevs _ = []
-  rename _ _ = id
-
-instance Refined (DataType Name) where
-  freevs _ = []
-  rename _ _ = id
-
-instance Refined (Type T d) where
-  freevs (Inj x _ _) = [x]
-  freevs (a :=> b) = freevs a `L.union` freevs b
-  freevs _ = []
-
-  rename x y (Inj x' d as)
-    | x == x' = Inj y d as
-    | otherwise = Inj x' d as
-  rename x y (a :=> b) = rename x y a :=> rename x y b
-  rename _ _ t = t
+-- Lift a iface type to a full type
+promoteTy :: Tcr.Type -> Type e IfaceTyCon -> Type e TyCon
+promoteTy (Tcr.TyConApp tc args) t
+  | isTypeSynonymTyCon tc, -- Type synonym
+    Just (as, s) <- synTyConDefn_maybe tc =
+    promoteTy (substTy (extendTvSubstList emptySubst (zip as args)) s) t
+promoteTy _ (Var a) = Var a
+promoteTy (Tcr.AppTy a' b') (App a b) = App (promoteTy a' a) (promoteTy b' b)
+promoteTy (Tcr.TyConApp tc as') (Data d as) = Data (tc <$ d) (uncurry promoteTy <$> zip as' as)
+promoteTy (Tcr.TyConApp tc as') (Inj x d as) = Inj x (tc <$ d) (uncurry promoteTy <$> zip as' as)
+promoteTy (Tcr.TyConApp tc as') (Base d as) = Base tc (uncurry promoteTy <$> zip as' as)
+promoteTy (Tcr.FunTy a' b') (a :=> b) = promoteTy a' a :=> promoteTy b' b
+promoteTy _ (Lit l) = Lit l
+promoteTy _ Ambiguous = Ambiguous
+promoteTy t i = pprPanic "Interface type does not align with term type!" $ ppr (t, i)

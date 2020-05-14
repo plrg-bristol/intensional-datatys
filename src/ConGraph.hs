@@ -12,6 +12,7 @@ module ConGraph
     empty,
     insert,
     union,
+    unionUniq,
     guardWith,
     mergeLevel,
     restrict,
@@ -24,6 +25,7 @@ import Control.Monad
 import Control.Monad.Except
 import Data.Functor.Identity
 import qualified Data.List as L
+import Data.Map.Merge.Lazy
 import qualified Data.Map as M
 import Data.Maybe
 import DataTypes
@@ -37,7 +39,7 @@ type SubGraph s = M.Map (K L) (M.Map (K R) (GuardSet s))
 
 -- Merger maps with a monad function
 unionWithM :: (Ord a, Monad m) => (b -> b -> m b) -> M.Map a b -> M.Map a b -> m (M.Map a b)
-unionWithM f = mergeA _ _ (zipWithAMatched (const f))
+unionWithM f = mergeA preserveMissing preserveMissing (zipWithAMatched (const f))
 
 -- Insert several atomic constraints with the same guard
 insertSub :: GsM state s m => K L -> K R -> GuardSet s -> SubGraph s -> m (SubGraph s)
@@ -186,6 +188,10 @@ union :: GsM state s m => ConGraph s -> ConGraph s -> m (ConGraph s)
 union (ConGraph x d) (ConGraph y d') = do
   xy <- unionWithM unionSub x y
   return (ConGraph xy (d `L.union` d'))
+
+-- Combine two disjoint constraint graphs
+unionUniq :: ConGraph s -> ConGraph s -> ConGraph s
+unionUniq (ConGraph x d) (ConGraph y d') = ConGraph (M.unionWith (M.unionWith M.union) x y) (d `L.union` d')
 
 -- Duplicate constraints between levels
 mergeLevel :: GsM state s m => RVar -> RVar -> DataType Name -> DataType Name -> ConGraph s -> m (ConGraph s)

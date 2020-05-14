@@ -48,7 +48,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
         M.empty
         deps
   -- Infer constraints
-  egamma <- runInferM (inferProg (dependancySort p) >>= mapM (mapM toList)) True True True m env
+  egamma <- runInferM (inferProg (dependancySort p) >>= mapM (mapM toList)) True True False m env
   case egamma of
     Left err -> pprPanic "Constraints are unsatisfiable!" (ppr err)
     Right gamma -> do

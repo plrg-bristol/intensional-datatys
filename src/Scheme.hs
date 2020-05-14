@@ -92,6 +92,17 @@ instance (GsM state s m, Refined g m, Refined (Type T d) Identity) => Refined (S
             constraints = cg
           }
 
+  renameAll xys s = do
+    let bod = runIdentity (renameAll xys $ body s)
+    cg <- mapM (renameAll xys) $ constraints s
+    return $
+      Scheme
+        { tyvars = tyvars s,
+          boundvs = boundvs s,
+          body = bod,
+          constraints = cg
+        }
+
 pattern Mono :: Type T d -> Scheme d g
 pattern Mono t =
   Scheme

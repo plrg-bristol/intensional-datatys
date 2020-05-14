@@ -155,6 +155,15 @@ instance (GsM state s m, Refined g m) => Refined (ConGraphGen g) m where
         cg
     return (ConGraph cg' ((y : d) L.\\ [x]))
 
+  renameAll xys (ConGraph cg d) = do
+    cg' <-
+      mapM
+        ( fmap (M.mapKeys (runIdentity . renameAll xys))
+            . mapM (fmap (M.mapKeys (runIdentity . renameAll xys)) . mapM (renameAll xys))
+        )
+        cg
+    return (ConGraph cg' ((fmap snd xys ++ d) L.\\ fmap fst xys))
+
 -- An empty constraint set
 empty :: ConGraphGen g
 empty = ConGraph M.empty []

@@ -13,6 +13,8 @@ import System.Environment
 
 import Lib
 
+-- cabal new-profile -- +RTS -pj -l-au
+
 initGhcM :: [String] -> Ghc ()
 initGhcM xs = do
     df1 <- getSessionDynFlags

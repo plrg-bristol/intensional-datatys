@@ -14,6 +14,7 @@ import System.Environment
 import Lib
 
 -- cabal new-profile -- +RTS -pj -l-au
+-- https://www.speedscope.app/
 
 initGhcM :: [String] -> Ghc ()
 initGhcM xs = do

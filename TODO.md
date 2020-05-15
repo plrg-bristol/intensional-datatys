@@ -1,5 +1,5 @@
-
-2) exprIsBottom isn't detecting jump??	-> Does a new join point anal pass exist
-
-4) User warnings e.g. ambiguous
-5) User must explicitly turn on ambiguous
+1) check exprIsBottom works as expected
+2) partial online cycle elimination?
+3) unification based unrolling
+4) disable gen let enitrely <- tis too slow
+5) User warnings e.g. ambiguous

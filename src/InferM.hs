@@ -21,6 +21,7 @@ module InferM
     topLevel,
     putVar,
     putVars,
+    emit,
     setLoc,
     saturate,
     runInferM,
@@ -165,6 +166,20 @@ branch' ks x d m = do
 
 setLoc :: Monad m => RealSrcSpan -> InferM s m a -> InferM s m a
 setLoc l = local (\env -> env {inferLoc = RealSrcSpan l})
+
+emit :: Monad m => K l -> K r -> DataType TyCon -> InferM s m ()
+emit k1 k2 d
+  | not (trivial $ orig d) =
+    case toAtomic k1 k2 of
+      Nothing -> do
+        l <- asks inferLoc
+        pprPanic "unsatisfiable cosntraint" (ppr (d, k1, k2, l))
+      Just cs -> do
+        cg <- gets congraph
+        g <- asks branchGuard
+        cg' <- foldM (\cg' (k1, k2) -> insert k1 k2 g (getName <$> d) cg') cg cs
+        modify (\s -> s {congraph = cg'})
+  | otherwise = return ()
 
 runInferM ::
   Monad m =>

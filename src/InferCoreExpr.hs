@@ -7,6 +7,7 @@ module InferCoreExpr
   )
 where
 
+import ConGraph
 import Constraints
 import Control.Monad
 import Control.Monad.RWS
@@ -14,10 +15,8 @@ import CoreUtils
 import qualified Data.List as L
 import qualified Data.Map as M
 import DataTypes
-import Emit
 import FromCore
 import qualified GhcPlugins as Core
-import Guards
 import InferM
 import Name
 import Outputable hiding (empty)
@@ -50,7 +49,7 @@ inferRec top bgs = do
         [ ( n,
             do
               scheme <- infer rhs
-              emitTypeConstraint (body scheme) (body sr)
+              inferSubType (body scheme) (body sr)
               return scheme
           )
           | (x, rhs) <- Core.flattenBinds [bgs],
@@ -64,6 +63,59 @@ inferRec top bgs = do
 -- Infer constraints for a module
 inferProg :: Monad m => Core.CoreProgram -> InferM s m (Context s)
 inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec True) M.empty
+
+inferSubType :: Monad m => Type T -> Type T -> InferM s m ()
+inferSubType (Var _) (Var _) = return ()
+inferSubType Ambiguous _ = return ()
+inferSubType _ Ambiguous = return ()
+inferSubType t1 t2
+  | shape t1 /= shape t2 = do
+    l <- asks inferLoc
+    pprPanic "Types must refine the same sort!" $ ppr (t1, t2, l)
+inferSubType (t11 :=> t12) (t21 :=> t22) =
+  inferSubType t21 t11 >> inferSubType t12 t22
+inferSubType (Inj x d as) (Inj y d' _)
+  | x /= y = do
+    -- Combine Initial and Full datatype constraints
+    unless (d == d') $ do
+      cg <- gets congraph
+      cg' <- mergeLevel x y (fmap getName d) (fmap getName d') cg
+      modify (\s -> s {congraph = cg'})
+    emit (Dom x) (Dom y) (d {level = max (level d) (level d')})
+    slice x y d as
+inferSubType _ _ = return ()
+
+-- Take the slice of a datatype including parity
+slice :: Monad m => Int -> Int -> DataType TyCon -> [Type S] -> InferM s m ()
+slice x y d as = () <$ loop [] True d as
+  where
+    loop :: Monad m => [TyCon] -> Bool -> DataType TyCon -> [Type S] -> InferM s m [TyCon]
+    loop ds p d as
+      | trivial (orig d) || orig d `elem` ds = return ds
+      | otherwise = do
+        c <- asks allowContra
+        foldM
+          ( \ds' k ->
+              ( if c
+                  then branch' [k] x d -- If contraviarnt consturctors are permitted slices need to be guarded
+                  else id
+              )
+                $ do
+                  k_ty <- fromCoreConsInst (k <$ d) as
+                  foldM (`step` p) ds' (fst $ decompTy k_ty)
+          )
+          ds
+          (tyConDataCons $ orig d)
+    step :: Monad m => [TyCon] -> Bool -> Type T -> InferM s m [TyCon]
+    step ds p (Inj _ d' as') = do
+      if p
+        then emit (Dom x) (Dom y) d'
+        else emit (Dom y) (Dom x) d'
+      loop (orig d' : ds) p d' as'
+    step ds p (a :=> b) = do
+      ds' <- step ds (not p) a
+      step ds' p b
+    step ds _ _ = return ds
 
 -- Infer constraints for a program expression
 infer :: Monad m => Core.CoreExpr -> InferM s m (Scheme s)
@@ -79,7 +131,7 @@ infer (Core.Var v) =
           -- Refinable constructor
           (_, Inj x d _) -> do
             s <- mkCon k
-            emitSetConstraint s (Dom x) d >> return scheme
+            emit s (Dom x) d >> return scheme
           -- Unrefinable constructor
           _ -> return scheme
     -- Infer variable
@@ -101,7 +153,7 @@ infer (Core.App e1 e2) = infer e1 >>= \case
   -- This should raise a warning for as /= []!
   Forall as (t3 :=> t4) -> do
     t2 <- mono <$> infer e2
-    emitTypeConstraint t2 t3
+    inferSubType t2 t3
     return $ Forall as t4
   _ -> pprPanic "Term application to non-function!" $ ppr (Core.exprType e1, Core.exprType e2)
 infer (Core.Lam x e)
@@ -142,10 +194,10 @@ infer (Core.Case e bind_e core_ret alts) = do
                   let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
                   branch e [k] rvar d $ do
                     -- Constructor arguments are from the same refinement environment
-                    mapM_ (\(Mono kti) -> emitTypeConstraint (inj rvar kti) kti) ts
+                    mapM_ (\(Mono kti) -> inferSubType (inj rvar kti) kti) ts
                     -- Ensure return type is valid
                     ret_i <- mono <$> putVars ts (infer rhs)
-                    emitTypeConstraint ret_i ret
+                    inferSubType ret_i ret
                   -- Record constructors
                   return (Just k)
                 else return Nothing
@@ -156,12 +208,12 @@ infer (Core.Case e bind_e core_ret alts) = do
           -- Ensure destructor is total if not nested
           top <- topLevel e
           s <- mkSet ks
-          when top $ emitSetConstraint (Dom rvar) s d
+          when top $ emit (Dom rvar) s d
         Just rhs ->
           -- Guard default case by constructors that have not occured
           branch e (tyConDataCons (orig d) L.\\ ks) rvar d $ do
             ret_i <- mono <$> infer rhs
-            emitTypeConstraint ret_i ret
+            inferSubType ret_i ret
     -- Infer an unrefinable case expression
     Base d as ->
       forM_ altf $ \case
@@ -174,17 +226,17 @@ infer (Core.Case e bind_e core_ret alts) = do
             let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
             -- Ensure return type is valid
             ret_i <- mono <$> putVars ts (infer rhs)
-            emitTypeConstraint ret_i ret
+            inferSubType ret_i ret
         (_, _, rhs) -> do
           -- Ensure return type is valid
           ret_i <- mono <$> infer rhs
-          emitTypeConstraint ret_i ret
+          inferSubType ret_i ret
     -- Ambiguous
     _ ->
       mapM_
         ( \(_, _, rhs) -> do
             ret_i <- mono <$> infer rhs
-            emitTypeConstraint ret_i ret
+            inferSubType ret_i ret
         )
         altf
   return $ Mono ret

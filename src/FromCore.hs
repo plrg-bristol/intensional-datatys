@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 
 module FromCore
   ( fromCore,
@@ -8,17 +9,22 @@ module FromCore
     fromCoreCons,
     fromCoreConsInst,
     getExternalName,
+    getVar,
   )
 where
 
+import ConGraph
+import Constraints
 import Control.Monad.RWS
+import qualified Data.List as L
+import qualified Data.Map as M
 import DataTypes
 import GhcPlugins hiding (Expr (..), Type)
 import InferM
 import Scheme
+import ToIface
 import qualified TyCoRep as Tcr
 import Types
-import ToIface
 
 -- Convert a core datatype to the internal representation
 class CoreDataType (e :: Extended) where
@@ -117,3 +123,38 @@ getExternalName a = do
   let n = getName a
   mn <- asks modName
   return $ mkExternalName (nameUnique n) mn (nameOccName n) (nameSrcSpan n)
+
+-- Lookup constrained variable emit its constraints
+getVar :: Monad m => Var -> InferM s m (Scheme s)
+getVar v =
+  asks (M.lookup (getName v) . varEnv) >>= \case
+    Just scheme -> do
+      -- Localise constraints
+      xys <-
+        mapM
+          ( \x -> do
+              y <- fresh
+              return (x, y)
+          )
+          (L.sort $ boundvs scheme)
+      fre_scheme <- renameAll xys scheme {boundvs = []}
+      case constraints fre_scheme of
+        Nothing -> return fre_scheme
+        Just var_cg -> do
+          g <- asks branchGuard
+          var_cg' <- guardWith g var_cg
+          modify (\s -> s {congraph = unionUniq (congraph s) var_cg'})
+          return fre_scheme {constraints = Nothing}
+    Nothing -> do
+      -- Maximise library type
+      var_scheme <- fromCoreScheme $ varType v
+      maximise True (body var_scheme)
+      return var_scheme
+
+-- Maximise/minimise a type
+maximise :: Monad m => Bool -> Type T -> InferM s m ()
+maximise True (Inj x d _) = do
+  l <- asks inferLoc
+  mapM_ (\k -> emit (Con (getName k) l) (Dom x) d) $ tyConDataCons (orig d)
+maximise b (x :=> y) = maximise (not b) x >> maximise b y
+maximise _ _ = return ()

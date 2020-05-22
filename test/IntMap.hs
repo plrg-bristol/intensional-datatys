@@ -258,7 +258,7 @@ notMember :: Key -> IntMap a -> Bool
 notMember k m = not $ member k m
 
 -- | /O(min(n,W))/. Lookup the value at a key in the map.
-lookup :: (Monad m) => Key -> IntMap a -> m a
+lookup :: (MonadFail m) => Key -> IntMap a -> m a
 lookup k t = case lookup' k t of
     Just x -> return x
     Nothing -> fail "Data.IntMap.lookup: Key not found"

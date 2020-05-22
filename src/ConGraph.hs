@@ -8,6 +8,7 @@
 
 module ConGraph
   ( ConGraph,
+    IfConGraph,
     ConGraphGen,
     empty,
     insert,
@@ -25,8 +26,8 @@ import Control.Monad
 import Control.Monad.Except
 import Data.Functor.Identity
 import qualified Data.List as L
-import Data.Map.Merge.Lazy
 import qualified Data.Map as M
+import Data.Map.Merge.Lazy
 import Data.Maybe
 import DataTypes
 import GhcPlugins hiding (L, empty, isEmpty, singleton)
@@ -64,31 +65,30 @@ transSub :: GsM state s m => [RVar] -> SubGraph s -> m (SubGraph s)
 transSub xs orig_graph = do
   -- explore spanning-tree from interface nodes
   (ns, g) <- foldM go ([], orig_graph) $ fmap Dom xs
-
   -- explore spanning-tree from source constructors
   snd <$> foldM go (ns, g) [Con k l | (Con k l) <- M.keys orig_graph]
   where
-    go (ns, g) n =
+    go (ns, es) n =
       case M.lookup n orig_graph of
-        Nothing -> return (ns, g)
+        Nothing -> return (ns, es)
         Just from_n
-          | n `elem` ns -> return (ns, g)
+          | n `elem` ns -> return (ns, es)
           | otherwise ->
             M.foldrWithKey
-              ( \m guard state -> do
+              ( \m g state ->
                   case m of
                     Set _ _ -> state
                     Dom x -> do
                       s <- state
-                      (ns', g') <- go s (Dom x)
-                      case M.lookup (Dom x) g' of
-                        Nothing -> return (ns', g')
+                      (ns', es') <- go s (Dom x)
+                      case M.lookup (Dom x) es' of
+                        Nothing -> return (ns', es')
                         Just from_d -> do
-                          n_via_d <- mapM (||| guard) from_d
-                          g'' <- insertMany n n_via_d g'
+                          n_via_d <- mapM (||| g) from_d
+                          g'' <- insertMany n n_via_d es'
                           return (ns', g'')
               )
-              (return (n : ns, g))
+              (return (n : ns, es))
               from_n
 
 -- Collect the predecessors of intermediate nodes
@@ -118,13 +118,16 @@ predsSub xs orig_graph =
 -- Edges are labelled by possible guards
 type ConGraph s = ConGraphGen (GuardSet s)
 
-data ConGraphGen g = ConGraph
-  { subgraphs :: M.Map (DataType Name) (M.Map (K L) (M.Map (K R) g)),
-    _domain :: [RVar]
-  }
+type IfConGraph = ConGraphGen [[Guard]]
+
+data ConGraphGen g
+  = ConGraph
+      { subgraphs :: M.Map (DataType Name) (M.Map (K L) (M.Map (K R) g)),
+        _domain :: [RVar]
+      }
   deriving (Eq, Functor, Foldable, Traversable)
 
-instance Outputable (ConGraphGen [[Guard]]) where
+instance Outputable IfConGraph where
   ppr (ConGraph cg _) =
     vcat
       [ ppr g <+> pprCon k1 d <+> arrowt <+> pprCon k2 d
@@ -137,7 +140,7 @@ instance Outputable (ConGraphGen [[Guard]]) where
       pprCon k@(Dom _) d = ppr d <> parens (ppr k)
       pprCon k _ = ppr k
 
-instance Binary (ConGraphGen [[Guard]]) where
+instance Binary IfConGraph where
   put_ bh (ConGraph cg d) = put_ bh [(n, [(k1, M.toList m') | (k1, m') <- M.toList m]) | (n, m) <- M.toList cg] >> put_ bh d
   get bh = do
     nl <- get bh
@@ -172,12 +175,12 @@ empty = ConGraph M.empty []
 
 -- Insert an atomic constraint
 insert :: GsM state s m => K L -> K R -> GuardSet s -> DataType Name -> ConGraph s -> m (ConGraph s)
-insert k1 k2 g dty (ConGraph cg dom) = do
+insert k1 k2 g dty (ConGraph cg d) = do
   cg' <- M.alterF (fmap Just . insertSub k1 k2 g . fromMaybe M.empty) dty cg
   let dk1 = runIdentity $ domain k1
   let dk2 = runIdentity $ domain k2
   dg <- domain g
-  return (ConGraph cg' (dk1 `L.union` dk2 `L.union` dg `L.union` dom))
+  return (ConGraph cg' (dk1 `L.union` dk2 `L.union` dg `L.union` d))
 
 -- Guard a constraint graph with by a set of possible guards
 guardWith :: GsM state s m => GuardSet s -> ConGraph s -> m (ConGraph s)
@@ -202,7 +205,6 @@ mergeLevel x y xd yd cg@(ConGraph sg _) = do
       (\xp g mcg -> mcg >>= insert xp (Dom x) g yd)
       (return cg)
       x_preds
-
   -- Add each succ of y to the x datatype level
   M.foldrWithKey
     (\ys g mcg -> mcg >>= insert (Dom y) ys g xd)
@@ -216,12 +218,12 @@ mergeLevel x y xd yd cg@(ConGraph sg _) = do
 
 -- Restrict a constraint graph to it's interface and check satisfiability
 restrict :: GsM state s m => [RVar] -> ConGraph s -> ExceptT (DataType Name, K L, K R) m (ConGraph s)
-restrict interface (ConGraph cg d) = do
-  cg' <- mapM (transSub interface) cg
-  let preds = predsSub (d L.\\ interface) <$> cg'
+restrict interface (ConGraph cg cg_dom) = do
+  cg' <- lift $ mapM (transSub interface) cg
+  let preds = predsSub (cg_dom L.\\ interface) <$> cg'
   sgs <-
     M.traverseWithKey
-      ( \d ->
+      ( \dty ->
           M.traverseMaybeWithKey
             ( \l rs ->
                 case l of
@@ -233,11 +235,11 @@ restrict interface (ConGraph cg d) = do
                             case r of
                               Dom x | x `notElem` interface -> return Nothing
                               _ -> do
-                                new_guard <- applyPreds preds g
-                                e <- isEmpty new_guard
+                                new_guard <- lift $ applyPreds preds g
+                                e <- lift $ isEmpty new_guard
                                 if safe l r || e
                                   then return $ Just new_guard
-                                  else throwError (d, l, r)
+                                  else throwError (dty, l, r)
                         )
                         rs
             )

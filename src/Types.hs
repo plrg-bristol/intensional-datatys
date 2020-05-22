@@ -1,37 +1,33 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE UndecidableInstances #-}
 
 module Types
   ( RVar,
     Refined (..),
     Extended (..),
-    Type (..),
+    Type,
+    IfType,
+    TypeGen (..),
     inj,
     shape,
     applyType,
     subTyVar,
     decompTy,
-    unrollUnder,
-    promoteTy,
+    increaseLevel,
   )
 where
 
 import Binary
 import Control.Monad
-import Data.Functor.Identity
 import qualified Data.List as L
 import DataTypes
 import GhcPlugins hiding (Expr (..), Type)
 import IfaceType
-import ToIface
-import qualified TyCoRep as Tcr
 import Prelude hiding ((<>))
 
 -- Refinement variable
@@ -59,64 +55,66 @@ class Refined t m where
 data Extended = S | T
 
 -- Monomorphic types
-data Type (e :: Extended) d where
-  Var :: Name -> Type e d
-  App :: Type e d -> Type S d -> Type e d
-  Base :: d -> [Type S d] -> Type e d
-  Data :: DataType d -> [Type S d] -> Type S d
-  Inj :: RVar -> DataType d -> [Type S d] -> Type T d
-  (:=>) :: Type e d -> Type e d -> Type e d
-  Lit :: IfaceTyLit -> Type e d
-  -- Ambiguous hides higher-ranked types and casts
-  Ambiguous :: Type e d
+type Type e = TypeGen e TyCon
 
-deriving instance Functor (Type e)
+type IfType e = TypeGen e IfaceTyCon
+
+data TypeGen (e :: Extended) d where
+  Var :: Name -> TypeGen e d
+  App :: TypeGen e d -> TypeGen S d -> TypeGen e d
+  Base :: d -> [TypeGen S d] -> TypeGen e d
+  Data :: DataType d -> [TypeGen S d] -> TypeGen S d
+  Inj :: RVar -> DataType d -> [TypeGen S d] -> TypeGen T d
+  (:=>) :: TypeGen e d -> TypeGen e d -> TypeGen e d
+  Lit :: IfaceTyLit -> TypeGen e d
+  -- Ambiguous hides higher-ranked types and casts
+  Ambiguous :: TypeGen d e
+
+deriving instance (Functor (TypeGen e))
+
+deriving instance (Foldable (TypeGen e))
+
+deriving instance (Traversable (TypeGen e))
 
 -- Compare type shapes
-instance Eq d => Eq (Type S d) where
+instance Eq (Type S) where
   Ambiguous == _ = True
   _ == Ambiguous = True
   Var _ == Var _ = True
   App f a == App g b = f == g && a == b
   Base f a == Base g b = f == g && a == b
-  Data f a == Data g b = underlying f == underlying g && a == b
-  Data f a == Base g b = underlying f == g && a == b
-  Base f a == Data g b = underlying g == f && a == b
+  Data f a == Data g b = orig f == orig g && a == b
+  Data f a == Base g b = orig f == g && a == b
+  Base f a == Data g b = orig g == f && a == b
   (a :=> b) == (c :=> d) = a == c && b == d
   Lit l == Lit l' = l == l'
   _ == _ = False
 
 -- Clone of a Outputable Core.Type
-instance Outputable d => Outputable (Type e d) where
+instance Outputable d => Outputable (TypeGen e d) where
   ppr = pprTy topPrec
     where
-      pprTy :: Outputable d => PprPrec -> Type e d -> SDoc
+      pprTy :: Outputable d => PprPrec -> TypeGen e d -> SDoc
       pprTy _ (Var a) = ppr a
       pprTy prec (App t1 t2) =
         hang
           (pprTy prec t1)
           2
           (pprTy appPrec t2)
-      pprTy _ (Base b as) =
-        hang
-          (ppr b)
-          2
-          (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
-      pprTy _ (Data b as) =
-        hang
-          (ppr b)
-          2
-          (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
+      pprTy _ (Base b as) = withArgs (ppr b) as
+      pprTy _ (Data d as) = withArgs (ppr d) as
       pprTy prec (Inj x d as) =
-        hang
+        withArgs
           (maybeParen prec appPrec $ sep [text "inj", ppr x, ppr d])
-          2
-          (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
+          as
       pprTy prec (t1 :=> t2) = maybeParen prec funPrec $ sep [pprTy funPrec t1, arrow <+> pprTy prec t2]
       pprTy _ (Lit l) = ppr l
       pprTy _ Ambiguous = unicodeSyntax (char '□') (text "ambiguous")
+      withArgs :: Outputable d => SDoc -> [TypeGen e d] -> SDoc
+      withArgs d as =
+        hang d 2 (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
 
-instance Binary (Type T IfaceTyCon) where
+instance Binary (IfType T) where
   put_ bh (Var a) = put_ bh (0 :: Int) >> put_ bh a
   put_ bh (App a b) = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Base b as) = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
@@ -137,7 +135,7 @@ instance Binary (Type T IfaceTyCon) where
       6 -> return Ambiguous
       _ -> pprPanic "Invalid binary file!" $ ppr n
 
-instance Binary (Type S IfaceTyCon) where
+instance Binary (IfType S) where
   put_ bh (Var a) = put_ bh (0 :: Int) >> put_ bh a
   put_ bh (App a b) = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Base b as) = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
@@ -158,12 +156,8 @@ instance Binary (Type S IfaceTyCon) where
       6 -> return Ambiguous
       _ -> pprPanic "Invalid binary file!" $ ppr ()
 
-instance Binary (Type e IfaceTyCon) => Binary (Type e TyCon) where
-  put_ bh = put_ bh . fmap toIfaceTyCon
-  get _ = pprPanic "Cannot write non-interface types to file" $ ppr ()
-
-instance Refined (Type T d) Identity where
-  domain (Inj x _ as) = return [x]
+instance Monad m => Refined (TypeGen T d) m where
+  domain (Inj x _ _) = return [x]
   domain (a :=> b) = liftM2 L.union (domain a) (domain b)
   domain _ = return []
 
@@ -174,7 +168,7 @@ instance Refined (Type T d) Identity where
   rename _ _ t = return t
 
 -- Inject a sort into a refinement environment
-inj :: RVar -> Type e d -> Type T d
+inj :: RVar -> Type e -> Type T
 inj _ (Var a) = Var a
 inj x (App a b) = App (inj x a) b
 inj _ (Base d as) = Base d as
@@ -185,7 +179,7 @@ inj _ (Lit l) = Lit l
 inj _ Ambiguous = Ambiguous
 
 -- The shape of a type
-shape :: Type e d -> Type S d
+shape :: Type e -> Type S
 shape (Var a) = Var a
 shape (App a b) = App (shape a) b
 shape (Base d as) = Base d as
@@ -196,7 +190,7 @@ shape (Lit l) = Lit l
 shape Ambiguous = Ambiguous
 
 -- Type application
-applyType :: Outputable d => Type e d -> Type S d -> Type e d
+applyType :: Type e -> Type S -> Type e
 applyType Ambiguous _ = Ambiguous
 applyType (Base b as) t = Base b (as ++ [t])
 applyType (Data b as) t = Data b (as ++ [t])
@@ -206,7 +200,7 @@ applyType (App a b) t = App (App a b) t
 applyType t t' = pprPanic "The type is saturated!" $ ppr (t, t')
 
 -- Type variable substitution
-subTyVar :: Outputable d => Name -> Type e d -> Type e d -> Type e d
+subTyVar :: Name -> Type e -> Type e -> Type e
 subTyVar a t (Var a')
   | a == a' = t
   | otherwise = Var a'
@@ -218,35 +212,19 @@ subTyVar a t (Inj x d as) = Inj x d (subTyVar a (shape t) <$> as)
 subTyVar _ _ t = t
 
 -- Decompose a functions into its arguments and eventual return type
-decompTy :: Type e d -> ([Type e d], Type e d)
+decompTy :: Type e -> ([Type e], Type e)
 decompTy (a :=> b) =
   let (as, r) = decompTy b
    in (as ++ [a], r)
 decompTy t = ([], t)
 
 -- Unroll a datatype when it is "under" itself
-unrollUnder :: Eq d => d -> Type e d -> Type e d
-unrollUnder d (Data d' as)
-  | d == underlying d' = Data (Level1 d) (unrollUnder d <$> as)
-unrollUnder d (Base d' as) = Base d' (unrollUnder d <$> as)
-unrollUnder d (Inj x d' as)
-  | d == underlying d' = Inj x (Level1 d) (unrollUnder d <$> as)
-unrollUnder d (t :=> t') = unrollUnder d t :=> unrollUnder d t'
-unrollUnder d (App a b) = App (unrollUnder d a) (unrollUnder d b)
-unrollUnder _ t = t
-
--- Lift a iface type to a full type
-promoteTy :: Tcr.Type -> Type e IfaceTyCon -> Type e TyCon
-promoteTy (Tcr.TyConApp tc args) t
-  | isTypeSynonymTyCon tc, -- Type synonym
-    Just (as, s) <- synTyConDefn_maybe tc =
-    promoteTy (substTy (extendTvSubstList emptySubst (zip as args)) s) t
-promoteTy _ (Var a) = Var a
-promoteTy (Tcr.AppTy a' b') (App a b) = App (promoteTy a' a) (promoteTy b' b)
-promoteTy (Tcr.TyConApp tc as') (Data d as) = Data (tc <$ d) (uncurry promoteTy <$> zip as' as)
-promoteTy (Tcr.TyConApp tc as') (Inj x d as) = Inj x (tc <$ d) (uncurry promoteTy <$> zip as' as)
-promoteTy (Tcr.TyConApp tc as') (Base d as) = Base tc (uncurry promoteTy <$> zip as' as)
-promoteTy (Tcr.FunTy a' b') (a :=> b) = promoteTy a' a :=> promoteTy b' b
-promoteTy _ (Lit l) = Lit l
-promoteTy _ Ambiguous = Ambiguous
-promoteTy t i = pprPanic "Interface type does not align with term type!" $ ppr (t, i)
+increaseLevel :: TyCon -> Type e -> Type e
+increaseLevel d (Data d' as)
+  | d == orig d' = Data d' {level = Full} (increaseLevel d <$> as)
+increaseLevel d (Base d' as) = Base d' (increaseLevel d <$> as)
+increaseLevel d (Inj x d' as)
+  | d == orig d' = Inj x d' {level = Full} (increaseLevel d <$> as)
+increaseLevel d (t :=> t') = increaseLevel d t :=> increaseLevel d t'
+increaseLevel d (App a b) = App (increaseLevel d a) (increaseLevel d b)
+increaseLevel _ t = t

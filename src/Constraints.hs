@@ -9,12 +9,11 @@ module Constraints
     K (..),
     safe,
     toAtomic,
-    getConstraintLoc
+    constraintLoc,
   )
 where
 
 import Binary
-import Data.Functor.Identity
 import GhcPlugins hiding (L)
 import Types
 import Prelude hiding ((<>))
@@ -73,7 +72,7 @@ instance Binary (K R) where
       then Dom <$> get bh
       else Set . mkUniqSet <$> get bh <*> get bh
 
-instance Refined (K l) Identity where
+instance Monad m => Refined (K l) m where
   domain (Dom x) = return [x]
   domain _ = return []
 
@@ -102,7 +101,7 @@ toAtomic k1 k2
   | safe k1 k2 = Just []
   | otherwise = Nothing
 
-getConstraintLoc :: K l -> Maybe SrcSpan
-getConstraintLoc (Dom _) = Nothing
-getConstraintLoc (Set _ l) = Just l
-getConstraintLoc (Con _ l) = Just l
+constraintLoc :: K l -> Maybe SrcSpan
+constraintLoc (Dom _) = Nothing
+constraintLoc (Set _ l) = Just l
+constraintLoc (Con _ l) = Just l

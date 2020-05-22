@@ -1,52 +1,50 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Scheme
-  ( Scheme (..),
+  ( Scheme,
+    IfScheme,
+    SchemeGen (..),
     pattern Mono,
     pattern Forall,
     mono,
-    promoteSch,
   )
 where
 
 import Binary
 import ConGraph
-import Data.Bifunctor
-import Data.Functor.Identity
 import qualified Data.List as L
-import DataTypes
 import GhcPlugins hiding (Type, empty)
-import Guards
-import IfaceType
-import qualified TyCoRep as Tcr
 import Types
 import Prelude hiding ((<>))
 
 -- Constrained polymorphic types
-data Scheme d g = Scheme
-  { tyvars :: [Name],
-    boundvs :: [Int],
-    body :: Type T d,
-    constraints :: Maybe (ConGraphGen g)
-  }
+type Scheme s = SchemeGen (Type T) (ConGraph s)
 
-deriving instance (Foldable (Scheme d))
+type IfScheme = SchemeGen (IfType T) IfConGraph
 
-deriving instance (Functor (Scheme d))
+data SchemeGen t g
+  = Scheme
+      { tyvars :: [Name],
+        boundvs :: [Int],
+        body :: t,
+        constraints :: Maybe g
+      }
 
-deriving instance (Traversable (Scheme d))
+instance Binary IfScheme where
+  put_ bh scheme =
+    put_ bh (tyvars scheme)
+      >> put_ bh (boundvs scheme)
+      >> put_ bh (body scheme)
+      >> put_ bh (constraints scheme)
 
-instance Bifunctor Scheme where
-  bimap f g (Scheme ty bvs bod cons) = Scheme ty bvs (fmap f bod) (fmap (fmap g) cons)
+  get bh = Scheme <$> get bh <*> get bh <*> get bh <*> get bh
 
-instance Outputable d => Outputable (Scheme d [[Guard]]) where
+instance Outputable d => Outputable (SchemeGen d IfConGraph) where
   ppr scheme =
     case constraints scheme of
       Just cs
@@ -64,14 +62,9 @@ instance Outputable d => Outputable (Scheme d [[Guard]]) where
         | null (boundvs scheme) = text ""
         | otherwise = forAllLit <+> fsep (ppr <$> boundvs scheme) <> dot
 
-instance Binary (Type T d) => Binary (Scheme d [[Guard]]) where
-  put_ bh scheme = put_ bh (tyvars scheme) >> put_ bh (boundvs scheme) >> put_ bh (body scheme) >> put_ bh (constraints scheme)
-
-  get bh = Scheme <$> get bh <*> get bh <*> get bh <*> get bh
-
-instance (GsM state s m, Refined g m, Refined (Type T d) Identity) => Refined (Scheme d g) m where
+instance (Monad m, Refined d m, Refined g m) => Refined (SchemeGen d g) m where
   domain s = do
-    let db = runIdentity (domain (body s))
+    db <- domain (body s)
     case constraints s of
       Nothing -> return (db L.\\ boundvs s)
       Just cg -> do
@@ -82,7 +75,7 @@ instance (GsM state s m, Refined g m, Refined (Type T d) Identity) => Refined (S
     | x `elem` boundvs s = return s
     | y `elem` boundvs s = pprPanic "Alpha renaming of polymorphic types is not implemented!!" $ ppr (x, y)
     | otherwise = do
-      let bod = runIdentity (rename x y $ body s)
+      bod <- rename x y $ body s
       cg <- mapM (rename x y) $ constraints s
       return $
         Scheme
@@ -93,7 +86,7 @@ instance (GsM state s m, Refined g m, Refined (Type T d) Identity) => Refined (S
           }
 
   renameAll xys s = do
-    let bod = runIdentity (renameAll xys $ body s)
+    bod <- renameAll xys $ body s
     cg <- mapM (renameAll xys) $ constraints s
     return $
       Scheme
@@ -103,7 +96,7 @@ instance (GsM state s m, Refined g m, Refined (Type T d) Identity) => Refined (S
           constraints = cg
         }
 
-pattern Mono :: Type T d -> Scheme d g
+pattern Mono :: t -> SchemeGen t g
 pattern Mono t =
   Scheme
     { tyvars = [],
@@ -112,7 +105,7 @@ pattern Mono t =
       constraints = Nothing
     }
 
-pattern Forall :: [Name] -> Type T d -> Scheme d g
+pattern Forall :: [Name] -> t -> SchemeGen t g
 pattern Forall as t =
   Scheme
     { tyvars = as,
@@ -122,10 +115,6 @@ pattern Forall as t =
     }
 
 -- Demand a monomorphic type
-mono :: (GsM state s m, Outputable d) => Scheme d (GuardSet s) -> m (Type T d)
-mono (Mono t) = return t
-mono s = pprPanic "Higher rank types are unimplemented!" . ppr <$> mapM toList s
-
--- Lift a scheme from interface with the help of a core type
-promoteSch :: Tcr.Type -> Scheme IfaceTyCon g -> Scheme TyCon g
-promoteSch shape (Scheme bvs tyvs body cs) = Scheme bvs tyvs (promoteTy shape body) cs
+mono :: Scheme s -> Type T
+mono (Mono t) = t
+mono _ = Ambiguous

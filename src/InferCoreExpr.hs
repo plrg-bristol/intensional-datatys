@@ -64,7 +64,7 @@ inferRec top bgs = do
 inferProg :: Monad m => Core.CoreProgram -> InferM s m (Context s)
 inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec True) M.empty
 
-inferSubType :: Monad m => Type T -> Type T -> InferM s m ()
+inferSubType :: Monad m => Type 'T -> Type 'T -> InferM s m ()
 inferSubType (Var _) (Var _) = return ()
 inferSubType Ambiguous _ = return ()
 inferSubType _ Ambiguous = return ()
@@ -82,15 +82,15 @@ inferSubType (Inj x d as) (Inj y d' _)
       cg' <- mergeLevel x y (fmap getName d) (fmap getName d') cg
       modify (\s -> s {congraph = cg'})
     emit (Dom x) (Dom y) (d {level = max (level d) (level d')})
-    slice x y d as
+    slice x y (d, as)
 inferSubType _ _ = return ()
 
 -- Take the slice of a datatype including parity
-slice :: Monad m => Int -> Int -> DataType TyCon -> [Type S] -> InferM s m ()
-slice x y d as = () <$ loop [] True d as
+slice :: Monad m => Int -> Int -> (DataType TyCon, [Type 'S]) -> InferM s m ()
+slice x y = void. loop [] True
   where
-    loop :: Monad m => [TyCon] -> Bool -> DataType TyCon -> [Type S] -> InferM s m [TyCon]
-    loop ds p d as
+    loop :: Monad m => [TyCon] -> Bool -> (DataType TyCon, [Type 'S]) -> InferM s m [TyCon]
+    loop ds p (d, as)
       | trivial (orig d) || orig d `elem` ds = return ds
       | otherwise = do
         c <- asks allowContra
@@ -106,12 +106,12 @@ slice x y d as = () <$ loop [] True d as
           )
           ds
           (tyConDataCons $ orig d)
-    step :: Monad m => [TyCon] -> Bool -> Type T -> InferM s m [TyCon]
+    step :: Monad m => [TyCon] -> Bool -> Type 'T -> InferM s m [TyCon]
     step ds p (Inj _ d' as') = do
       if p
         then emit (Dom x) (Dom y) d'
         else emit (Dom y) (Dom x) d'
-      loop (orig d' : ds) p d' as'
+      loop (orig d' : ds) p (d', as')
     step ds p (a :=> b) = do
       ds' <- step ds (not p) a
       step ds' p b
@@ -215,7 +215,7 @@ infer (Core.Case e bind_e core_ret alts) = do
             ret_i <- mono <$> infer rhs
             inferSubType ret_i ret
     -- Infer an unrefinable case expression
-    Base d as ->
+    Base _ as ->
       forM_ altf $ \case
         (Core.DataAlt k, xs, rhs) -> do
           k' <- defaultLevel k
@@ -255,10 +255,9 @@ infer _ = error "Unimplemented"
 mapMaybeM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
 mapMaybeM op = foldr f (return [])
   where
-    f x xs = do
-      x <- op x
-      case x of
+    f x xs =
+      op x >>= \case
         Nothing -> xs
-        Just x -> do
-          xs <- xs
-          return (x : xs)
+        Just y -> do
+          ys <- xs
+          return (y : ys)

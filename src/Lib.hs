@@ -37,6 +37,11 @@ inferGuts :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
   start <- liftIO getCurrentTime
   when ("srcDump" `elem` cmd) $ pprTraceM "" (ppr p)
+
+  -- Read command line arguments
+  let allowContra = True
+  let unrollDataTypes = True
+
   -- Reload saved typeschemes
   deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
   hask <- getHscEnv
@@ -64,13 +69,13 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
         M.empty
         deps
   -- Infer constraints
-  gamma <-
+  (gamma, errs) <-
     runInferM
       ( inferProg (dependancySort p)
           >>= mapM (\(Scheme tyvs dvs t g) -> Scheme tyvs dvs (fmap toIfaceTyCon t) <$> mapM (mapM toList) g)
       )
-      True
-      True
+      unrollDataTypes
+      allowContra
       m
       env
   -- Display typeschemes
@@ -82,6 +87,8 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
           putStrLn ""
       )
     $ M.toList gamma
+  -- Display errors
+  liftIO $ mapM_ (putStrLn . showSDocUnsafe . ppr) errs
   -- Save typescheme to temporary file
   exist <- liftIO $ doesDirectoryExist "interface"
   liftIO $ unless exist (createDirectory "interface")

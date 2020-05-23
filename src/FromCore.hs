@@ -28,14 +28,14 @@ import Types
 
 -- Convert a core datatype to the internal representation
 class CoreDataType (e :: Extended) where
-  mkDataType :: Monad m => TyCon -> [Type S] -> InferM s m (Type e)
+  mkDataType :: Monad m => TyCon -> [Type 'S] -> InferM s m (Type e)
 
-instance CoreDataType S where
+instance CoreDataType 'S where
   mkDataType d as = do
     u <- asks unrollDataTypes
     return $ Data (DataType (if u then Initial else Neutral) d) as
 
-instance CoreDataType T where
+instance CoreDataType 'T where
   mkDataType d as = do
     x <- fresh
     u <- asks unrollDataTypes
@@ -89,7 +89,7 @@ fromCoreCons k = do
   args <- mapM fromCore $ dataConOrigArgTys (orig k)
   -- Unroll datatype
   u <- asks unrollDataTypes
-  let args' = if u then fmap (increaseLevel d) args else args :: [Type S]
+  let args' = if u then fmap (increaseLevel d) args else args :: [Type 'S]
   -- Inject
   let args'' = fmap (inj x) args'
   -- Rebuild type
@@ -99,7 +99,7 @@ fromCoreCons k = do
 
 -- Extract a constructor's type with tyvars instantiated
 -- We assume there are no existentially quantified tyvars
-fromCoreConsInst :: Monad m => DataType DataCon -> [Type S] -> InferM s m (Type T)
+fromCoreConsInst :: Monad m => DataType DataCon -> [Type 'S] -> InferM s m (Type 'T)
 fromCoreConsInst k tyargs = do
   let d = dataConTyCon (orig k)
   x <- fresh
@@ -113,7 +113,7 @@ fromCoreConsInst k tyargs = do
   let res = Inj x (d <$ k) tyargs
   return $ foldr (:=>) res (reverse args'')
   where
-    inst :: Type S -> Type S
+    inst :: Type 'S -> Type 'S
     inst t = foldr (uncurry subTyVar) t (zip (fmap getName $ dataConUnivAndExTyCoVars $ orig k) tyargs)
 
 -- Prepare name for interface
@@ -139,7 +139,9 @@ getVar v =
           (L.sort $ boundvs scheme)
       fre_scheme <- renameAll xys scheme {boundvs = []}
       case constraints fre_scheme of
-        Nothing -> return fre_scheme
+        Nothing ->
+          -- In this case is the variable in unsatisfiable?
+          return fre_scheme
         Just var_cg -> do
           g <- asks branchGuard
           var_cg' <- guardWith g var_cg
@@ -152,7 +154,7 @@ getVar v =
       return var_scheme
 
 -- Maximise/minimise a type
-maximise :: Monad m => Bool -> Type T -> InferM s m ()
+maximise :: Monad m => Bool -> Type 'T -> InferM s m ()
 maximise True (Inj x d _) = do
   l <- asks inferLoc
   mapM_ (\k -> emit (Con (getName k) l) (Dom x) d) $ tyConDataCons (orig d)

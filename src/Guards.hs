@@ -51,23 +51,21 @@ class MonadState state m => GsM state s m | m -> state, m -> s where
 
 -- Operation DSL
 data Memo
-  = And ID ID
-  | Or ID ID
-  deriving (Eq, Ord)
+  = And {-# UNPACK #-} !ID {-# UNPACK #-} !ID
+  | Or {-# UNPACK #-} !ID {-# UNPACK #-} !ID
+  deriving (Eq, Ord, Generic)
+
+instance Hashable Memo
 
 -- A guard atom, i.e. a set of constraints of the form k in (X, d)
 data Guard = Guard Name RVar (DataType Name)
-  deriving (Eq, Ord, Generic)
+  deriving (Eq, Ord)
 
-instance Hashable Name where
-  hashWithSalt s = hashWithSalt s . getKey . getUnique
-
-instance Hashable Guard
+instance Hashable Guard where
+  hashWithSalt s (Guard n r dt) = hashWithSalt s (hashWithSalt s $ getKey $ getUnique n, r, fmap (getKey . getUnique) dt)
 
 instance Outputable Guard where
-  ppr (Guard k x d) = ppr k <+> elem <+> ppr x <> parens (ppr d)
-    where
-      elem = unicodeSyntax (char '∈') (text "in")
+  ppr (Guard k x d) = ppr k <+> unicodeSyntax (char '∈') (text "in") <+> ppr x <> parens (ppr d)
 
 instance B.Binary Guard where
   put_ bh (Guard k x d) = B.put_ bh k *> B.put_ bh x *> B.put_ bh d
@@ -146,7 +144,7 @@ mkGuardSet n
 (|||) Bot q = return q
 (|||) p Bot = return p
 (|||) p@(ID i) q@(ID j) =
-  memo (And i j) $ do
+  memo (Or i j) $ do
     n <- lookupNode i
     m <- lookupNode j
     case compare (atom n) (atom m) of
@@ -170,7 +168,7 @@ mkGuardSet n
 (&&&) Bot _ = return Bot
 (&&&) _ Bot = return Bot
 (&&&) p@(ID i) q@(ID j) =
-  memo (Or i j) $ do
+  memo (And i j) $ do
     n <- lookupNode i
     m <- lookupNode j
     case compare (atom n) (atom m) of
@@ -198,7 +196,7 @@ bind f (ID i) = do
   singleton (atom n) >>= (&&& hi') >>= (||| lo')
 
 -- The predecessors of a particular refinement variable at a datatype
-type PredMap s = M.Map (DataType Name) (M.Map RVar (M.Map (K L) (GuardSet s)))
+type PredMap s = M.Map (DataType Name) (M.Map RVar (M.Map (K 'L) (GuardSet s)))
 
 applyPreds :: GsM state s m => PredMap s -> GuardSet s -> m (GuardSet s)
 applyPreds preds =

@@ -9,6 +9,7 @@
 
 module InferM
   ( InferM,
+    Error,
     InferEnv (..),
     InferState (..),
     Context,
@@ -31,8 +32,8 @@ where
 import ConGraph
 import Constraints
 import Control.Monad.Except hiding (guard)
-import Control.Monad.RWS hiding (guard)
-import qualified Data.HashMap.Lazy as H
+import Control.Monad.RWS.Strict hiding (guard, (<>))
+import qualified Data.HashMap.Strict as H
 import qualified Data.IntMap as I
 import qualified Data.List as L
 import qualified Data.Map as M
@@ -41,9 +42,24 @@ import GhcPlugins hiding (L, Type, empty)
 import Guards
 import Scheme
 import Types
+import Outputable hiding (empty)
+import Prelude hiding ((<>))
+
+data Error
+  = Error
+      {
+        collision :: SrcSpan,
+        constraint :: (DataType Name, K 'L, K 'R)
+      }
+
+instance Outputable Error where
+  ppr Error { collision = c, constraint = (_, l, r)} = 
+    text "The construct: " <> ppr l <> text "arising at: " <> ppr (constraintLoc l) <>
+    text "can colide with the pattern: " <> ppr r <> text "arising at: " <> ppr (constraintLoc r) <>
+    text "When in the function: " <> ppr c
 
 -- The inference monad
-type InferM s m = RWST (InferEnv s) () (InferState s) m
+type InferM s m = RWST (InferEnv s) [Error] (InferState s) m
 
 data InferEnv s
   = InferEnv
@@ -61,7 +77,7 @@ data InferState s
       { freshRVar :: RVar,
         congraph :: ConGraph s,
         -- Binary decision diagram state
-        memo :: M.Map Memo (GuardSet s),
+        memo :: H.HashMap Memo (GuardSet s),
         freshId :: ID,
         nodes :: I.IntMap (Node s),
         hashes :: H.HashMap (Node s) ID
@@ -83,10 +99,10 @@ instance Monad m => GsM (InferState s) s (InferM s m) where
         }
     return i
   memo op a =
-    gets (M.lookup op . InferM.memo) >>= \case
+    gets (H.lookup op . InferM.memo) >>= \case
       Nothing -> do
         r <- a
-        modify (\s -> s {InferM.memo = M.insert op r (InferM.memo s)})
+        modify (\s -> s {InferM.memo = H.insert op r (InferM.memo s)})
         return r
       Just r -> return r
 
@@ -98,12 +114,12 @@ fresh = do
   return i
 
 -- Make constructors tagged by the current location
-mkCon :: Monad m => DataCon -> InferM s m (K L)
+mkCon :: Monad m => DataCon -> InferM s m (K 'L)
 mkCon k = do
   l <- asks inferLoc
   return (Con (getName k) l)
 
-mkSet :: Monad m => [DataCon] -> InferM s m (K R)
+mkSet :: Monad m => [DataCon] -> InferM s m (K 'R)
 mkSet ks = do
   l <- asks inferLoc
   return (Set (mkUniqSet (getName <$> ks)) l)
@@ -177,7 +193,7 @@ emit k1 k2 d
       Just cs -> do
         cg <- gets congraph
         g <- asks branchGuard
-        cg' <- foldM (\cg' (k1, k2) -> insert k1 k2 g (getName <$> d) cg') cg cs
+        cg' <- foldM (\cg' (k1', k2') -> insert k1' k2' g (getName <$> d) cg') cg cs
         modify (\s -> s {congraph = cg'})
   | otherwise = return ()
 
@@ -187,17 +203,16 @@ runInferM ::
   Bool ->
   Bool ->
   Module ->
-  M.Map Name (SchemeGen (Type T) IfConGraph) ->
-  m a
+  M.Map Name (SchemeGen (Type 'T) IfConGraph) ->
+  m (a, [Error])
 runInferM run unroll allow_contra mod_name init_env =
-  fst
-    <$> evalRWST
+  evalRWST
       ( do
           env <- mapM (\(Scheme tyvs dvs t g) -> Scheme tyvs dvs t <$> mapM (mapM fromList) g) init_env
           local (\e -> e {varEnv = env}) run
       )
       (InferEnv unroll allow_contra mod_name [] Top M.empty (UnhelpfulSpan (mkFastString "Top level")))
-      (InferState 0 empty M.empty 0 I.empty H.empty)
+      (InferState 0 empty H.empty 0 I.empty H.empty)
 
 -- Transitively remove local constraints and attach them to variables
 saturate :: Monad m => Context s -> InferM s m (Context s)
@@ -211,5 +226,7 @@ saturate ts = do
     >>= \case
       Left e -> do
         l <- asks inferLoc
-        pprPanic "The program is unsafe!" (ppr (e, l))
+        tell [Error { collision = l, constraint = e }]
+        -- Continue ignoring the constraints from this recursive group
+        return ((\s -> s {boundvs = interface, constraints = Nothing}) <$> ts)
       Right cg' -> return ((\s -> s {boundvs = interface, constraints = Just cg'}) <$> ts)

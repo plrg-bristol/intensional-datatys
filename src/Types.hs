@@ -61,10 +61,10 @@ type IfType e = TypeGen e IfaceTyCon
 
 data TypeGen (e :: Extended) d where
   Var :: Name -> TypeGen e d
-  App :: TypeGen e d -> TypeGen S d -> TypeGen e d
-  Base :: d -> [TypeGen S d] -> TypeGen e d
-  Data :: DataType d -> [TypeGen S d] -> TypeGen S d
-  Inj :: RVar -> DataType d -> [TypeGen S d] -> TypeGen T d
+  App :: TypeGen e d -> TypeGen 'S d -> TypeGen e d
+  Base :: d -> [TypeGen 'S d] -> TypeGen e d
+  Data :: DataType d -> [TypeGen 'S d] -> TypeGen 'S d
+  Inj :: RVar -> DataType d -> [TypeGen 'S d] -> TypeGen 'T d
   (:=>) :: TypeGen e d -> TypeGen e d -> TypeGen e d
   Lit :: IfaceTyLit -> TypeGen e d
   -- Ambiguous hides higher-ranked types and casts
@@ -77,7 +77,7 @@ deriving instance (Foldable (TypeGen e))
 deriving instance (Traversable (TypeGen e))
 
 -- Compare type shapes
-instance Eq (Type S) where
+instance Eq (Type 'S) where
   Ambiguous == _ = True
   _ == Ambiguous = True
   Var _ == Var _ = True
@@ -114,7 +114,7 @@ instance Outputable d => Outputable (TypeGen e d) where
       withArgs d as =
         hang d 2 (sep $ fmap ((text "@" <>) . pprTy appPrec) as)
 
-instance Binary (IfType T) where
+instance Binary (IfType 'T) where
   put_ bh (Var a) = put_ bh (0 :: Int) >> put_ bh a
   put_ bh (App a b) = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Base b as) = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
@@ -135,7 +135,7 @@ instance Binary (IfType T) where
       6 -> return Ambiguous
       _ -> pprPanic "Invalid binary file!" $ ppr n
 
-instance Binary (IfType S) where
+instance Binary (IfType 'S) where
   put_ bh (Var a) = put_ bh (0 :: Int) >> put_ bh a
   put_ bh (App a b) = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
   put_ bh (Base b as) = put_ bh (2 :: Int) >> put_ bh b >> put_ bh as
@@ -156,7 +156,7 @@ instance Binary (IfType S) where
       6 -> return Ambiguous
       _ -> pprPanic "Invalid binary file!" $ ppr ()
 
-instance Monad m => Refined (TypeGen T d) m where
+instance Monad m => Refined (TypeGen 'T d) m where
   domain (Inj x _ _) = return [x]
   domain (a :=> b) = liftM2 L.union (domain a) (domain b)
   domain _ = return []
@@ -168,7 +168,7 @@ instance Monad m => Refined (TypeGen T d) m where
   rename _ _ t = return t
 
 -- Inject a sort into a refinement environment
-inj :: RVar -> Type e -> Type T
+inj :: RVar -> Type e -> Type 'T
 inj _ (Var a) = Var a
 inj x (App a b) = App (inj x a) b
 inj _ (Base d as) = Base d as
@@ -179,7 +179,7 @@ inj _ (Lit l) = Lit l
 inj _ Ambiguous = Ambiguous
 
 -- The shape of a type
-shape :: Type e -> Type S
+shape :: Type e -> Type 'S
 shape (Var a) = Var a
 shape (App a b) = App (shape a) b
 shape (Base d as) = Base d as
@@ -190,7 +190,7 @@ shape (Lit l) = Lit l
 shape Ambiguous = Ambiguous
 
 -- Type application
-applyType :: Type e -> Type S -> Type e
+applyType :: Type e -> Type 'S -> Type e
 applyType Ambiguous _ = Ambiguous
 applyType (Base b as) t = Base b (as ++ [t])
 applyType (Data b as) t = Data b (as ++ [t])

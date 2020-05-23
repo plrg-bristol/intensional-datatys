@@ -18,14 +18,14 @@ where
 import Binary
 import ConGraph
 import qualified Data.List as L
-import GhcPlugins hiding (Type, empty)
+import GhcPlugins hiding (Type, empty, pprTyVars)
 import Types
 import Prelude hiding ((<>))
 
 -- Constrained polymorphic types
-type Scheme s = SchemeGen (Type T) (ConGraph s)
+type Scheme s = SchemeGen (Type 'T) (ConGraph s)
 
-type IfScheme = SchemeGen (IfType T) IfConGraph
+type IfScheme = SchemeGen (IfType 'T) IfConGraph
 
 data SchemeGen t g
   = Scheme
@@ -115,6 +115,6 @@ pattern Forall as t =
     }
 
 -- Demand a monomorphic type
-mono :: Scheme s -> Type T
+mono :: Scheme s -> Type 'T
 mono (Mono t) = t
 mono _ = Ambiguous

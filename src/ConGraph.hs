@@ -36,21 +36,21 @@ import Types
 import Prelude hiding ((<>))
 
 -- A constraint graph for a fixed datatype
-type SubGraph s = M.Map (K L) (M.Map (K R) (GuardSet s))
+type SubGraph s = M.Map (K 'L) (M.Map (K 'R) (GuardSet s))
 
 -- Merger maps with a monad function
 unionWithM :: (Ord a, Monad m) => (b -> b -> m b) -> M.Map a b -> M.Map a b -> m (M.Map a b)
 unionWithM f = mergeA preserveMissing preserveMissing (zipWithAMatched (const f))
 
 -- Insert several atomic constraints with the same guard
-insertSub :: GsM state s m => K L -> K R -> GuardSet s -> SubGraph s -> m (SubGraph s)
+insertSub :: GsM state s m => K 'L -> K 'R -> GuardSet s -> SubGraph s -> m (SubGraph s)
 insertSub kl kr g = M.alterF go kl
   where
     go (Just b) = Just <$> unionWithM (|||) (M.singleton kr g) b
     go Nothing = return (Just $ M.singleton kr g)
 
 -- Insert several atomic constraints with the same lhs
-insertMany :: GsM state s m => K L -> M.Map (K R) (GuardSet s) -> SubGraph s -> m (SubGraph s)
+insertMany :: GsM state s m => K 'L -> M.Map (K 'R) (GuardSet s) -> SubGraph s -> m (SubGraph s)
 insertMany kl m = M.alterF go kl
   where
     go (Just m') = Just <$> unionWithM (|||) m m'
@@ -92,7 +92,7 @@ transSub xs orig_graph = do
               from_n
 
 -- Collect the predecessors of intermediate nodes
-predsSub :: [RVar] -> SubGraph s -> M.Map RVar (M.Map (K L) (GuardSet s))
+predsSub :: [RVar] -> SubGraph s -> M.Map RVar (M.Map (K 'L) (GuardSet s))
 predsSub xs orig_graph =
   M.fromList $
     fmap
@@ -109,7 +109,7 @@ predsSub xs orig_graph =
       )
       xs
   where
-    interface :: K L -> Bool
+    interface :: K 'L -> Bool
     interface Con {} = True
     interface (Dom x) = x `notElem` xs
 
@@ -122,16 +122,16 @@ type IfConGraph = ConGraphGen [[Guard]]
 
 data ConGraphGen g
   = ConGraph
-      { subgraphs :: M.Map (DataType Name) (M.Map (K L) (M.Map (K R) g)),
+      { subgraphs :: M.Map (DataType Name) (M.Map (K 'L) (M.Map (K 'R) g)),
         _domain :: [RVar]
       }
   deriving (Eq, Functor, Foldable, Traversable)
 
 instance Outputable IfConGraph where
-  ppr (ConGraph cg _) =
+  ppr cg =
     vcat
       [ ppr g <+> pprCon k1 d <+> arrowt <+> pprCon k2 d
-        | (d, sg) <- M.toList cg,
+        | (d, sg) <- M.toList $ subgraphs cg,
           (k1, to) <- M.toList sg,
           (k2, gs) <- M.toList to,
           g <- gs
@@ -174,7 +174,7 @@ empty :: ConGraphGen g
 empty = ConGraph M.empty []
 
 -- Insert an atomic constraint
-insert :: GsM state s m => K L -> K R -> GuardSet s -> DataType Name -> ConGraph s -> m (ConGraph s)
+insert :: GsM state s m => K 'L -> K 'R -> GuardSet s -> DataType Name -> ConGraph s -> m (ConGraph s)
 insert k1 k2 g dty (ConGraph cg d) = do
   cg' <- M.alterF (fmap Just . insertSub k1 k2 g . fromMaybe M.empty) dty cg
   let dk1 = runIdentity $ domain k1
@@ -217,7 +217,7 @@ mergeLevel x y xd yd cg@(ConGraph sg _) = do
     y_succs = fromMaybe M.empty (M.lookup yd sg >>= M.lookup (Dom y))
 
 -- Restrict a constraint graph to it's interface and check satisfiability
-restrict :: GsM state s m => [RVar] -> ConGraph s -> ExceptT (DataType Name, K L, K R) m (ConGraph s)
+restrict :: GsM state s m => [RVar] -> ConGraph s -> ExceptT (DataType Name, K 'L, K 'R) m (ConGraph s)
 restrict interface (ConGraph cg cg_dom) = do
   cg' <- lift $ mapM (transSub interface) cg
   let preds = predsSub (cg_dom L.\\ interface) <$> cg'

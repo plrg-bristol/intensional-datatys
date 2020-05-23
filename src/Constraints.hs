@@ -23,8 +23,8 @@ data Side = L | R
 -- An atomic constructor set with a location tag
 data K (s :: Side) where
   Dom :: RVar -> K s
-  Set :: UniqSet Name -> SrcSpan -> K R
-  Con :: Name -> SrcSpan -> K L
+  Set :: UniqSet Name -> SrcSpan -> K 'R
+  Con :: Name -> SrcSpan -> K 'L
 
 -- Disregard location in comparison
 instance Eq (K s) where
@@ -47,7 +47,7 @@ instance Outputable (K s) where
     | isEmptyUniqSet ks = unicodeSyntax (char '∅') (ppr "{}")
     | otherwise = pprWithBars ppr (nonDetEltsUniqSet ks)
 
-instance Binary (K L) where
+instance Binary (K 'L) where
   put_ bh (Dom x) = put_ bh True >> put_ bh x
   put_ bh (Con k l) = put_ bh False >> put_ bh k >> put_ bh l
 
@@ -62,7 +62,7 @@ instance Binary (K L) where
         l <- get bh
         return (Con k l)
 
-instance Binary (K R) where
+instance Binary (K 'R) where
   put_ bh (Dom x) = put_ bh True >> put_ bh x
   put_ bh (Set s l) = put_ bh False >> put_ bh (nonDetEltsUniqSet s) >> put_ bh l
 
@@ -88,7 +88,7 @@ safe (Set ks _) (Con k _) = nonDetEltsUniqSet ks == [k]
 safe _ _ = True
 
 -- Convert constraint to atomic form
-toAtomic :: K l -> K r -> Maybe [(K L, K R)]
+toAtomic :: K l -> K r -> Maybe [(K 'L, K 'R)]
 toAtomic (Dom x) (Dom y)
   | x /= y = Just [(Dom x, Dom y)]
 toAtomic (Dom x) (Set k l) =

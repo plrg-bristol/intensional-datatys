@@ -154,41 +154,45 @@ isBranchReachable e k = asks (foldr (\(e', ks) es -> (not (cheapEqExpr e e') || 
 
 -- Locally guard constraints and add expression to path
 branch :: Monad m => CoreExpr -> [DataCon] -> RVar -> DataType TyCon -> InferM s m a -> InferM s m a
-branch e ks x d m = do
-  curr_guard <- asks branchGuard
-  new_guard <-
-    dom (getName <$> ks) x (getName <$> d)
-      >>= (&&& curr_guard)
-  local
-    ( \env ->
-        env
-          { branchGuard = new_guard,
-            branchPath = (e, ks) : branchPath env
-          }
-    )
-    m
+branch e ks x d m
+  | full (fmap getName ks) (orig d) = m
+  | otherwise = do
+    curr_guard <- asks branchGuard
+    new_guard <-
+      dom (getName <$> ks) x (getName <$> d)
+        >>= (&&& curr_guard)
+    local
+      ( \env ->
+          env
+            { branchGuard = new_guard,
+              branchPath = (e, ks) : branchPath env
+            }
+      )
+      m
 
 -- Locally guard constraints without an associated core expression
 branch' :: Monad m => [DataCon] -> RVar -> DataType TyCon -> InferM s m a -> InferM s m a
-branch' ks x d m = do
-  curr_guard <- asks branchGuard
-  new_guard <-
-    dom (getName <$> ks) x (getName <$> d)
-      >>= (&&& curr_guard)
-  local
-    ( \env ->
-        env
-          { branchGuard = new_guard
-          }
-    )
-    m
+branch' ks x d m
+  | full (fmap getName ks) (orig d) = m
+  | otherwise = do
+    curr_guard <- asks branchGuard
+    new_guard <-
+      dom (getName <$> ks) x (getName <$> d)
+        >>= (&&& curr_guard)
+    local
+      ( \env ->
+          env
+            { branchGuard = new_guard
+            }
+      )
+      m
 
 setLoc :: Monad m => RealSrcSpan -> InferM s m a -> InferM s m a
 setLoc l = local (\env -> env {inferLoc = RealSrcSpan l})
 
 emit :: Monad m => K l -> K r -> DataType TyCon -> InferM s m ()
 emit k1 k2 d
-  | not (trivial (orig d) || full k2) =
+  | not (trivial (orig d) || full (cons k2) (orig d)) =
     case toAtomic k1 k2 of
       Nothing -> do
         l <- asks inferLoc
@@ -199,11 +203,9 @@ emit k1 k2 d
         cg' <- foldM (\cg' (k1', k2') -> insert k1' k2' g (getName <$> d) cg') cg cs
         modify (\s -> s {congraph = cg'})
   | otherwise = return ()
-  where
-    full :: K r -> Bool
-    full (Set ks _) = nonDetEltsUniqSet ks == fmap getName (tyConDataCons (orig d))
-    full (Con k _) = [k] == fmap getName (tyConDataCons (orig d))
-    full _ = False
+  
+full :: [Name] -> TyCon -> Bool
+full ks d = ks == fmap getName (tyConDataCons d)
 
 runInferM ::
   Monad m =>

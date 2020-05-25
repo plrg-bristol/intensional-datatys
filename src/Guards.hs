@@ -51,9 +51,9 @@ class MonadState state m => GsM state s m | m -> state, m -> s where
 
 -- Operation DSL
 data Memo s
-  = And {-# UNPACK #-} !ID {-# UNPACK #-} !ID
-  | Or {-# UNPACK #-} !ID {-# UNPACK #-} !ID
-  | Ite {-# UNPACK #-} !(GuardSet s) {-# UNPACK #-} !(GuardSet s) {-# UNPACK #-} !(GuardSet s)
+  = And !ID !ID
+  | Or !ID !ID
+  | Ite !(GuardSet s) !(GuardSet s) !(GuardSet s)
   deriving (Eq, Ord, Generic)
 
 instance Hashable (Memo s)
@@ -255,13 +255,14 @@ applyPreds preds =
             H.foldrWithKey
               ( \p pg macc -> do
                   acc <- macc
+                  pg' <- applyPreds preds pg
                   case p of
                     Dom y -> do
                       n <- singleton (Guard k y d)
-                      n' <- n &&& pg
+                      n' <- n &&& pg'
                       n' ||| acc
                     Con k' _
-                      | k == k' -> pg ||| acc
+                      | k == k' -> pg' ||| acc
                       | otherwise -> return acc
               )
               (return Bot)

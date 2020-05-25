@@ -11,6 +11,7 @@ module Constraints
     safe,
     toAtomic,
     constraintLoc,
+    cons,
   )
 where
 
@@ -119,3 +120,8 @@ constraintLoc :: K l -> Maybe SrcSpan
 constraintLoc (Dom _) = Nothing
 constraintLoc (Set _ l) = Just l
 constraintLoc (Con _ l) = Just l
+
+cons :: K l -> [Name]
+cons (Dom _) = []
+cons (Con k _) = [k]
+cons (Set ks _) = nonDetEltsUniqSet ks

@@ -146,7 +146,8 @@ infer (Core.App e1 (Core.Type e2)) = do
     Forall (a : as) t ->
       return $ Forall as (subTyVar a t' t)
     Mono Ambiguous -> return $ Mono Ambiguous
-    _ -> error "Type is already saturated!"
+    Mono t -> pprPanic "Type is already saturated!" (ppr t)
+    _ -> error "da fuq?" ()
 -- Term application
 infer (Core.App e1 e2) = infer e1 >>= \case
   Forall as Ambiguous -> Forall as Ambiguous <$ infer e2
@@ -169,7 +170,7 @@ infer (Core.Lam x e)
       Forall as t2 -> return $ Forall as (t1 :=> t2)
 -- Local prog
 infer (Core.Let b e) = do
-  ts <- inferRec True b
+  ts <- inferRec False b
   putVars ts $ infer e
 infer (Core.Case e bind_e core_ret alts) = do
   -- Fresh return type

@@ -32,8 +32,8 @@ where
 import ConGraph
 import Constraints
 import Control.Monad.Except hiding (guard)
-import Control.Monad.RWS.Strict hiding (guard, (<>))
-import qualified Data.HashMap.Strict as H
+import Control.Monad.RWS hiding ((<>), guard)
+import qualified Data.HashMap.Lazy as H
 import qualified Data.IntMap as I
 import qualified Data.List as L
 import qualified Data.Map as M
@@ -42,21 +42,24 @@ import GhcPlugins hiding (L, Type, empty)
 import Guards
 import Scheme
 import Types
-import Outputable hiding (empty)
 import Prelude hiding ((<>))
 
 data Error
-  = Error
-      {
-        collision :: SrcSpan,
-        constraint :: (DataType Name, K 'L, K 'R)
+  = forall a b.
+    Error
+      { collision :: SrcSpan,
+        constraint :: (DataType Name, K a, K b)
       }
 
 instance Outputable Error where
-  ppr Error { collision = c, constraint = (_, l, r)} = 
-    text "The construct: " <> ppr l <> text "arising at: " <> ppr (constraintLoc l) <>
-    text "can colide with the pattern: " <> ppr r <> text "arising at: " <> ppr (constraintLoc r) <>
-    text "When in the function: " <> ppr c
+  ppr Error {collision = c, constraint = (_, l, r)} =
+    text "The constructor: " <> ppr l <> text ", arising at: " <> ppr (constraintLoc l)
+      <> text ", can colide with the pattern: "
+      <> ppr r
+      <> text ", arising at: "
+      <> ppr (constraintLoc r)
+      <> text ", when in the function: "
+      <> ppr c
 
 -- The inference monad
 type InferM s m = RWST (InferEnv s) [Error] (InferState s) m
@@ -77,7 +80,7 @@ data InferState s
       { freshRVar :: RVar,
         congraph :: ConGraph s,
         -- Binary decision diagram state
-        memo :: H.HashMap Memo (GuardSet s),
+        memo :: H.HashMap (Memo s) (GuardSet s),
         freshId :: ID,
         nodes :: I.IntMap (Node s),
         hashes :: H.HashMap (Node s) ID
@@ -86,7 +89,7 @@ data InferState s
 instance Monad m => GsM (InferState s) s (InferM s m) where
   lookupNode i =
     gets (I.lookup i . nodes) >>= \case
-      Nothing -> error "No node with that ID!"
+      Nothing -> error ("No node with that ID!" ++ show i)
       Just n -> return n
   lookupHash n = gets (H.lookup n . hashes)
   freshNode n = do
@@ -189,7 +192,7 @@ emit k1 k2 d
     case toAtomic k1 k2 of
       Nothing -> do
         l <- asks inferLoc
-        pprPanic "unsatisfiable cosntraint" (ppr (d, k1, k2, l))
+        tell [Error l (getName <$> d, k1, k2)]
       Just cs -> do
         cg <- gets congraph
         g <- asks branchGuard
@@ -207,12 +210,12 @@ runInferM ::
   m (a, [Error])
 runInferM run unroll allow_contra mod_name init_env =
   evalRWST
-      ( do
-          env <- mapM (\(Scheme tyvs dvs t g) -> Scheme tyvs dvs t <$> mapM (mapM fromList) g) init_env
-          local (\e -> e {varEnv = env}) run
-      )
-      (InferEnv unroll allow_contra mod_name [] Top M.empty (UnhelpfulSpan (mkFastString "Top level")))
-      (InferState 0 empty H.empty 0 I.empty H.empty)
+    ( do
+        env <- mapM (\(Scheme tyvs dvs t g) -> Scheme tyvs dvs t <$> mapM (mapM fromList) g) init_env
+        local (\e -> e {varEnv = env}) run
+    )
+    (InferEnv unroll allow_contra mod_name [] Top M.empty (UnhelpfulSpan (mkFastString "Top level")))
+    (InferState 0 empty H.empty 0 I.empty H.empty)
 
 -- Transitively remove local constraints and attach them to variables
 saturate :: Monad m => Context s -> InferM s m (Context s)
@@ -226,7 +229,10 @@ saturate ts = do
     >>= \case
       Left e -> do
         l <- asks inferLoc
-        tell [Error { collision = l, constraint = e }]
+        tell [Error {collision = l, constraint = e}]
+        modify (\s -> s {InferM.memo = H.empty, hashes = H.empty, congraph = empty})
         -- Continue ignoring the constraints from this recursive group
         return ((\s -> s {boundvs = interface, constraints = Nothing}) <$> ts)
-      Right cg' -> return ((\s -> s {boundvs = interface, constraints = Just cg'}) <$> ts)
+      Right cg' -> do
+        modify (\s -> s {InferM.memo = H.empty, hashes = H.empty, congraph = empty})
+        return ((\s -> s {boundvs = interface, constraints = Just cg'}) <$> ts)

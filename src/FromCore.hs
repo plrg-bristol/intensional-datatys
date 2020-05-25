@@ -141,7 +141,7 @@ getVar v =
       case constraints fre_scheme of
         Nothing ->
           -- In this case is the variable in unsatisfiable?
-          return fre_scheme
+          return fre_scheme {constraints = Nothing}
         Just var_cg -> do
           g <- asks branchGuard
           var_cg' <- guardWith g var_cg

@@ -30,14 +30,14 @@ where
 import qualified Binary as B
 import Constraints
 import Control.Monad.State
+import qualified Data.HashMap.Lazy as H
 import Data.Hashable
 import qualified Data.List as L
-import qualified Data.Map as M
+import Data.Maybe
 import DataTypes
 import GHC.Generics
 import GhcPlugins hiding (L, isEmpty, singleton)
 import Types
-import Unique
 import Prelude hiding ((<>))
 
 -- A GuardState monad contins a directed acyclic graph of nodes
@@ -47,22 +47,22 @@ class MonadState state m => GsM state s m | m -> state, m -> s where
   freshNode :: Node s -> m ID
 
   -- Only run an operation if its new
-  memo :: Memo -> m (GuardSet s) -> m (GuardSet s)
+  memo :: Memo s -> m (GuardSet s) -> m (GuardSet s)
 
 -- Operation DSL
-data Memo
+data Memo s
   = And {-# UNPACK #-} !ID {-# UNPACK #-} !ID
   | Or {-# UNPACK #-} !ID {-# UNPACK #-} !ID
+  | Ite {-# UNPACK #-} !(GuardSet s) {-# UNPACK #-} !(GuardSet s) {-# UNPACK #-} !(GuardSet s)
   deriving (Eq, Ord, Generic)
 
-instance Hashable Memo
+instance Hashable (Memo s)
 
 -- A guard atom, i.e. a set of constraints of the form k in (X, d)
 data Guard = Guard Name RVar (DataType Name)
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic)
 
-instance Hashable Guard where
-  hashWithSalt s (Guard n r dt) = hashWithSalt s (hashWithSalt s $ getKey $ getUnique n, r, fmap (getKey . getUnique) dt)
+instance Hashable Guard
 
 instance Outputable Guard where
   ppr (Guard k x d) = ppr k <+> unicodeSyntax (char '∈') (text "in") <+> ppr x <> parens (ppr d)
@@ -161,7 +161,7 @@ mkGuardSet n
         hi' <- p ||| hi m
         mkGuardSet $ Node (atom m) lo' hi'
 
--- Take the conjunciton of possible guards
+-- Take the conjunction of possible guards
 (&&&) :: GsM state s m => GuardSet s -> GuardSet s -> m (GuardSet s)
 (&&&) Top q = return q
 (&&&) p Top = return p
@@ -185,27 +185,74 @@ mkGuardSet n
         hi' <- p &&& hi m
         mkGuardSet $ Node (atom m) lo' hi'
 
+-- If then else
+-- ITE x y z = xy + not x z
+ite :: GsM state s m => GuardSet s -> GuardSet s -> GuardSet s -> m (GuardSet s)
+ite Top t _ = return t
+ite Bot _ e = return e
+ite g Top e = g ||| e
+ite g t Bot = g &&& t
+ite p q r =
+  memo (Ite p q r) $ do
+    x <- fromJust <$> topAtom [p, q, r]
+    lon <- restrict x False p
+    hin <- restrict x True p
+    lom <- restrict x False q
+    him <- restrict x True q
+    lol <- restrict x False r
+    hil <- restrict x True r
+    lo' <- ite lon lom lol
+    hi' <- ite hin him hil
+    mkGuardSet $ Node x lo' hi'
+
+topAtom :: GsM state s m => [GuardSet s] -> m (Maybe Guard)
+topAtom [] = return Nothing
+topAtom (Top : gs) = topAtom gs
+topAtom (Bot : gs) = topAtom gs
+topAtom ((ID i) : gs) = do
+  n <- lookupNode i
+  let x = atom n
+  topAtom gs >>= \case
+    Nothing -> return (Just x)
+    Just y -> return (Just (max x y))
+
+-- Assign a guard some value
+restrict :: GsM state s m => Guard -> Bool -> GuardSet s -> m (GuardSet s)
+restrict _ _ Top = return Top
+restrict _ _ Bot = return Bot
+restrict g b p@(ID i) = do
+  n <- lookupNode i
+  case compare (atom n) g of
+    LT -> return p
+    EQ
+      | b -> return (hi n)
+      | otherwise -> return (lo n)
+    GT -> do
+      hn <- restrict g b (hi n)
+      ln <- restrict g b (lo n)
+      mkGuardSet $ Node (atom n) ln hn
+
 bind :: GsM state s m => (Guard -> m (GuardSet s)) -> GuardSet s -> m (GuardSet s)
 bind _ Top = return Top
 bind _ Bot = return Bot
 bind f (ID i) = do
   n <- lookupNode i
+  fn <- f (atom n)
   lo' <- bind f (lo n)
   hi' <- bind f (hi n)
-  -- Rebuild node
-  singleton (atom n) >>= (&&& hi') >>= (||| lo')
+  ite fn hi' lo'
 
 -- The predecessors of a particular refinement variable at a datatype
-type PredMap s = M.Map (DataType Name) (M.Map RVar (M.Map (K 'L) (GuardSet s)))
+type PredMap s = H.HashMap (DataType Name) (H.HashMap RVar (H.HashMap (K 'L) (GuardSet s)))
 
 applyPreds :: GsM state s m => PredMap s -> GuardSet s -> m (GuardSet s)
 applyPreds preds =
   bind
     ( \g@(Guard k x d) ->
-        case M.lookup d preds >>= M.lookup x of
+        case H.lookup d preds >>= H.lookup x of
           Nothing -> singleton g
           Just g_preds ->
-            M.foldrWithKey
+            H.foldrWithKey
               ( \p pg macc -> do
                   acc <- macc
                   case p of
@@ -215,7 +262,7 @@ applyPreds preds =
                       n' ||| acc
                     Con k' _
                       | k == k' -> pg ||| acc
-                      | otherwise -> macc
+                      | otherwise -> return acc
               )
               (return Bot)
               g_preds
@@ -230,6 +277,16 @@ fold f bb bt (ID i) = do
   l' <- fold f bb bt l
   h' <- fold f bb bt h
   return (f a l' h')
+
+-- Collapse a GuardSet to some summary value
+foldM' :: GsM state s m => (Guard -> a -> a -> m a) -> a -> a -> GuardSet s -> m a
+foldM' _ _ bt Top = return bt
+foldM' _ bb _ Bot = return bb
+foldM' f bb bt (ID i) = do
+  Node a l h <- lookupNode i
+  l' <- foldM' f bb bt l
+  h' <- foldM' f bb bt h
+  f a l' h'
 
 -- Convert to DNF
 toList :: GsM state s m => GuardSet s -> m [[Guard]]

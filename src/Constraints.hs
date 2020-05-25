@@ -1,3 +1,4 @@
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -14,8 +15,10 @@ module Constraints
 where
 
 import Binary
+import Data.Hashable
 import GhcPlugins hiding (L)
 import Types
+import Unique
 import Prelude hiding ((<>))
 
 data Side = L | R
@@ -39,6 +42,17 @@ instance Ord (K s) where
   Con k _ <= Con k' _ = k <= k'
   Dom _ <= _ = True
   _ <= _ = False
+
+instance Hashable Unique where
+  hashWithSalt s = hashWithSalt s . getKey
+
+instance Hashable Name where
+  hashWithSalt s = hashWithSalt s . getUnique
+
+instance Hashable (K s) where
+  hashWithSalt s (Dom x) = hashWithSalt s x
+  hashWithSalt s (Set n _) = hashWithSalt s $ nonDetKeysUniqSet n
+  hashWithSalt s (Con n _) = hashWithSalt s $ getUnique n
 
 instance Outputable (K s) where
   ppr (Dom x) = text "dom" <> parens (ppr x)

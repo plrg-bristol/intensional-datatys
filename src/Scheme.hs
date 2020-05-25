@@ -63,13 +63,7 @@ instance Outputable d => Outputable (SchemeGen d IfConGraph) where
         | otherwise = forAllLit <+> fsep (ppr <$> boundvs scheme) <> dot
 
 instance (Monad m, Refined d m, Refined g m) => Refined (SchemeGen d g) m where
-  domain s = do
-    db <- domain (body s)
-    case constraints s of
-      Nothing -> return (db L.\\ boundvs s)
-      Just cg -> do
-        dcg <- domain cg
-        return ((db `L.union` dcg) L.\\ boundvs s)
+  domain s = domain (body s)
 
   rename x y s
     | x `elem` boundvs s = return s

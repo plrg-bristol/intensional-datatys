@@ -188,7 +188,7 @@ setLoc l = local (\env -> env {inferLoc = RealSrcSpan l})
 
 emit :: Monad m => K l -> K r -> DataType TyCon -> InferM s m ()
 emit k1 k2 d
-  | not (trivial $ orig d) =
+  | not (trivial (orig d) || full k2) =
     case toAtomic k1 k2 of
       Nothing -> do
         l <- asks inferLoc
@@ -199,6 +199,11 @@ emit k1 k2 d
         cg' <- foldM (\cg' (k1', k2') -> insert k1' k2' g (getName <$> d) cg') cg cs
         modify (\s -> s {congraph = cg'})
   | otherwise = return ()
+  where
+    full :: K r -> Bool
+    full (Set ks _) = nonDetEltsUniqSet ks == fmap getName (tyConDataCons (orig d))
+    full (Con k _) = [k] == fmap getName (tyConDataCons (orig d))
+    full _ = False
 
 runInferM ::
   Monad m =>

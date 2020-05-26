@@ -17,7 +17,6 @@ where
 
 import Binary
 import ConGraph
-import qualified Data.List as L
 import GhcPlugins hiding (Type, empty, pprTyVars)
 import Types
 import Prelude hiding ((<>))

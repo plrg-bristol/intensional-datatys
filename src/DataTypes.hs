@@ -60,7 +60,7 @@ contravariant = not . all pos . concatMap dataConOrigArgTys . tyConDataCons
     pos (FunTy t1 t2) = neg t1 && pos t2
     pos _ = True
     neg :: Type -> Bool
-    neg (TyConApp _ _) = False -- Could this test whether the tycon is covariant?
+    neg (TyConApp _ _) = False -- ? Could this test whether the tycon is covariant
     neg (TyVarTy _) = False
     neg (FunTy t1 t2) = pos t1 && neg t2
     neg _ = True

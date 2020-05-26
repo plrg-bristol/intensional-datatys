@@ -140,7 +140,7 @@ getVar v =
       fre_scheme <- renameAll xys scheme {boundvs = []}
       case constraints fre_scheme of
         Nothing ->
-          -- In this case is the variable in unsatisfiable?
+          -- ? In this case is the variable necessarily unsatisfiable
           return fre_scheme {constraints = Nothing}
         Just var_cg -> do
           g <- asks branchGuard

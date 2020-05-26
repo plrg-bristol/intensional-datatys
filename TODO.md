@@ -1,4 +1,3 @@
-0) Make proper IFE operator
 0.5) Apply preds multiple times
 1) check exprIsBottom works as expected
 2) partial online cycle elimination?

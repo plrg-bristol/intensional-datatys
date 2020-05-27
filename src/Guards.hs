@@ -144,7 +144,7 @@ mkGuardSet n
 (|||) Bot q = return q
 (|||) p Bot = return p
 (|||) p@(ID i) q@(ID j) =
-  memo (Or i j) $ do
+  memo (Or (min i j) (max i j)) $ do
     n <- lookupNode i
     m <- lookupNode j
     case compare (atom n) (atom m) of
@@ -168,7 +168,7 @@ mkGuardSet n
 (&&&) Bot _ = return Bot
 (&&&) _ Bot = return Bot
 (&&&) p@(ID i) q@(ID j) =
-  memo (And i j) $ do
+  memo (And (min i j) (max i j)) $ do
     n <- lookupNode i
     m <- lookupNode j
     case compare (atom n) (atom m) of

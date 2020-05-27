@@ -205,7 +205,7 @@ emit k1 k2 d
   | otherwise = return ()
   
 full :: [Name] -> TyCon -> Bool
-full ks d = ks == fmap getName (tyConDataCons d)
+full ks d = all (\k -> getName k `elem` ks) (tyConDataCons d)
 
 runInferM ::
   Monad m =>

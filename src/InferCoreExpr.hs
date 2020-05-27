@@ -50,6 +50,7 @@ inferRec top bgs = do
             do
               scheme <- infer rhs
               inferSubType (body scheme) (body sr)
+              inferSubType (body sr) (body scheme)
               return scheme
           )
           | (x, rhs) <- Core.flattenBinds [bgs],

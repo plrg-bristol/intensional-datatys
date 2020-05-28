@@ -25,7 +25,7 @@ import Constraints
 import Control.Monad
 import Control.Monad.Except
 import Data.Bifunctor
-import qualified Data.HashMap.Lazy as H
+import qualified Data.HashMap.Strict as H
 import Data.Hashable
 import qualified Data.List as L
 import Data.Maybe
@@ -92,7 +92,7 @@ transSub xs orig_graph = do
                       case H.lookup (Dom x) es' of
                         Nothing -> return (ns', es')
                         Just from_d -> do
-                          n_via_d <- mapM (||| g) from_d
+                          n_via_d <- mapM (&&& g) from_d
                           g'' <- insertMany n n_via_d es'
                           return (ns', g'')
               )

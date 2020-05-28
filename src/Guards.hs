@@ -47,13 +47,13 @@ class MonadState state m => GsM state s m | m -> state, m -> s where
   freshNode :: Node s -> m ID
 
   -- Only run an operation if its new
-  memo :: Memo s -> m (GuardSet s) -> m (GuardSet s)
+  lookupMemo :: Memo s -> m (Maybe (GuardSet s))
+  insertMemo :: Memo s -> GuardSet s -> m ()
 
 -- Operation DSL
 data Memo s
   = And !ID !ID
   | Or !ID !ID
-  | Ite !(GuardSet s) !(GuardSet s) !(GuardSet s)
   deriving (Eq, Ord, Generic)
 
 instance Hashable (Memo s)
@@ -143,23 +143,28 @@ mkGuardSet n
 (|||) _ Top = return Top
 (|||) Bot q = return q
 (|||) p Bot = return p
-(|||) p@(ID i) q@(ID j) =
-  memo (Or (min i j) (max i j)) $ do
-    n <- lookupNode i
-    m <- lookupNode j
-    case compare (atom n) (atom m) of
-      LT -> do
-        lo' <- lo n ||| q
-        hi' <- hi n ||| q
-        mkGuardSet $ Node (atom n) lo' hi'
-      EQ -> do
-        lo' <- lo n ||| lo m
-        hi' <- hi n ||| hi m
-        mkGuardSet $ Node (atom n) lo' hi'
-      GT -> do
-        lo' <- p ||| lo m
-        hi' <- p ||| hi m
-        mkGuardSet $ Node (atom m) lo' hi'
+(|||) p@(ID i) q@(ID j) = do
+  let op = Or (min i j) (max i j)
+  lookupMemo op >>= \case
+    Nothing -> do
+      n <- lookupNode i
+      m <- lookupNode j
+      r <- case compare (atom n) (atom m) of
+        LT -> do
+          lo' <- lo n ||| q
+          hi' <- hi n ||| q
+          mkGuardSet $ Node (atom n) lo' hi'
+        EQ -> do
+          lo' <- lo n ||| lo m
+          hi' <- hi n ||| hi m
+          mkGuardSet $ Node (atom n) lo' hi'
+        GT -> do
+          lo' <- p ||| lo m
+          hi' <- p ||| hi m
+          mkGuardSet $ Node (atom m) lo' hi'
+      insertMemo op r
+      return r
+    Just r -> return r
 
 -- Take the conjunction of possible guards
 (&&&) :: GsM state s m => GuardSet s -> GuardSet s -> m (GuardSet s)
@@ -167,23 +172,28 @@ mkGuardSet n
 (&&&) p Top = return p
 (&&&) Bot _ = return Bot
 (&&&) _ Bot = return Bot
-(&&&) p@(ID i) q@(ID j) =
-  memo (And (min i j) (max i j)) $ do
-    n <- lookupNode i
-    m <- lookupNode j
-    case compare (atom n) (atom m) of
-      LT -> do
-        lo' <- lo n &&& q
-        hi' <- hi n &&& q
-        mkGuardSet $ Node (atom n) lo' hi'
-      EQ -> do
-        lo' <- lo n &&& lo m
-        hi' <- hi n &&& hi m
-        mkGuardSet $ Node (atom n) lo' hi'
-      GT -> do
-        lo' <- p &&& lo m
-        hi' <- p &&& hi m
-        mkGuardSet $ Node (atom m) lo' hi'
+(&&&) p@(ID i) q@(ID j) = do
+  let op = And (min i j) (max i j)
+  lookupMemo op >>= \case
+    Nothing -> do
+      n <- lookupNode i
+      m <- lookupNode j
+      r <- case compare (atom n) (atom m) of
+        LT -> do
+          lo' <- lo n &&& q
+          hi' <- hi n &&& q
+          mkGuardSet $ Node (atom n) lo' hi'
+        EQ -> do
+          lo' <- lo n &&& lo m
+          hi' <- hi n &&& hi m
+          mkGuardSet $ Node (atom n) lo' hi'
+        GT -> do
+          lo' <- p &&& lo m
+          hi' <- p &&& hi m
+          mkGuardSet $ Node (atom m) lo' hi'
+      insertMemo op r
+      return r
+    Just r -> return r
 
 -- If then else
 -- ITE x y z = xy + not x z
@@ -192,8 +202,7 @@ ite Top t _ = return t
 ite Bot _ e = return e
 ite g Top e = g ||| e
 ite g t Bot = g &&& t
-ite p q r =
-  memo (Ite p q r) $ do
+ite p q r = do
     x <- fromJust <$> topAtom [p, q, r]
     lon <- restrict x False p
     hin <- restrict x True p

@@ -15,7 +15,7 @@ where
 
 import ConGraph
 import Constraints
-import Control.Monad.RWS
+import Control.Monad.RWS.Strict
 import qualified Data.List as L
 import qualified Data.Map as M
 import DataTypes
@@ -28,7 +28,7 @@ import Types
 
 -- Convert a core datatype to the internal representation
 class CoreDataType (e :: Extended) where
-  mkDataType :: Monad m => TyCon -> [Type 'S] -> InferM s m (Type e)
+  mkDataType :: TyCon -> [Type 'S] -> InferM s (Type e)
 
 instance CoreDataType 'S where
   mkDataType d as = do
@@ -42,7 +42,7 @@ instance CoreDataType 'T where
     return $ Inj x (DataType (if u then Initial else Neutral) d) as
 
 -- Convert a monomorphic core type
-fromCore :: (CoreDataType e, Monad m) => Tcr.Type -> InferM s m (Type e)
+fromCore :: CoreDataType e => Tcr.Type -> InferM s (Type e)
 fromCore (Tcr.TyVarTy a) = Var <$> getExternalName a
 fromCore (Tcr.AppTy t1 t2) = do
   s1 <- fromCore t1
@@ -68,7 +68,7 @@ fromCore (Tcr.ForAllTy a t) = pprPanic "Unexpected polymorphic type!" $ ppr $ Tc
 fromCore t = pprPanic "Unexpected cast or coercion type!" $ ppr t
 
 -- Convert a polymorphic core type
-fromCoreScheme :: Monad m => Tcr.Type -> InferM s m (Scheme s)
+fromCoreScheme :: Tcr.Type -> InferM s (Scheme s)
 fromCoreScheme (Tcr.ForAllTy b t) = do
   a <- getExternalName (Tcr.binderVar b)
   scheme <- fromCoreScheme t
@@ -82,7 +82,7 @@ fromCoreScheme (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
 fromCoreScheme t = Mono <$> fromCore t
 
 -- Extract a constructor's original type
-fromCoreCons :: Monad m => DataType DataCon -> InferM s m (Scheme s)
+fromCoreCons :: DataType DataCon -> InferM s (Scheme s)
 fromCoreCons k = do
   let d = dataConTyCon (orig k)
   x <- fresh
@@ -99,7 +99,7 @@ fromCoreCons k = do
 
 -- Extract a constructor's type with tyvars instantiated
 -- We assume there are no existentially quantified tyvars
-fromCoreConsInst :: Monad m => DataType DataCon -> [Type 'S] -> InferM s m (Type 'T)
+fromCoreConsInst :: DataType DataCon -> [Type 'S] -> InferM s (Type 'T)
 fromCoreConsInst k tyargs = do
   let d = dataConTyCon (orig k)
   x <- fresh
@@ -118,14 +118,14 @@ fromCoreConsInst k tyargs = do
 
 -- Prepare name for interface
 -- Should be used before all type variables
-getExternalName :: (Monad m, NamedThing a) => a -> InferM s m Name
+getExternalName :: NamedThing a => a -> InferM s Name
 getExternalName a = do
   let n = getName a
   mn <- asks modName
   return $ mkExternalName (nameUnique n) mn (nameOccName n) (nameSrcSpan n)
 
 -- Lookup constrained variable emit its constraints
-getVar :: Monad m => Var -> InferM s m (Scheme s)
+getVar :: Var -> InferM s (Scheme s)
 getVar v =
   asks (M.lookup (getName v) . varEnv) >>= \case
     Just scheme -> do
@@ -154,7 +154,7 @@ getVar v =
       return var_scheme
 
 -- Maximise/minimise a type
-maximise :: Monad m => Bool -> Type 'T -> InferM s m ()
+maximise :: Bool -> Type 'T -> InferM s ()
 maximise True (Inj x d _) = do
   l <- asks inferLoc
   mapM_ (\k -> emit (Con (getName k) l) (Dom x) d) $ tyConDataCons (orig d)

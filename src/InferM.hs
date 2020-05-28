@@ -32,11 +32,12 @@ where
 import ConGraph
 import Constraints
 import Control.Monad.Except hiding (guard)
-import Control.Monad.RWS hiding ((<>), guard)
+import Control.Monad.RWS.Strict hiding ((<>), guard)
 import qualified Data.HashMap.Lazy as H
-import qualified Data.IntMap as I
+import qualified Data.IntMap.Strict as I
 import qualified Data.List as L
 import qualified Data.Map as M
+import Data.Maybe
 import DataTypes
 import GhcPlugins hiding (L, Type, empty)
 import Guards
@@ -62,7 +63,7 @@ instance Outputable Error where
       <> ppr c
 
 -- The inference monad
-type InferM s m = RWST (InferEnv s) [Error] (InferState s) m
+type InferM s = RWS (InferEnv s) [Error] (InferState s)
 
 data InferEnv s
   = InferEnv
@@ -86,7 +87,7 @@ data InferState s
         hashes :: H.HashMap (Node s) ID
       }
 
-instance Monad m => GsM (InferState s) s (InferM s m) where
+instance GsM (InferState s) s (InferM s) where
   lookupNode i =
     gets (I.lookup i . nodes) >>= \case
       Nothing -> error ("No node with that ID!" ++ show i)
@@ -101,28 +102,23 @@ instance Monad m => GsM (InferState s) s (InferM s m) where
           hashes = H.insert n i hs
         }
     return i
-  memo op a =
-    gets (H.lookup op . InferM.memo) >>= \case
-      Nothing -> do
-        r <- a
-        modify (\s -> s {InferM.memo = H.insert op r (InferM.memo s)})
-        return r
-      Just r -> return r
+  lookupMemo op = gets (H.lookup op . InferM.memo)
+  insertMemo op r = modify (\s -> s {InferM.memo = H.insert op r (InferM.memo s)})
 
 -- A fresh refinement variable
-fresh :: Monad m => InferM s m RVar
+fresh :: InferM s RVar
 fresh = do
   s@InferState {freshRVar = i} <- get
   put s {freshRVar = i + 1}
   return i
 
 -- Make constructors tagged by the current location
-mkCon :: Monad m => DataCon -> InferM s m (K 'L)
+mkCon :: DataCon -> InferM s (K 'L)
 mkCon k = do
   l <- asks inferLoc
   return (Con (getName k) l)
 
-mkSet :: Monad m => [DataCon] -> InferM s m (K 'R)
+mkSet :: [DataCon] -> InferM s (K 'R)
 mkSet ks = do
   l <- asks inferLoc
   return (Set (mkUniqSet (getName <$> ks)) l)
@@ -135,25 +131,25 @@ instance GsM state s m => Refined (Context s) m where
   rename x = mapM . rename x
 
 -- Insert variables into environment
-putVar :: Monad m => Name -> Scheme s -> InferM s m a -> InferM s m a
+putVar :: Name -> Scheme s -> InferM s a -> InferM s a
 putVar n s = local (\env -> env {varEnv = M.insert n s (varEnv env)})
 
-putVars :: Monad m => Context s -> InferM s m a -> InferM s m a
+putVars :: Context s -> InferM s a -> InferM s a
 putVars ctx = local (\env -> env {varEnv = M.union ctx (varEnv env)})
 
 -- A Path records the terms that have been matched against in the current path
 type Path = [(CoreExpr, [DataCon])]
 
 -- Check if an expression is in the path
-topLevel :: Monad m => CoreExpr -> InferM s m Bool
+topLevel :: CoreExpr -> InferM s Bool
 topLevel e = asks (foldr (\(e', _) es -> not (cheapEqExpr e e') && es) True . branchPath)
 
 -- Check if a branch is possible, i.e. doesn't contradict the current branch
-isBranchReachable :: Monad m => CoreExpr -> DataCon -> InferM s m Bool
+isBranchReachable :: CoreExpr -> DataCon -> InferM s Bool
 isBranchReachable e k = asks (foldr (\(e', ks) es -> (not (cheapEqExpr e e') || k `elem` ks) && es) True . branchPath)
 
 -- Locally guard constraints and add expression to path
-branch :: Monad m => CoreExpr -> [DataCon] -> RVar -> DataType TyCon -> InferM s m a -> InferM s m a
+branch :: CoreExpr -> [DataCon] -> RVar -> DataType TyCon -> InferM s a -> InferM s a
 branch e ks x d m
   | full (fmap getName ks) (orig d) = m
   | otherwise = do
@@ -171,7 +167,7 @@ branch e ks x d m
       m
 
 -- Locally guard constraints without an associated core expression
-branch' :: Monad m => [DataCon] -> RVar -> DataType TyCon -> InferM s m a -> InferM s m a
+branch' :: [DataCon] -> RVar -> DataType TyCon -> InferM s a -> InferM s a
 branch' ks x d m
   | full (fmap getName ks) (orig d) = m
   | otherwise = do
@@ -187,10 +183,10 @@ branch' ks x d m
       )
       m
 
-setLoc :: Monad m => RealSrcSpan -> InferM s m a -> InferM s m a
+setLoc :: RealSrcSpan -> InferM s a -> InferM s a
 setLoc l = local (\env -> env {inferLoc = RealSrcSpan l})
 
-emit :: Monad m => K l -> K r -> DataType TyCon -> InferM s m ()
+emit :: K l -> K r -> DataType TyCon -> InferM s ()
 emit k1 k2 d
   | not (trivial (orig d) || full (cons k2) (orig d)) =
     case toAtomic k1 k2 of
@@ -203,20 +199,19 @@ emit k1 k2 d
         cg' <- foldM (\cg' (k1', k2') -> insert k1' k2' g (getName <$> d) cg') cg cs
         modify (\s -> s {congraph = cg'})
   | otherwise = return ()
-  
+
 full :: [Name] -> TyCon -> Bool
 full ks d = all (\k -> getName k `elem` ks) (tyConDataCons d)
 
 runInferM ::
-  Monad m =>
-  (forall s. InferM s m a) ->
+  (forall s. InferM s a) ->
   Bool ->
   Bool ->
   Module ->
   M.Map Name (SchemeGen (Type 'T) IfConGraph) ->
-  m (a, [Error])
+  (a, [Error])
 runInferM run unroll allow_contra mod_name init_env =
-  evalRWST
+  evalRWS
     ( do
         env <- mapM (\(Scheme tyvs dvs t g) -> Scheme tyvs dvs t <$> mapM (mapM fromList) g) init_env
         local (\e -> e {varEnv = env}) run
@@ -225,7 +220,7 @@ runInferM run unroll allow_contra mod_name init_env =
     (InferState 0 empty H.empty 0 I.empty H.empty)
 
 -- Transitively remove local constraints and attach them to variables
-saturate :: Monad m => Context s -> InferM s m (Context s)
+saturate :: Context s -> InferM s (Context s)
 saturate ts = do
   interface <- domain ts
   runExceptT

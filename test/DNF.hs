@@ -1,4 +1,4 @@
-module Formula where
+module DNF where
 
 import qualified Data.List as List
 
@@ -33,6 +33,6 @@ nnf2dnf (And p q) = distrib (nnf2dnf p) (nnf2dnf q)
 nnf2dnf (Or p q) = List.union (nnf2dnf p) (nnf2dnf q)
 nnf2dnf (Lit a) = [[a]]
 
-dnf = nnf2dnf . nnf
+dnf = nnf2dnf . nnf  
 
 

@@ -248,18 +248,20 @@ restrict g b p@(ID i) = do
       ln <- restrict g b (lo n)
       mkGuardSet $ Node (atom n) ln hn
 
-restrictMany :: GsM state s m => RVar -> GuardSet s -> m (GuardSet s)
-restrictMany _ Top = return Top
-restrictMany _ Bot = return Bot
-restrictMany x p@(ID i) = do
+restrictMany :: GsM state s m => RVar -> DataType Name -> GuardSet s -> m (GuardSet s)
+restrictMany _ _ Top = return Top
+restrictMany _ _ Bot = return Bot
+restrictMany x d p@(ID i) = do
   n <- lookupNode i
-  let Guard k y d = atom n
+  let Guard k y d' = atom n
   case compare x y of
     LT -> return p
-    EQ -> return (lo n)
+    EQ
+      | d == d' -> return (lo n)
+      | otherwise -> return p
     GT -> do
-      hn <- restrictMany x (hi n)
-      ln <- restrictMany x (lo n)
+      hn <- restrictMany x d (hi n)
+      ln <- restrictMany x d (lo n)
       mkGuardSet $ Node (atom n) ln hn
 
 bind :: GsM state s m => (Guard -> m (GuardSet s)) -> GuardSet s -> m (GuardSet s)
@@ -283,6 +285,7 @@ applyPreds preds gs =
           ( \y yps acc ->
               H.foldrWithKey
                 ( \p pg macc -> do
+                    -- pg' <- applyPreds preds pg
                     acc <- macc
                     acc' <-
                       bind
@@ -290,9 +293,9 @@ applyPreds preds gs =
                             if x /= y || d /= d'
                               then singleton g
                               else case p of
-                                Dom z -> singleton (Guard k z d') >>= (&&& pg)
+                                Dom z -> singleton (Guard k z d') >>= (&&& pg')
                                 Con k' _
-                                  | k == k' -> return pg
+                                  | k == k' -> return pg'
                                   | otherwise -> return Bot
                         )
                         acc
@@ -300,35 +303,13 @@ applyPreds preds gs =
                 )
                 acc
                 yps
-                >>= restrictMany y
+                >>= restrictMany y d
           )
           acc
           m
     )
     (return gs)
     preds
-
--- bind
---   ( \g@(Guard k x d) ->
---       case H.lookup d preds >>= H.lookup x of
---         Nothing -> singleton g
---         Just g_preds ->
---           H.foldrWithKey
---             ( \p pg macc -> do
---                 acc <- macc
---                 pg' <- applyPreds preds pg
---                 case p of
---                   Dom y -> do
---                     n <- singleton (Guard k y d)
---                     n' <- n &&& pg'
---                     n' ||| acc
---                   Con k' _
---                     | k == k' -> pg' ||| acc
---                     | otherwise -> return acc
---             )
---             (return Bot)
---             g_preds
---   )
 
 -- Collapse a GuardSet to some summary value
 fold :: GsM state s m => (Guard -> a -> a -> a) -> a -> a -> GuardSet s -> m a

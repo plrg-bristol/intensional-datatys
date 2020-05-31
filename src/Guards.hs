@@ -293,9 +293,9 @@ applyPreds preds gs =
                             if x /= y || d /= d'
                               then singleton g
                               else case p of
-                                Dom z -> singleton (Guard k z d') >>= (&&& pg')
+                                Dom z -> singleton (Guard k z d') >>= (&&& pg)
                                 Con k' _
-                                  | k == k' -> return pg'
+                                  | k == k' -> return pg
                                   | otherwise -> return Bot
                         )
                         acc

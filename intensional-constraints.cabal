@@ -27,9 +27,8 @@ library
   other-modules:
       DataTypes
       Types
+      Constructors
       Constraints
-      Guards
-      ConGraph
       Scheme
       InferM
       FromCore

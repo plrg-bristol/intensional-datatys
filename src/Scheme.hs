@@ -16,22 +16,23 @@ module Scheme
 where
 
 import Binary
-import ConGraph
+import Constraints
+import Constructors
 import GhcPlugins hiding (Type, empty, pprTyVars)
 import Types
 import Prelude hiding ((<>))
 
 -- Constrained polymorphic types
-type Scheme s = SchemeGen (Type 'T) (ConGraph s)
+type Scheme = SchemeGen (Type 'T) ConGraph
 
 type IfScheme = SchemeGen (IfType 'T) IfConGraph
 
-data SchemeGen t g
+data SchemeGen t
   = Scheme
       { tyvars :: [Name],
         boundvs :: [Int],
         body :: t,
-        constraints :: Maybe g
+        constraints :: Maybe ConstraintSet
       }
 
 instance Binary IfScheme where
@@ -61,7 +62,7 @@ instance Outputable d => Outputable (SchemeGen d IfConGraph) where
         | null (boundvs scheme) = text ""
         | otherwise = forAllLit <+> fsep (ppr <$> boundvs scheme) <> dot
 
-instance (Monad m, Refined d m, Refined g m) => Refined (SchemeGen d g) m where
+instance Refined d => Refined (SchemeGen d) where
   domain s = domain (body s)
 
   rename x y s
@@ -78,18 +79,18 @@ instance (Monad m, Refined d m, Refined g m) => Refined (SchemeGen d g) m where
             constraints = cg
           }
 
-  renameAll xys s = do
-    bod <- renameAll xys $ body s
-    cg <- mapM (renameAll xys) $ constraints s
-    return $
-      Scheme
-        { tyvars = tyvars s,
-          boundvs = boundvs s,
-          body = bod,
-          constraints = cg
-        }
+  -- renameAll xys s = do
+  --   bod <- renameAll xys $ body s
+  --   cg <- mapM (renameAll xys) $ constraints s
+  --   return $
+  --     Scheme
+  --       { tyvars = tyvars s,
+  --         boundvs = boundvs s,
+  --         body = bod,
+  --         constraints = cg
+  --       }
 
-pattern Mono :: t -> SchemeGen t g
+pattern Mono :: t -> SchemeGen t
 pattern Mono t =
   Scheme
     { tyvars = [],
@@ -98,7 +99,7 @@ pattern Mono t =
       constraints = Nothing
     }
 
-pattern Forall :: [Name] -> t -> SchemeGen t g
+pattern Forall :: [Name] -> t -> SchemeGen t
 pattern Forall as t =
   Scheme
     { tyvars = as,
@@ -108,6 +109,6 @@ pattern Forall as t =
     }
 
 -- Demand a monomorphic type
-mono :: Scheme s -> Type 'T
+mono :: Scheme -> Type 'T
 mono (Mono t) = t
 mono _ = Ambiguous

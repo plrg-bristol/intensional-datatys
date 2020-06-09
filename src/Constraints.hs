@@ -1,127 +1,97 @@
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Constraints
-  ( Side (..),
-    K (..),
-    safe,
-    toAtomic,
-    constraintLoc,
-    cons,
+  ( Atomic,
+    Guard,
+    Constraint,
+    ConstraintSet (..),
+    empty,
+    insert,
+    union,
+    guardWith,
+    saturate,
   )
 where
 
-import Binary
+import Constructors
+import Control.Monad.Except hiding (guard)
+import qualified Data.HashSet as HS
 import Data.Hashable
-import GhcPlugins hiding (L)
+import qualified Data.IntMap as IM
+import qualified Data.IntSet as IS
+import DataTypes
+import GhcPlugins hiding (L, empty)
 import Types
-import Unique
-import Prelude hiding ((<>))
 
-data Side = L | R
+type Atomic = Constraint 'L 'R
 
--- An atomic constructor set with a location tag
-data K (s :: Side) where
-  Dom :: RVar -> K s
-  Set :: UniqSet Name -> SrcSpan -> K 'R
-  Con :: Name -> SrcSpan -> K 'L
+type Guard = IM.IntMap (UniqSet Name)
 
--- Disregard location in comparison
-instance Eq (K s) where
-  Dom x == Dom x' = x == x'
-  Set s _ == Set s' _ = s == s'
-  Con k _ == Con k' _ = k == k'
-  _ == _ = False
+data Constraint l r
+  = Constraint
+      { left :: K l,
+        right :: K r,
+        guard :: Guard,
+        srcSpan :: SrcSpan
+      }
+  deriving (Eq)
 
-instance Ord (K s) where
-  Dom x <= Dom x' = x <= x'
-  Set k _ <= Set k' _ = nonDetEltsUniqSet k <= nonDetEltsUniqSet k'
-  Con k _ <= Con k' _ = k <= k'
-  Dom _ <= _ = True
-  _ <= _ = False
+instance Hashable (Constraint l r) where
+  hashWithSalt s c = hashWithSalt s (left c, right c, IM.toList c, Constraints.srcSpan c)
 
-instance Hashable Unique where
-  hashWithSalt s = hashWithSalt s . getKey
+-- TODO: remove empty guards
+resolve :: Atomic -> Atomic -> Maybe Atomic
+resolve = undefined
 
-instance Hashable Name where
-  hashWithSalt s = hashWithSalt s . getUnique
+newtype ConstraintSet = ConstraintSet (HS.HashSet Atomic)
 
-instance Hashable (K s) where
-  hashWithSalt s (Dom x) = hashWithSalt s x
-  hashWithSalt s (Set n _) = hashWithSalt s $ nonDetKeysUniqSet n
-  hashWithSalt s (Con n _) = hashWithSalt s $ getUnique n
+empty :: ConstraintSet
+empty = ConstraintSet HS.empty
 
-instance Outputable (K s) where
-  ppr (Dom x) = text "dom" <> parens (ppr x)
-  ppr (Con k _) = ppr k
-  ppr (Set ks _)
-    | isEmptyUniqSet ks = unicodeSyntax (char '∅') (ppr "{}")
-    | otherwise = pprWithBars ppr (nonDetEltsUniqSet ks)
+insert :: Atomic -> ConstraintSet -> ConstraintSet
+insert a (ConstraintSet s) = ConstraintSet (HS.insert a s)
 
-instance Binary (K 'L) where
-  put_ bh (Dom x) = put_ bh True >> put_ bh x
-  put_ bh (Con k l) = put_ bh False >> put_ bh k >> put_ bh l
+union :: ConstraintSet -> ConstraintSet -> ConstraintSet
+union (ConstraintSet s) (ConstraintSet s') = ConstraintSet (HS.union s s')
 
-  get bh = do
-    n <- get bh
-    if n
-      then do
-        x <- get bh
-        return (Dom x)
-      else do
-        k <- get bh
-        l <- get bh
-        return (Con k l)
+guardWith :: Guard -> ConstraintSet -> ConstraintSet
+guardWith g (ConstraintSet s) = ConstraintSet (HS.map (\a -> a {guard = _ (guard a) g}) s)
 
-instance Binary (K 'R) where
-  put_ bh (Dom x) = put_ bh True >> put_ bh x
-  put_ bh (Set s l) = put_ bh False >> put_ bh (nonDetEltsUniqSet s) >> put_ bh l
+-- TODO: fully restrict
+saturate, saturateF :: Domain -> ConstraintSet -> Except Atomic ConstraintSet
+saturate xs cs = do
+  cs' <- saturateF xs cs
+  if cs == cs'
+    then return cs
+    else saturate xs cs'
 
-  get bh = do
-    n <- get bh
-    if n
-      then Dom <$> get bh
-      else Set . mkUniqSet <$> get bh <*> get bh
-
-instance Monad m => Refined (K l) m where
-  domain (Dom x) = return [x]
-  domain _ = return []
-
-  rename x y (Dom x')
-    | x == x' = return (Dom y)
-  rename _ _ c = return c
-
--- Is a pair of constructor sets safe?
-safe :: K l -> K r -> Bool
-safe (Set ks _) (Set ks' _) = uniqSetAll (`elementOfUniqSet` ks') ks
-safe (Con k _) (Set ks _) = elementOfUniqSet k ks
-safe (Set ks _) (Con k _) = nonDetEltsUniqSet ks == [k]
-safe _ _ = True
-
--- Convert constraint to atomic form
-toAtomic :: K l -> K r -> Maybe [(K 'L, K 'R)]
-toAtomic (Dom x) (Dom y)
-  | x /= y = Just [(Dom x, Dom y)]
-toAtomic (Dom x) (Set k l) =
-  Just [(Dom x, Set k l)]
-toAtomic (Set ks l) (Dom x) =
-  Just [(Con k l, Dom x) | k <- nonDetEltsUniqSet ks]
-toAtomic (Con k l) (Dom x) =
-  Just [(Con k l, Dom x)]
-toAtomic k1 k2
-  | safe k1 k2 = Just []
-  | otherwise = Nothing
-
-constraintLoc :: K l -> Maybe SrcSpan
-constraintLoc (Dom _) = Nothing
-constraintLoc (Set _ l) = Just l
-constraintLoc (Con _ l) = Just l
-
-cons :: K l -> [Name]
-cons (Dom _) = []
-cons (Con k _) = [k]
-cons (Set ks _) = nonDetEltsUniqSet ks
+saturateF xs (ConstraintSet cs) =
+  ConstraintSet . HS.filter interface
+    <$> foldM
+      ( \cs' a ->
+          foldM
+            ( \cs'' a' ->
+                if intermediate (right a)
+                  then case resolve a a' of
+                    Nothing -> return cs''
+                    Just a''
+                      | safe (left a'') (right a'') -> return (HS.insert a'' cs'')
+                      | otherwise -> throwError a''
+                  else return cs''
+            )
+            cs'
+            cs
+      )
+      cs
+      cs
+  where
+    intermediate (Dom x _) = IS.notMember x xs
+    intermediate _ = False
+    interface a =
+      case left a of
+        Dom x _ | IS.notMember x xs -> False
+        _ ->
+          case right a of
+            Dom x _ | IS.notMember x xs -> False
+            _ -> IM.foldrWithKey (\x ks p -> p && (IS.member x xs || isEmptyUniqSet ks)) True (guard a)

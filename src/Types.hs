@@ -1,13 +1,11 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE StandaloneDeriving #-}
 
 module Types
   ( RVar,
+    Domain,
     Refined (..),
     Extended (..),
     Type,
@@ -23,8 +21,7 @@ module Types
 where
 
 import Binary
-import Control.Monad
-import qualified Data.List as L
+import qualified Data.IntSet as I
 import DataTypes
 import GhcPlugins hiding (Expr (..), Type)
 import IfaceType
@@ -33,14 +30,12 @@ import Prelude hiding ((<>))
 -- Refinement variable
 type RVar = Int
 
--- The class of objects that contain refinement variables
-class Refined t m where
-  domain :: t -> m [RVar]
-  rename :: RVar -> RVar -> t -> m t
+type Domain = I.IntSet
 
-  -- Guaranteed to cover every variable and preserve order
-  renameAll :: Monad m => [(RVar, RVar)] -> t -> m t
-  renameAll xys t = foldM (flip $ uncurry rename) t xys
+-- The class of objects that contain refinement variables
+class Refined t where
+  domain :: t -> Domain
+  rename :: RVar -> RVar -> t -> t
 
 --  It is necessary to distinguish unrefined sorts vs refined types
 --  Only sorts can appear as arguments to type constructors for three reasons:
@@ -69,12 +64,6 @@ data TypeGen (e :: Extended) d where
   Lit :: IfaceTyLit -> TypeGen e d
   -- Ambiguous hides higher-ranked types and casts
   Ambiguous :: TypeGen d e
-
-deriving instance (Functor (TypeGen e))
-
-deriving instance (Foldable (TypeGen e))
-
-deriving instance (Traversable (TypeGen e))
 
 -- Compare type shapes
 instance Eq (Type 'S) where
@@ -156,16 +145,16 @@ instance Binary (IfType 'S) where
       6 -> return Ambiguous
       _ -> pprPanic "Invalid binary file!" $ ppr ()
 
-instance Monad m => Refined (TypeGen 'T d) m where
-  domain (Inj x _ _) = return [x]
-  domain (a :=> b) = liftM2 L.union (domain a) (domain b)
-  domain _ = return []
+instance Refined (TypeGen 'T d) where
+  domain (Inj x _ _) = I.singleton x
+  domain (a :=> b) = I.union (domain a) (domain b)
+  domain _ = I.empty
 
   rename x y (Inj x' d as)
-    | x == x' = return (Inj y d as)
-    | otherwise = return (Inj x' d as)
-  rename x y (a :=> b) = liftM2 (:=>) (rename x y a) (rename x y b)
-  rename _ _ t = return t
+    | x == x' = Inj y d as
+    | otherwise = Inj x' d as
+  rename x y (a :=> b) = rename x y a :=> rename x y b
+  rename _ _ t = t
 
 -- Inject a sort into a refinement environment
 inj :: RVar -> Type e -> Type 'T

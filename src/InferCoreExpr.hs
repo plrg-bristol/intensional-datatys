@@ -7,8 +7,7 @@ module InferCoreExpr
   )
 where
 
-import ConGraph
-import Constraints
+import Constructors
 import Control.Monad.RWS.Strict
 import CoreUtils
 import qualified Data.List as L
@@ -24,13 +23,13 @@ import TyCon
 import Types
 import Prelude hiding (sum)
 
-defaultLevel :: d -> InferM s (DataType d)
-defaultLevel k = do
-  u <- asks unrollDataTypes
-  if u then return (DataType Initial k) else return (DataType Neutral k)
+-- defaultLevel :: d -> InferM s (DataType d)
+-- defaultLevel k = do
+--   u <- asks unrollDataTypes
+--   if u then return (DataType Initial k) else return (DataType Neutral k)
 
 -- Infer constraints for a (mutually-)recursive bind
-inferRec :: Bool -> Core.CoreBind -> InferM s (Context s)
+inferRec :: Bool -> Core.CoreBind -> InferM Context
 inferRec top bgs = do
   binds <-
     sequence $
@@ -57,14 +56,14 @@ inferRec top bgs = do
             let sr = binds M.! n
         ]
   if top
-    then saturate ctx -- If generalising let or a top-level definition
+    then InferM.saturate ctx -- If generalising let or a top-level definition
     else return ctx
 
 -- Infer constraints for a module
-inferProg :: Core.CoreProgram -> InferM s (Context s)
+inferProg :: Core.CoreProgram -> InferM Context
 inferProg = foldM (\ctx -> fmap (M.union ctx) . putVars ctx . inferRec True) M.empty
 
-inferSubType :: Type 'T -> Type 'T -> InferM s ()
+inferSubType :: Type 'T -> Type 'T -> InferM ()
 inferSubType (Var _) (Var _) = return ()
 inferSubType Ambiguous _ = return ()
 inferSubType _ Ambiguous = return ()
@@ -75,30 +74,30 @@ inferSubType t1 t2
 inferSubType (t11 :=> t12) (t21 :=> t22) =
   inferSubType t21 t11 >> inferSubType t12 t22
 inferSubType (Inj x d as) (Inj y d' _)
-  | x /= y = do
+  | x /= y && d /= d' = do
     -- Combine Initial and Full datatype constraints
-    unless (d == d') $ do
-      cg <- gets congraph
-      cg' <- mergeLevel x y (fmap getName d) (fmap getName d') cg
-      modify (\s -> s {congraph = cg'})
-    emit (Dom x) (Dom y) (d {level = max (level d) (level d')})
+    cg <- gets InferM.constraints
+    -- cg' <- mergeLevel x y (fmap getName d) (fmap getName d') cg
+    -- modify (\s -> s {Scheme.constraints = cg'})
+    emit (Dom x (getName <$> d)) (Dom y (getName <$> d'))
     slice x y (d, as)
 inferSubType _ _ = return ()
 
 -- Take the slice of a datatype including parity
-slice :: Int -> Int -> (DataType TyCon, [Type 'S]) -> InferM s ()
+slice :: Int -> Int -> (DataType TyCon, [Type 'S]) -> InferM ()
 slice x y = void. loop [] True
   where
-    loop :: [TyCon] -> Bool -> (DataType TyCon, [Type 'S]) -> InferM s [TyCon]
+    loop :: [TyCon] -> Bool -> (DataType TyCon, [Type 'S]) -> InferM [TyCon]
     loop ds p (d, as)
       | trivial (orig d) || orig d `elem` ds = return ds
       | otherwise = do
-        c <- asks allowContra
+        -- c <- asks allowContra
         foldM
           ( \ds' k ->
-              ( if c
-                  then branch' [k] x d -- If contraviarnt consturctors are permitted slices need to be guarded
-                  else id
+              ( branchWithoutExpr k x (level d)
+                -- if c
+                --   then branch' [k] x d -- If contraviarnt consturctors are permitted slices need to be guarded
+                --   else id
               )
                 $ do
                   k_ty <- fromCoreConsInst (k <$ d) as
@@ -106,11 +105,11 @@ slice x y = void. loop [] True
           )
           ds
           (tyConDataCons $ orig d)
-    step :: [TyCon] -> Bool -> Type 'T -> InferM s [TyCon]
+    step :: [TyCon] -> Bool -> Type 'T -> InferM [TyCon]
     step ds p (Inj _ d' as') = do
       if p
-        then emit (Dom x) (Dom y) d'
-        else emit (Dom y) (Dom x) d'
+        then emit (Dom x (getName <$> d')) (Dom y (getName <$> d'))
+        else emit (Dom y (getName <$> d')) (Dom x (getName <$> d'))
       loop (orig d' : ds) p (d', as')
     step ds p (a :=> b) = do
       ds' <- step ds (not p) a
@@ -118,7 +117,7 @@ slice x y = void. loop [] True
     step ds _ _ = return ds
 
 -- Infer constraints for a program expression
-infer :: Core.CoreExpr -> InferM s (Scheme s)
+infer :: Core.CoreExpr -> InferM Scheme
 infer (Core.Var v) =
   case Core.isDataConId_maybe v of
     Just k
@@ -126,12 +125,12 @@ infer (Core.Var v) =
       | Core.isClassTyCon $ Core.dataConTyCon k -> return $ Mono Ambiguous
       -- Infer constructor
       | otherwise -> do
-        scheme <- defaultLevel k >>= fromCoreCons
+        scheme <- fromCoreCons (DataType Initial k)
         case decompTy (body scheme) of
           -- Refinable constructor
           (_, Inj x d _) -> do
             s <- mkCon k
-            emit s (Dom x) d >> return scheme
+            emit s (Dom x (getName <$> d)) >> return scheme
           -- Unrefinable constructor
           _ -> return scheme
     -- Infer variable
@@ -192,7 +191,7 @@ infer (Core.Case e bind_e core_ret alts) = do
                   -- Add constructor arguments introduced by the pattern
                   xs_ty <- fst . decompTy <$> fromCoreConsInst (k <$ d) as
                   let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
-                  branch e [k] rvar d $ do
+                  branch e k rvar (level d) $ do
                     -- Constructor arguments are from the same refinement environment
                     mapM_ (\(Mono kti) -> inferSubType (inj rvar kti) kti) ts
                     -- Ensure return type is valid
@@ -208,21 +207,21 @@ infer (Core.Case e bind_e core_ret alts) = do
           -- Ensure destructor is total if not nested
           top <- topLevel e
           s <- mkSet ks
-          when top $ emit (Dom rvar) s d
+          when top $ emit (Dom rvar (getName <$> d)) s
         Just rhs ->
           -- Guard default case by constructors that have not occured
-          branch e (tyConDataCons (orig d) L.\\ ks) rvar d $ do
+          branchAny e (tyConDataCons (orig d) L.\\ ks) rvar (level d) $ do
             ret_i <- mono <$> infer rhs
             inferSubType ret_i ret
     -- Infer an unrefinable case expression
     Base _ as ->
       forM_ altf $ \case
         (Core.DataAlt k, xs, rhs) -> do
-          k' <- defaultLevel k
+          -- k' <- defaultLevel k
           reach <- isBranchReachable e k
           when reach $ do
             -- Add constructor arguments introduced by the pattern
-            xs_ty <- fst . decompTy <$> fromCoreConsInst k' as
+            xs_ty <- fst . decompTy <$> fromCoreConsInst (DataType Initial k) as
             let ts = M.fromList [(getName x, Mono t) | (x, t) <- zip xs xs_ty]
             -- Ensure return type is valid
             ret_i <- mono <$> putVars ts (infer rhs)

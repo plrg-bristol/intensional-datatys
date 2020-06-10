@@ -13,10 +13,9 @@ module FromCore
   )
 where
 
-import ConGraph
+import Constructors
 import Constraints
 import Control.Monad.RWS.Strict
-import qualified Data.List as L
 import qualified Data.Map as M
 import DataTypes
 import GhcPlugins hiding (Expr (..), Type)
@@ -28,21 +27,21 @@ import Types
 
 -- Convert a core datatype to the internal representation
 class CoreDataType (e :: Extended) where
-  mkDataType :: TyCon -> [Type 'S] -> InferM s (Type e)
+  mkDataType :: TyCon -> [Type 'S] -> InferM (Type e)
 
 instance CoreDataType 'S where
   mkDataType d as = do
-    u <- asks unrollDataTypes
-    return $ Data (DataType (if u then Initial else Neutral) d) as
+    -- u <- asks unrollDataTypes
+    return $ Data (DataType Initial d) as
 
 instance CoreDataType 'T where
   mkDataType d as = do
     x <- fresh
-    u <- asks unrollDataTypes
-    return $ Inj x (DataType (if u then Initial else Neutral) d) as
+    -- u <- asks unrollDataTypes
+    return $ Inj x (DataType Initial d) as
 
 -- Convert a monomorphic core type
-fromCore :: CoreDataType e => Tcr.Type -> InferM s (Type e)
+fromCore :: CoreDataType e => Tcr.Type -> InferM (Type e)
 fromCore (Tcr.TyVarTy a) = Var <$> getExternalName a
 fromCore (Tcr.AppTy t1 t2) = do
   s1 <- fromCore t1
@@ -55,8 +54,8 @@ fromCore (Tcr.TyConApp tc args)
   | isClassTyCon tc = return Ambiguous
   | otherwise = do
     args' <- mapM fromCore args
-    c <- asks allowContra
-    if trivial tc || (contravariant tc && not c)
+    -- c <- asks allowContra
+    if trivial tc -- || (contravariant tc && not c)
       then return (Base tc args')
       else mkDataType tc args'
 fromCore (Tcr.FunTy t1 t2) = do
@@ -68,7 +67,7 @@ fromCore (Tcr.ForAllTy a t) = pprPanic "Unexpected polymorphic type!" $ ppr $ Tc
 fromCore t = pprPanic "Unexpected cast or coercion type!" $ ppr t
 
 -- Convert a polymorphic core type
-fromCoreScheme :: Tcr.Type -> InferM s (Scheme s)
+fromCoreScheme :: Tcr.Type -> InferM Scheme
 fromCoreScheme (Tcr.ForAllTy b t) = do
   a <- getExternalName (Tcr.binderVar b)
   scheme <- fromCoreScheme t
@@ -82,14 +81,15 @@ fromCoreScheme (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
 fromCoreScheme t = Mono <$> fromCore t
 
 -- Extract a constructor's original type
-fromCoreCons :: DataType DataCon -> InferM s (Scheme s)
+fromCoreCons :: DataType DataCon -> InferM Scheme
 fromCoreCons k = do
   let d = dataConTyCon (orig k)
   x <- fresh
   args <- mapM fromCore $ dataConOrigArgTys (orig k)
   -- Unroll datatype
-  u <- asks unrollDataTypes
-  let args' = if u then fmap (increaseLevel d) args else args :: [Type 'S]
+  -- u <- asks unrollDataTypes
+  -- let args' = if u then fmap (increaseLevel d) args else args :: [Type 'S]
+  let args' = fmap (increaseLevel d) args :: [Type 'S]
   -- Inject
   let args'' = fmap (inj x) args'
   -- Rebuild type
@@ -99,14 +99,15 @@ fromCoreCons k = do
 
 -- Extract a constructor's type with tyvars instantiated
 -- We assume there are no existentially quantified tyvars
-fromCoreConsInst :: DataType DataCon -> [Type 'S] -> InferM s (Type 'T)
+fromCoreConsInst :: DataType DataCon -> [Type 'S] -> InferM (Type 'T)
 fromCoreConsInst k tyargs = do
   let d = dataConTyCon (orig k)
   x <- fresh
   args <- mapM fromCore $ dataConOrigArgTys (orig k)
   -- Unroll datatype
-  u <- asks unrollDataTypes
-  let args' = if u then fmap (increaseLevel d) args else args
+  -- u <- asks unrollDataTypes
+  -- let args' = if u then fmap (increaseLevel d) args else args
+  let args' = fmap (increaseLevel d) args
   -- Instantiate and inject
   let args'' = fmap (inj x . inst) args'
   -- Rebuild type
@@ -118,35 +119,35 @@ fromCoreConsInst k tyargs = do
 
 -- Prepare name for interface
 -- Should be used before all type variables
-getExternalName :: NamedThing a => a -> InferM s Name
+getExternalName :: NamedThing a => a -> InferM Name
 getExternalName a = do
   let n = getName a
   mn <- asks modName
   return $ mkExternalName (nameUnique n) mn (nameOccName n) (nameSrcSpan n)
 
 -- Lookup constrained variable emit its constraints
-getVar :: Var -> InferM s (Scheme s)
+getVar :: Var -> InferM Scheme
 getVar v =
   asks (M.lookup (getName v) . varEnv) >>= \case
     Just scheme -> do
       -- Localise constraints
-      xys <-
-        mapM
-          ( \x -> do
+      fre_scheme <-
+        foldM
+          ( \s x -> do
               y <- fresh
-              return (x, y)
+              return (rename x y s)
           )
-          (L.sort $ boundvs scheme)
-      fre_scheme <- renameAll xys scheme {boundvs = []}
-      case constraints fre_scheme of
+          (scheme {boundvs = []})
+          (boundvs scheme)
+      case Scheme.constraints fre_scheme of
         Nothing ->
           -- ? In this case is the variable necessarily unsatisfiable
-          return fre_scheme {constraints = Nothing}
+          return fre_scheme {Scheme.constraints = Nothing}
         Just var_cg -> do
           g <- asks branchGuard
-          var_cg' <- guardWith g var_cg
-          modify (\s -> s {congraph = unionUniq (congraph s) var_cg'})
-          return fre_scheme {constraints = Nothing}
+          let var_cg' = guardWith g var_cg
+          modify (\s -> s {InferM.constraints = union (InferM.constraints s) var_cg'})
+          return fre_scheme {Scheme.constraints = Nothing}
     Nothing -> do
       -- Maximise library type
       var_scheme <- fromCoreScheme $ varType v
@@ -154,9 +155,9 @@ getVar v =
       return var_scheme
 
 -- Maximise/minimise a type
-maximise :: Bool -> Type 'T -> InferM s ()
+maximise :: Bool -> Type 'T -> InferM ()
 maximise True (Inj x d _) = do
   l <- asks inferLoc
-  mapM_ (\k -> emit (Con (getName k) l) (Dom x) d) $ tyConDataCons (orig d)
+  mapM_ (\k -> emit (Con (getName k) l) (Dom x (getName <$> d))) $ tyConDataCons (orig d)
 maximise b (x :=> y) = maximise (not b) x >> maximise b y
 maximise _ _ = return ()

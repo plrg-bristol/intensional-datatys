@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 
 module DataTypes
@@ -9,6 +12,8 @@ module DataTypes
 where
 
 import Binary
+import Data.Hashable
+import GHC.Generics
 import GhcPlugins
 import TyCoRep
 import Prelude hiding ((<>))
@@ -16,7 +21,22 @@ import Prelude hiding ((<>))
 data Level
   = Initial -- Singletons or Non-empty etc
   | Full -- Infinite or Empty
-  deriving (Eq)
+  deriving (Eq, Generic)
+
+instance Hashable Level
+
+instance Binary Level where
+  put_ bh Initial = put_ bh False
+  put_ bh Full = put_ bh True
+
+  get bh =
+    get bh >>= \case
+      False -> return Initial
+      True -> return Full
+
+instance Outputable Level where
+  ppr Initial = char '\''
+  ppr Full = empty
 
 -- Internal representation of datatypes
 data DataType d
@@ -24,7 +44,9 @@ data DataType d
       { level :: Level,
         orig :: d
       }
-  deriving (Eq)
+  deriving (Eq, Functor, Foldable, Traversable, Generic)
+
+instance Hashable d => Hashable (DataType d)
 
 instance Outputable d => Outputable (DataType d) where
   ppr d
@@ -32,13 +54,9 @@ instance Outputable d => Outputable (DataType d) where
     | otherwise = ppr (orig d)
 
 instance Binary d => Binary (DataType d) where
-  put_ bh (DataType Initial d) = put_ bh False >> put_ bh d
-  put_ bh (DataType Full d) = put_ bh True >> put_ bh d
+  put_ bh (DataType l d) = put_ bh l >> put_ bh d
 
-  get bh =
-    get bh >>= \case
-      False -> DataType Initial <$> get bh
-      True -> DataType Full <$> get bh
+  get bh = DataType <$> get bh <*> get bh
 
 -- Check if a core datatype is contravariant in every type argument
 contravariant :: TyCon -> Bool

@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -64,6 +66,10 @@ data TypeGen (e :: Extended) d where
   Lit :: IfaceTyLit -> TypeGen e d
   -- Ambiguous hides higher-ranked types and casts
   Ambiguous :: TypeGen d e
+
+deriving instance Functor (TypeGen e)
+deriving instance Foldable (TypeGen e) 
+deriving instance Traversable (TypeGen e)
 
 -- Compare type shapes
 instance Eq (Type 'S) where

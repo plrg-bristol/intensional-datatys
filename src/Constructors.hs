@@ -15,10 +15,12 @@ module Constructors
 where
 
 import Binary
+import Data.Hashable
 import qualified Data.IntSet as I
 import DataTypes
 import GhcPlugins hiding (L)
 import Types
+import Unique
 import Prelude hiding ((<>))
 
 data Side = L | R
@@ -49,16 +51,16 @@ instance Eq (K s) where
 -- instance Hashable Name where
 --   hashWithSalt s = hashWithSalt s . getUnique
 
--- instance Hashable (K s) where
---   hashWithSalt s (Dom x) = hashWithSalt s x
---   hashWithSalt s (Set n _) = hashWithSalt s $ nonDetKeysUniqSet n
---   hashWithSalt s (Con n _) = hashWithSalt s $ getUnique n
+instance Hashable (K s) where
+  hashWithSalt s (Dom x d) = hashWithSalt s (x, getKey . getUnique <$> d)
+  hashWithSalt s (Set ks _) = hashWithSalt s $ getKey <$> nonDetKeysUniqSet ks
+  hashWithSalt s (Con k _) = hashWithSalt s $ getKey $ getUnique k
 
 instance Outputable (K s) where
-  ppr (Dom x _) = text "dom" <> parens (ppr x)
+  ppr (Dom x d) = text "dom" <> parens (ppr x <> parens (ppr d))
   ppr (Con k _) = ppr k
   ppr (Set ks _)
-    | isEmptyUniqSet ks = unicodeSyntax (char '∅') (ppr "{}")
+    | isEmptyUniqSet ks = unicodeSyntax (char '∅') (text "{}")
     | otherwise = pprWithBars ppr (nonDetEltsUniqSet ks)
 
 instance Binary (K 'L) where

@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -23,9 +24,9 @@ import Types
 import Prelude hiding ((<>))
 
 -- Constrained polymorphic types
-type Scheme = SchemeGen (Type 'T) ConGraph
+type Scheme = SchemeGen (Type 'T)
 
-type IfScheme = SchemeGen (IfType 'T) IfConGraph
+type IfScheme = SchemeGen (IfType 'T)
 
 data SchemeGen t
   = Scheme
@@ -34,6 +35,7 @@ data SchemeGen t
         body :: t,
         constraints :: Maybe ConstraintSet
       }
+  deriving (Functor)
 
 instance Binary IfScheme where
   put_ bh scheme =
@@ -44,7 +46,7 @@ instance Binary IfScheme where
 
   get bh = Scheme <$> get bh <*> get bh <*> get bh <*> get bh
 
-instance Outputable d => Outputable (SchemeGen d IfConGraph) where
+instance Outputable d => Outputable (SchemeGen d) where
   ppr scheme =
     case constraints scheme of
       Just cs
@@ -66,29 +68,26 @@ instance Refined d => Refined (SchemeGen d) where
   domain s = domain (body s)
 
   rename x y s
-    | x `elem` boundvs s = return s
+    | x `elem` boundvs s = s
     | y `elem` boundvs s = pprPanic "Alpha renaming of polymorphic types is not implemented!!" $ ppr (x, y)
-    | otherwise = do
-      bod <- rename x y $ body s
-      cg <- mapM (rename x y) $ constraints s
-      return $
-        Scheme
-          { tyvars = tyvars s,
-            boundvs = boundvs s,
-            body = bod,
-            constraints = cg
-          }
+    | otherwise =
+      Scheme
+        { tyvars = tyvars s,
+          boundvs = boundvs s,
+          body = rename x y $ body s,
+          constraints = rename x y <$> constraints s
+        }
 
-  -- renameAll xys s = do
-  --   bod <- renameAll xys $ body s
-  --   cg <- mapM (renameAll xys) $ constraints s
-  --   return $
-  --     Scheme
-  --       { tyvars = tyvars s,
-  --         boundvs = boundvs s,
-  --         body = bod,
-  --         constraints = cg
-  --       }
+-- renameAll xys s = do
+--   bod <- renameAll xys $ body s
+--   cg <- mapM (renameAll xys) $ constraints s
+--   return $
+--     Scheme
+--       { tyvars = tyvars s,
+--         boundvs = boundvs s,
+--         body = bod,
+--         constraints = cg
+--       }
 
 pattern Mono :: t -> SchemeGen t
 pattern Mono t =

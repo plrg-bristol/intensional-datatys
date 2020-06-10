@@ -113,7 +113,7 @@ resolve l r
         }
   | Dom x d <- right l, -- Substitution
     Dom y d' <- left l,
-    Con k _ <- left l =
+    Just (k : _) <- nonDetEltsUniqSet <$> (IM.lookup y (guard l) >>= HM.lookup (level d')) =
     notTautology
       r
         { guard =
@@ -156,13 +156,32 @@ guardWith g (ConstraintSet s) = ConstraintSet (HS.map (\a -> a {guard = IM.union
 
 -- TODO: fully restrict
 saturate, saturateF :: Domain -> ConstraintSet -> Except Atomic ConstraintSet
-saturate xs cs = do
-  cs' <- saturateF xs cs
-  if cs == cs'
-    then return cs
+saturate xs (ConstraintSet cs) = do
+  cs' <- saturateF xs (ConstraintSet cs)
+  if (ConstraintSet cs) == cs'
+    then return (ConstraintSet $ HS.filter interface cs)
     else saturate xs cs'
+  where
+    interface a =
+      case left a of
+        Dom x _ | IS.notMember x xs -> False
+        _ ->
+          case right a of
+            Dom x _ | IS.notMember x xs -> False
+            _ ->
+              IM.foldrWithKey
+                ( \x xgs p ->
+                    all
+                      ( \ks ->
+                          IS.member x xs || isEmptyUniqSet ks
+                      )
+                      xgs
+                      && p
+                )
+                True
+                (guard a)
 saturateF xs (ConstraintSet cs) =
-  ConstraintSet . HS.filter interface
+  ConstraintSet
     <$> foldM
       ( \cs' a ->
           foldM
@@ -183,20 +202,3 @@ saturateF xs (ConstraintSet cs) =
   where
     intermediate (Dom x _) = IS.notMember x xs
     intermediate _ = False
-    interface a =
-      case left a of
-        Dom x _ | IS.notMember x xs -> False
-        _ ->
-          case right a of
-            Dom x _ | IS.notMember x xs -> False
-            _ ->
-              IM.foldrWithKey
-                ( \x xgs p ->
-                    all
-                      ( \ks ->
-                          p && (IS.member x xs || isEmptyUniqSet ks)
-                      )
-                      xgs
-                )
-                True
-                (guard a)

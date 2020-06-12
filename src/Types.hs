@@ -213,7 +213,7 @@ decompTy (a :=> b) =
    in (as ++ [a], r)
 decompTy t = ([], t)
 
--- Unroll a datatype when it is "under" itself
+-- Unfold a particular datatype in some type
 increaseLevel :: TyCon -> Type e -> Type e
 increaseLevel d (Data d' as)
   | d == orig d' = Data d' {level = Full} (increaseLevel d <$> as)

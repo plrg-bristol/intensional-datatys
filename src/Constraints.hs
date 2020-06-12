@@ -2,7 +2,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module Constraints
   ( Atomic,
@@ -86,45 +85,57 @@ instance Hashable (Constraint l r) where
   hashWithSalt s c = hashWithSalt s (left c, right c, IM.toList . fmap (fmap (fmap (getKey . getUnique) . nonDetEltsUniqSet)) $ guard c)
 
 -- Checks if the guard implies the body
-notTautology :: Atomic -> Maybe Atomic
-notTautology a
+tautology :: Atomic -> Bool
+tautology a
   | Dom x d <- right a,
     Con k _ <- left a,
     Just True <- elementOfUniqSet k <$> (IM.lookup x (guard a) >>= HM.lookup (level d)) =
-    Nothing
-notTautology a = Just a
+    True
+tautology a = False
 
-resolve :: Atomic -> Atomic -> Maybe Atomic
-resolve l r
+trans :: Atomic -> Atomic -> [Atomic]
+trans l r
   | Dom x d <- right l, -- Trans
     Dom y d' <- left r,
     x == y,
     d == d' =
-    notTautology
-      r
+    [ r
         { left = left l,
           guard = IM.unionWith (HM.unionWith unionUniqSets) (guard l) (guard r)
         }
+    ]
+  | otherwise = []
+
+weak :: Atomic -> Atomic -> [Atomic]
+weak l r
   | Dom x d <- right l, -- Weakening
     Con k _ <- left l =
-    notTautology
-      r
-        { guard = IM.unionWith (HM.unionWith unionUniqSets) (IM.adjust (HM.adjust (`delOneFromUniqSet` k) (level d)) x $ guard l) (guard r)
+    [ r
+        { guard = IM.adjust (HM.adjust (`delOneFromUniqSet` k) (level d)) x $ IM.unionWith (HM.unionWith unionUniqSets) (guard l) (guard r)
         }
+    ]
+  | otherwise = []
+
+subs :: Atomic -> Atomic -> [Atomic]
+subs l r
   | Dom x d <- right l, -- Substitution
     Dom y d' <- left l,
-    Just (k : _) <- nonDetEltsUniqSet <$> (IM.lookup y (guard l) >>= HM.lookup (level d')) =
-    notTautology
-      r
-        { guard =
-            -- TODO: check if y guard is empty
-            IM.insertWith (HM.unionWith unionUniqSets) x (HM.singleton (level d) (unitUniqSet k)) $
-              IM.unionWith
-                (HM.unionWith unionUniqSets)
-                (IM.adjust (HM.adjust (`delOneFromUniqSet` k) (level d')) y $ guard l)
-                (guard r)
-        }
-  | otherwise = Nothing
+    Just ks <- nonDetEltsUniqSet <$> (IM.lookup y (guard l) >>= HM.lookup (level d')) =
+    [ r'
+      | k <- ks,
+        let r' =
+              r
+                { guard =
+                    IM.insertWith (HM.unionWith unionUniqSets) x (HM.singleton (level d) (unitUniqSet k))
+                      $ IM.adjust (HM.adjust (`delOneFromUniqSet` k) (level d')) y
+                      $ IM.unionWith
+                        (HM.unionWith unionUniqSets)
+                        (guard l)
+                        (guard r)
+                },
+        not (tautology r')
+    ]
+  | otherwise = []
 
 -- TODO: make direct lookups
 newtype ConstraintSet = ConstraintSet (HS.HashSet Atomic)
@@ -154,11 +165,10 @@ union (ConstraintSet s) (ConstraintSet s') = ConstraintSet (HS.union s s')
 guardWith :: Guard -> ConstraintSet -> ConstraintSet
 guardWith g (ConstraintSet s) = ConstraintSet (HS.map (\a -> a {guard = IM.unionWith (HM.unionWith unionUniqSets) (guard a) g}) s)
 
--- TODO: fully restrict
 saturate, saturateF :: Domain -> ConstraintSet -> Except Atomic ConstraintSet
 saturate xs (ConstraintSet cs) = do
   cs' <- saturateF xs (ConstraintSet cs)
-  if (ConstraintSet cs) == cs'
+  if ConstraintSet cs == cs'
     then return (ConstraintSet $ HS.filter interface cs)
     else saturate xs cs'
   where
@@ -181,24 +191,27 @@ saturate xs (ConstraintSet cs) = do
                 True
                 (guard a)
 saturateF xs (ConstraintSet cs) =
-  ConstraintSet
-    <$> foldM
-      ( \cs' a ->
-          foldM
-            ( \cs'' a' ->
-                if intermediate (right a)
-                  then case resolve a a' of
-                    Nothing -> return cs''
-                    Just a''
-                      | safe (left a'') (right a'') -> return (HS.insert a'' cs'')
-                      | otherwise -> throwError a''
-                  else return cs''
-            )
-            cs'
-            cs
-      )
-      cs
-      cs
+  foldM
+    ( \cs' a ->
+        foldM
+          ( \cs'' a' ->
+              if intermediate (right a)
+                then
+                  foldM
+                    ( \cs''' a'' ->
+                        if safe (left a'') (right a'')
+                          then return (insert a'' cs''')
+                          else throwError a''
+                    )
+                    cs''
+                    (trans a a' ++ subs a a' ++ weak a a')
+                else return cs''
+          )
+          cs'
+          cs
+    )
+    (ConstraintSet cs)
+    cs
   where
     intermediate (Dom x _) = IS.notMember x xs
     intermediate _ = False

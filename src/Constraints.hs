@@ -18,12 +18,14 @@ where
 
 import Binary
 import Constructors
-import Control.Monad.Except hiding (guard)
+import Control.Monad.Except hiding ((<>), guard)
+import Control.Monad.Writer hiding ((<>), guard)
 import qualified Data.HashMap.Lazy as HM
 import qualified Data.HashSet as HS
 import Data.Hashable
 import qualified Data.IntMap as IM
 import qualified Data.IntSet as IS
+import Data.Monoid hiding ((<>))
 import DataTypes
 import GhcPlugins hiding (L, empty)
 import Types
@@ -171,49 +173,52 @@ saturate xs cs = saturate' (domain cs `IS.difference` xs) cs
   where
     saturate' is cs | IS.null is = return cs
     saturate' is cs = do
-      ConstraintSet cs' <- saturateF (IS.findMin is) cs
-      if cs == ConstraintSet cs'
-        then saturate (IS.deleteMin is) (ConstraintSet $ HS.filter intermediate cs')
-        else saturate is (ConstraintSet cs')
+      (ConstraintSet cs', Any new) <- runWriterT $ saturateF (IS.findMin is) cs
+      if new
+        then saturate' (IS.deleteMin is) (ConstraintSet $ HS.filter intermediate cs')
+        else saturate' is (ConstraintSet cs')
       where
-      intermediate a =
-        case left a of
-          Dom x _ | x == IS.findMin is -> False
-          _ ->
-            case right a of
-              Dom x _ | x == IS.findMin is -> False
-              _ ->
-                IM.foldrWithKey
-                  ( \x xgs p ->
-                      all
-                        ( \ks ->
-                            x /= IS.findMin is|| isEmptyUniqSet ks
-                        )
-                        xgs
-                        && p
-                  )
-                  True
-                  (guard a)
+        intermediate a =
+          case left a of
+            Dom x _ | x == IS.findMin is -> False
+            _ ->
+              case right a of
+                Dom x _ | x == IS.findMin is -> False
+                _ ->
+                  IM.foldrWithKey
+                    ( \x xgs p ->
+                        all
+                          ( \ks ->
+                              x /= IS.findMin is || isEmptyUniqSet ks
+                          )
+                          xgs
+                          && p
+                    )
+                    True
+                    (guard a)
 
-saturateF :: RVar -> ConstraintSet -> Except Atomic ConstraintSet
+saturateF :: RVar -> ConstraintSet -> WriterT Any (Except Atomic) ConstraintSet
 saturateF x (ConstraintSet cs) =
   foldM
     ( \cs' a ->
         case right a of
-          Dom y _ | x == y -> 
-            foldM
-              ( \cs'' a' ->
-                  foldM
-                    ( \cs''' a'' ->
-                        if safe (left a'') (right a'')
-                          then return (insert a'' cs''')
-                          else throwError a''
-                    )
-                    cs''
-                    (trans a a' ++ subs a a' ++ weak a a')
-              )
-              cs'
-              cs
+          Dom y _
+            | x == y ->
+              foldM
+                ( \cs'' a' ->
+                    foldM
+                      ( \cs''' a'' ->
+                          if safe (left a'') (right a'')
+                            then do
+                              tell (Any True)
+                              return (insert a'' cs''')
+                            else throwError a''
+                      )
+                      cs''
+                      (trans a a' ++ subs a a' ++ weak a a')
+                )
+                cs'
+                cs
           _ -> return cs'
     )
     (ConstraintSet cs)

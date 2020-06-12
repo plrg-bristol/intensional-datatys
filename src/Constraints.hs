@@ -165,38 +165,44 @@ union (ConstraintSet s) (ConstraintSet s') = ConstraintSet (HS.union s s')
 guardWith :: Guard -> ConstraintSet -> ConstraintSet
 guardWith g (ConstraintSet s) = ConstraintSet (HS.map (\a -> a {guard = IM.unionWith (HM.unionWith unionUniqSets) (guard a) g}) s)
 
-saturate, saturateF :: Domain -> ConstraintSet -> Except Atomic ConstraintSet
-saturate xs (ConstraintSet cs) = do
-  cs' <- saturateF xs (ConstraintSet cs)
-  if ConstraintSet cs == cs'
-    then return (ConstraintSet $ HS.filter interface cs)
-    else saturate xs cs'
+-- TODO: lookup based on right hand side
+saturate :: Domain -> ConstraintSet -> Except Atomic ConstraintSet
+saturate xs cs = saturate' (domain cs `IS.difference` xs) cs
   where
-    interface a =
-      case left a of
-        Dom x _ | IS.notMember x xs -> False
-        _ ->
-          case right a of
-            Dom x _ | IS.notMember x xs -> False
-            _ ->
-              IM.foldrWithKey
-                ( \x xgs p ->
-                    all
-                      ( \ks ->
-                          IS.member x xs || isEmptyUniqSet ks
-                      )
-                      xgs
-                      && p
-                )
-                True
-                (guard a)
-saturateF xs (ConstraintSet cs) =
+    saturate' is cs | IS.null is = return cs
+    saturate' is cs = do
+      ConstraintSet cs' <- saturateF (IS.findMin is) cs
+      if cs == ConstraintSet cs'
+        then saturate (IS.deleteMin is) (ConstraintSet $ HS.filter intermediate cs')
+        else saturate is (ConstraintSet cs')
+      where
+      intermediate a =
+        case left a of
+          Dom x _ | x == IS.findMin is -> False
+          _ ->
+            case right a of
+              Dom x _ | x == IS.findMin is -> False
+              _ ->
+                IM.foldrWithKey
+                  ( \x xgs p ->
+                      all
+                        ( \ks ->
+                            x /= IS.findMin is|| isEmptyUniqSet ks
+                        )
+                        xgs
+                        && p
+                  )
+                  True
+                  (guard a)
+
+saturateF :: RVar -> ConstraintSet -> Except Atomic ConstraintSet
+saturateF x (ConstraintSet cs) =
   foldM
     ( \cs' a ->
-        foldM
-          ( \cs'' a' ->
-              if intermediate (right a)
-                then
+        case right a of
+          Dom y _ | x == y -> 
+            foldM
+              ( \cs'' a' ->
                   foldM
                     ( \cs''' a'' ->
                         if safe (left a'') (right a'')
@@ -205,13 +211,10 @@ saturateF xs (ConstraintSet cs) =
                     )
                     cs''
                     (trans a a' ++ subs a a' ++ weak a a')
-                else return cs''
-          )
-          cs'
-          cs
+              )
+              cs'
+              cs
+          _ -> return cs'
     )
     (ConstraintSet cs)
     cs
-  where
-    intermediate (Dom x _) = IS.notMember x xs
-    intermediate _ = False

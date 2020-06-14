@@ -20,6 +20,7 @@ import Binary
 import Constructors
 import Control.Monad.Except hiding ((<>), guard)
 import Control.Monad.Writer hiding ((<>), guard)
+import Data.Bifunctor
 import qualified Data.HashMap.Lazy as HM
 import qualified Data.HashSet as HS
 import Data.Hashable
@@ -27,7 +28,7 @@ import qualified Data.IntMap as IM
 import qualified Data.IntSet as IS
 import Data.Monoid hiding ((<>))
 import DataTypes
-import GhcPlugins hiding (L, empty)
+import GhcPlugins hiding (L, empty, filterOut)
 import Types
 import Unique
 import Prelude hiding ((<>))
@@ -139,87 +140,174 @@ subs l r
     ]
   | otherwise = []
 
--- TODO: make direct lookups
-newtype ConstraintSet = ConstraintSet (HS.HashSet Atomic)
+recursive :: Atomic -> Bool
+recursive a =
+  case right a of
+    Dom x d -> maybe False isEmptyUniqSet (IM.lookup x (guard a) >>= HM.lookup (level d))
+    _ -> False
+
+data ConstraintSet
+  = ConstraintSet
+      { definite :: IM.IntMap (HS.HashSet Atomic),
+        goal :: HS.HashSet Atomic
+      }
   deriving (Eq)
 
+member :: Atomic -> ConstraintSet -> Bool
+member a cs =
+  case right a of
+    Dom x _ ->
+      case IM.lookup x (definite cs) of
+        Nothing -> False
+        Just as -> HS.member a as
+    _ -> HS.member a (goal cs)
+
 instance Outputable ConstraintSet where
-  ppr (ConstraintSet s) = vcat (ppr <$> HS.toList s)
+  ppr cs = vcat ((ppr . HS.toList . snd <$> IM.toList (definite cs)) ++ (ppr <$> HS.toList (goal cs)))
 
 instance Binary ConstraintSet where
-  put_ bh (ConstraintSet s) = put_ bh $ HS.toList s
-  get bh = ConstraintSet . HS.fromList <$> get bh
+  put_ bh cs = put_ bh (second HS.toList <$> IM.toList (definite cs)) >> put_ bh (HS.toList (goal cs))
+  get bh = ConstraintSet . IM.fromList . fmap (second HS.fromList) <$> get bh <*> (HS.fromList <$> get bh)
+
+instance (Eq a, Hashable a, Refined a) => Refined (HS.HashSet a) where
+  domain = foldr (IS.union . domain) IS.empty
+  rename x y = HS.map (rename x y)
 
 instance Refined ConstraintSet where
-  domain (ConstraintSet s) = foldr (IS.union . domain) IS.empty s
+  domain cs =
+    foldr
+      (IS.union . domain)
+      (foldr (IS.union . domain) IS.empty (goal cs))
+      (definite cs)
 
-  rename x y (ConstraintSet s) = ConstraintSet $ HS.map (rename x y) s
+  rename x y cs =
+    ConstraintSet
+      { definite =
+          IM.fromListWith HS.union $
+            (\(z, s) -> (if z == x then y else z, HS.map (rename x y) s)) <$> IM.toList (definite cs),
+        goal = HS.map (rename x y) (goal cs)
+      }
 
 empty :: ConstraintSet
-empty = ConstraintSet HS.empty
+empty = ConstraintSet {definite = IM.empty, goal = HS.empty}
 
 insert :: Atomic -> ConstraintSet -> ConstraintSet
-insert a (ConstraintSet s) = ConstraintSet (HS.insert a s)
+insert a cs =
+  case right a of
+    Dom x _ -> cs {definite = IM.insertWith HS.union x (HS.singleton a) (definite cs)}
+    _ -> cs {goal = HS.insert a (goal cs)}
 
 union :: ConstraintSet -> ConstraintSet -> ConstraintSet
-union (ConstraintSet s) (ConstraintSet s') = ConstraintSet (HS.union s s')
+union cs cs' =
+  ConstraintSet
+    { definite = IM.unionWith HS.union (definite cs) (definite cs'),
+      goal = HS.union (goal cs) (goal cs')
+    }
 
 guardWith :: Guard -> ConstraintSet -> ConstraintSet
-guardWith g (ConstraintSet s) = ConstraintSet (HS.map (\a -> a {guard = IM.unionWith (HM.unionWith unionUniqSets) (guard a) g}) s)
+guardWith g cs =
+  ConstraintSet
+    { definite = IM.map (HS.map go) (definite cs),
+      goal = HS.map go (goal cs)
+    }
+  where
+    go a = a {guard = IM.unionWith (HM.unionWith unionUniqSets) (guard a) g}
 
--- TODO: lookup based on right hand side
+filterOut :: RVar -> ConstraintSet -> ConstraintSet
+filterOut x cs =
+  ConstraintSet
+    { definite =
+        IM.mapMaybeWithKey
+          ( \y s ->
+              if x == y
+                then Nothing
+                else Just (HS.filter intermediate s)
+          )
+          (definite cs),
+      goal = HS.filter intermediate (goal cs)
+    }
+  where
+    intermediate a =
+      case left a of
+        Dom y _ | y == x -> False
+        _ ->
+          case right a of
+            Dom y _ | y == x -> False
+            _ ->
+              IM.foldrWithKey
+                ( \y ygs p ->
+                    all
+                      ( \ks ->
+                          y /= x || isEmptyUniqSet ks
+                      )
+                      ygs
+                      && p
+                )
+                True
+                (guard a)
+
 saturate :: Domain -> ConstraintSet -> Except Atomic ConstraintSet
 saturate xs cs = saturate' (domain cs `IS.difference` xs) cs
   where
     saturate' is cs | IS.null is = return cs
     saturate' is cs = do
-      (ConstraintSet cs', Any new) <- runWriterT $ saturateF (IS.findMin is) cs
+      let x = IS.findMin is
+      (cs', Any new) <- runWriterT $ saturateF x cs
       if new
-        then saturate' (IS.deleteMin is) (ConstraintSet $ HS.filter intermediate cs')
-        else saturate' is (ConstraintSet cs')
-      where
-        intermediate a =
-          case left a of
-            Dom x _ | x == IS.findMin is -> False
-            _ ->
-              case right a of
-                Dom x _ | x == IS.findMin is -> False
-                _ ->
-                  IM.foldrWithKey
-                    ( \x xgs p ->
-                        all
-                          ( \ks ->
-                              x /= IS.findMin is || isEmptyUniqSet ks
-                          )
-                          xgs
-                          && p
-                    )
-                    True
-                    (guard a)
+        then saturate' is cs'
+        else saturate' (IS.deleteMin is) (filterOut x cs')
 
 saturateF :: RVar -> ConstraintSet -> WriterT Any (Except Atomic) ConstraintSet
-saturateF x (ConstraintSet cs) =
-  foldM
-    ( \cs' a ->
-        case right a of
-          Dom y _
-            | x == y ->
-              foldM
-                ( \cs'' a' ->
-                    foldM
-                      ( \cs''' a'' ->
-                          if safe (left a'') (right a'')
-                            then do
-                              tell (Any True)
-                              return (insert a'' cs''')
-                            else throwError a''
+saturateF x cs =
+  case IM.lookup x (definite cs) of
+    Just rs
+      | not (all recursive rs) ->
+        foldM
+          ( \cs' a -> do
+              alpha <-
+                foldM -- TODO: a direct lookup here?
+                  ( foldM
+                      ( \cs'' a' ->
+                          foldM
+                            ( \cs''' a'' ->
+                                if safe (left a'') (right a'')
+                                  then
+                                    if member a'' cs'''
+                                      then return cs'''
+                                      else do
+                                        tell (Any True)
+                                        return (insert a'' cs''')
+                                  else throwError a''
+                            )
+                            cs''
+                            (trans a a' ++ subs a a' ++ weak a a')
                       )
-                      cs''
-                      (trans a a' ++ subs a a' ++ weak a a')
-                )
-                cs'
-                cs
-          _ -> return cs'
-    )
-    (ConstraintSet cs)
-    cs
+                  )
+                  cs'
+                  (definite cs)
+              beta <-
+                foldM
+                  ( \cs'' a' ->
+                      foldM
+                        ( \cs''' a'' ->
+                            if safe (left a'') (right a'')
+                              then
+                                if member a'' cs'''
+                                  then return cs'''
+                                  else do
+                                    tell (Any True)
+                                    return (insert a'' cs''')
+                              else throwError a''
+                        )
+                        cs''
+                        (trans a a' ++ subs a a' ++ weak a a')
+                  )
+                  alpha
+                  (goal cs)
+              if recursive a
+                then return beta
+                else return beta {definite = IM.adjust (HS.delete a) x (definite beta)}
+          )
+          cs
+          rs
+    _ -> return cs

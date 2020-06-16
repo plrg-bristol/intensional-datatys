@@ -65,7 +65,9 @@ data Constraint l r
         guard :: Guard,
         srcSpan :: SrcSpan
       }
-  deriving (Eq)
+
+instance Eq (Constraint l r) where
+  Constraint l r g _ == Constraint l' r' g' _ = l == l' && r == r' && g == g'
 
 instance Outputable (Constraint l r) where
   ppr a = ppr (guard a) <+> char '?' <+> ppr (left a) <+> arrowt <+> ppr (right a)
@@ -94,7 +96,7 @@ tautology a
     Con k _ <- left a,
     Just True <- elementOfUniqSet k <$> (IM.lookup x (guard a) >>= HM.lookup (level d)) =
     True
-tautology a = False
+tautology _ = False
 
 trans :: Atomic -> Atomic -> [Atomic]
 trans l r
@@ -102,10 +104,13 @@ trans l r
     Dom y d' <- left r,
     x == y,
     d == d' =
-    [ r
-        { left = left l,
-          guard = IM.unionWith (HM.unionWith unionUniqSets) (guard l) (guard r)
-        }
+    [ r'
+      | let r' =
+              r
+                { left = left l,
+                  guard = IM.unionWith (HM.unionWith unionUniqSets) (guard l) (guard r)
+                },
+        not (tautology r')
     ]
   | otherwise = []
 
@@ -113,9 +118,12 @@ weak :: Atomic -> Atomic -> [Atomic]
 weak l r
   | Dom x d <- right l, -- Weakening
     Con k _ <- left l =
-    [ r
-        { guard = IM.adjust (HM.adjust (`delOneFromUniqSet` k) (level d)) x $ IM.unionWith (HM.unionWith unionUniqSets) (guard l) (guard r)
-        }
+    [ r'
+      | let r' =
+              r
+                { guard = IM.adjust (HM.adjust (`delOneFromUniqSet` k) (level d)) x $ IM.unionWith (HM.unionWith unionUniqSets) (guard l) (guard r)
+                },
+        not (tautology r')
     ]
   | otherwise = []
 
@@ -270,14 +278,20 @@ saturateF x cs =
                       ( \cs'' a' ->
                           foldM
                             ( \cs''' a'' ->
-                                if safe (left a'') (right a'')
-                                  then
-                                    if member a'' cs'''
-                                      then return cs'''
-                                      else do
-                                        tell (Any True)
-                                        return (insert a'' cs''')
-                                  else throwError a''
+                                case toAtomic (left a'') (right a'') of
+                                  Nothing -> throwError a''
+                                  Just as ->
+                                    foldM
+                                      ( \cs (l, r) -> do
+                                          let a = a'' {left = l, right = r}
+                                          if member a cs
+                                            then return cs
+                                            else do
+                                              tell (Any True)
+                                              return (insert a cs)
+                                      )
+                                      cs'''
+                                      as
                             )
                             cs''
                             (trans a a' ++ subs a a' ++ weak a a')
@@ -290,14 +304,20 @@ saturateF x cs =
                   ( \cs'' a' ->
                       foldM
                         ( \cs''' a'' ->
-                            if safe (left a'') (right a'')
-                              then
-                                if member a'' cs'''
-                                  then return cs'''
-                                  else do
-                                    tell (Any True)
-                                    return (insert a'' cs''')
-                              else throwError a''
+                            case toAtomic (left a'') (right a'') of
+                              Nothing -> throwError a''
+                              Just as ->
+                                foldM
+                                  ( \cs (l, r) -> do
+                                      let a = a'' {left = l, right = r}
+                                      if member a cs
+                                        then return cs
+                                        else do
+                                          tell (Any True)
+                                          return (insert a cs)
+                                  )
+                                  cs'''
+                                  as
                         )
                         cs''
                         (trans a a' ++ subs a a' ++ weak a a')

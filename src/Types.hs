@@ -214,12 +214,13 @@ decompTy (a :=> b) =
 decompTy t = ([], t)
 
 -- Unfold a particular datatype in some type
+-- ! Change Initial to Full for unfolding
 increaseLevel :: TyCon -> Type e -> Type e
 increaseLevel d (Data d' as)
-  | d == orig d' = Data d' {level = Full} (increaseLevel d <$> as)
+  | d == orig d' = Data d' {level = Initial} (increaseLevel d <$> as)
 increaseLevel d (Base d' as) = Base d' (increaseLevel d <$> as)
 increaseLevel d (Inj x d' as)
-  | d == orig d' = Inj x d' {level = Full} (increaseLevel d <$> as)
+  | d == orig d' = Inj x d' {level = Initial } (increaseLevel d <$> as)
 increaseLevel d (t :=> t') = increaseLevel d t :=> increaseLevel d t'
 increaseLevel d (App a b) = App (increaseLevel d a) (increaseLevel d b)
 increaseLevel _ t = t

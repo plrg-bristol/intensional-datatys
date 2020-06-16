@@ -74,43 +74,49 @@ inferSubType t1 t2
 inferSubType (t11 :=> t12) (t21 :=> t22) =
   inferSubType t21 t11 >> inferSubType t12 t22
 inferSubType (Inj x d as) (Inj y d' _)
-  | x /= y && d /= d' = do
-    -- Combine Initial and Full datatype constraints
-    cg <- gets InferM.constraints
-    -- cg' <- mergeLevel x y (fmap getName d) (fmap getName d') cg
-    -- modify (\s -> s {Scheme.constraints = cg'})
-    emit (Dom x (getName <$> d)) (Dom y (getName <$> d'))
-    slice x y (d, as)
+  | x /= y || d /= d' = do
+    unless (trivial (orig d)) $ do
+      -- Combine Initial and Full datatype constraints
+      -- cg <- gets InferM.constraints
+      -- cg' <- mergeLevel x y (fmap getName d) (fmap getName d') cg
+      -- modify (\s -> s {Scheme.constraints = cg'})
+      emit (Dom x (getName <$> d)) (Dom y (getName <$> d'))
+      slice x y (d, as)
 inferSubType _ _ = return ()
 
 -- Take the slice of a datatype including parity
 slice :: Int -> Int -> (DataType TyCon, [Type 'S]) -> InferM ()
-slice x y = void. loop [] True
+slice x y (d, as) = void $ loop [d] True (d, as)
   where
-    loop :: [TyCon] -> Bool -> (DataType TyCon, [Type 'S]) -> InferM [TyCon]
+    loop :: [DataType TyCon] -> Bool -> (DataType TyCon, [Type 'S]) -> InferM [DataType TyCon]
     loop ds p (d, as)
-      | trivial (orig d) || orig d `elem` ds = return ds
-      | otherwise = do
+      | trivial (orig d) || d `elem` ds = return ds
+      | otherwise =
         -- c <- asks allowContra
         foldM
           ( \ds' k ->
-              ( branchWithoutExpr k x (level d)
-                -- if c
-                --   then branch' [k] x d -- If contraviarnt consturctors are permitted slices need to be guarded
-                --   else id
-              )
-                $ do
+              branchWithoutExpr k x (level d)
+              -- if c
+              --   then branch' [k] x d -- If contraviarnt consturctors are permitted slices need to be guarded
+              --   else id
+
+              $
+                do
                   k_ty <- fromCoreConsInst (k <$ d) as
                   foldM (`step` p) ds' (fst $ decompTy k_ty)
           )
           ds
           (tyConDataCons $ orig d)
-    step :: [TyCon] -> Bool -> Type 'T -> InferM [TyCon]
-    step ds p (Inj _ d' as') = do
-      if p
-        then emit (Dom x (getName <$> d')) (Dom y (getName <$> d'))
-        else emit (Dom y (getName <$> d')) (Dom x (getName <$> d'))
-      loop (orig d' : ds) p (d', as')
+    step :: [DataType TyCon] -> Bool -> Type 'T -> InferM [DataType TyCon]
+    step ds p (Inj _ d' as') =
+      if trivial (orig d')
+        then return ds
+        else do
+          unless (d' `elem` ds) $
+            if p
+              then emit (Dom x (getName <$> d')) (Dom y (getName <$> d'))
+              else emit (Dom y (getName <$> d')) (Dom x (getName <$> d'))
+          loop (d' : ds) p (d', as')
     step ds p (a :=> b) = do
       ds' <- step ds (not p) a
       step ds' p b

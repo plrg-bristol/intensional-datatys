@@ -45,9 +45,12 @@ import Scheme
 import Types
 import Prelude hiding ((<>))
 
-data Error = forall l r. Error (Constraint l r)
+data Error where
+  Error :: Constraint l r -> Error
+  -- Log :: RVar -> SrcSpan -> Error
 
 instance Outputable Error where
+  -- ppr (Log x i) = text "logged: " <> ppr (x, i)
   ppr (Error c) = ppr c
 
 -- The inference monad
@@ -96,6 +99,8 @@ fresh :: InferM RVar
 fresh = do
   s@InferState {freshRVar = i} <- get
   put s {freshRVar = i + 1}
+  l <- asks inferLoc
+  -- tell [Log i l]
   return i
 
 -- Make constructors tagged by the current location
@@ -210,6 +215,7 @@ saturate :: Context -> InferM Context
 saturate ts = do
   let interface = domain ts
   cg <- gets InferM.constraints
+  -- pprTraceM "Constraints" (ppr cg)
   case runExcept (Constraints.saturate interface cg) of
     Left e -> do
       tell [Error e]

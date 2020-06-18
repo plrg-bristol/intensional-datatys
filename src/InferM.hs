@@ -213,9 +213,9 @@ runInferM run mod_name init_env =
 -- Transitively remove local constraints and attach them to variables
 saturate :: Context -> InferM Context
 saturate ts = do
-  let interface = domain ts
   cg <- gets InferM.constraints
-  -- pprTraceM "Constraints" (ppr cg)
+  let interface = domain ts
+  pprTraceM "Constraints: " (ppr cg)
   case runExcept (Constraints.saturate interface cg) of
     Left e -> do
       tell [Error e]

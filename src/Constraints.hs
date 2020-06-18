@@ -117,7 +117,8 @@ trans l r
 weak :: Atomic -> Atomic -> [Atomic]
 weak l r
   | Dom x d <- right l, -- Weakening
-    Con k _ <- left l =
+    Con k _ <- left l,
+    Just True <- elementOfUniqSet k <$> (IM.lookup x (guard r) >>= HM.lookup (level d)) =
     [ r'
       | let r' =
               r
@@ -131,14 +132,14 @@ subs :: Atomic -> Atomic -> [Atomic]
 subs l r
   | Dom x d <- right l, -- Substitution
     Dom y d' <- left l,
-    Just ks <- nonDetEltsUniqSet <$> (IM.lookup y (guard l) >>= HM.lookup (level d')) =
+    Just ks <- nonDetEltsUniqSet <$> (IM.lookup x (guard r) >>= HM.lookup (level d)) =
     [ r'
       | k <- ks,
         let r' =
               r
                 { guard =
-                    IM.insertWith (HM.unionWith unionUniqSets) x (HM.singleton (level d) (unitUniqSet k))
-                      $ IM.adjust (HM.adjust (`delOneFromUniqSet` k) (level d')) y
+                    IM.insertWith (HM.unionWith unionUniqSets) y (HM.singleton (level d') (unitUniqSet k))
+                      $ IM.adjust (HM.adjust (`delOneFromUniqSet` k) (level d)) x
                       $ IM.unionWith
                         (HM.unionWith unionUniqSets)
                         (guard l)

@@ -3,6 +3,7 @@
 module Types
   ( Type,
     TypeGen (..),
+    inj,
     subTyVar,
     decompType,
     dataConRefinedArgs,

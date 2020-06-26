@@ -3,6 +3,7 @@
 module FromCore
   ( fromCore,
     fromCoreScheme,
+    fromCoreCons,
     getVar,
   )
 where
@@ -52,21 +53,25 @@ fromCoreScheme (Tcr.CastTy t k) = pprPanic "Unexpected cast type!" $ ppr (t, k)
 fromCoreScheme (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
 fromCoreScheme t = Mono <$> fromCore t
 
--- -- Extract a constructor's original type
--- fromCoreCons :: DataCon -> InferM Scheme
--- fromCoreCons k = do
---   let d = dataConTyCon k
---   x <- fresh
---   args <- mapM fromCore $ dataConOrigArgTys k
---   -- Unroll datatype
---   -- u <- asks unrollDataTypes
---   -- let args' = if u then fmap (increaseLevel d) args else args :: [Type 'S]
---   -- Inject
---   let args' = fmap (inj x) args
---   -- Rebuild type
---   univ <- mapM getExternalName $ dataConUnivAndExTyCoVars (orig k)
---   let res = Inj x (d <$ k) (Var <$> univ)
---   return $ Forall univ (foldr (:=>) res args'')
+-- The type of a constructor injected into a fresh refinement environment
+-- TODO: Specialise
+fromCoreCons :: DataCon -> InferM Scheme
+fromCoreCons k = do
+  scheme <- fromCoreScheme (dataConUserType k)
+  x <- fresh
+  return scheme{body = inj x (body scheme)}
+  -- let d = dataConTyCon k
+  -- x <- fresh
+  -- args <- mapM fromCore $ dataConOrigArgTys k
+  -- -- Unroll datatype
+  -- -- u <- asks unrollDataTypes
+  -- -- let args' = if u then fmap (increaseLevel d) args else args :: [Type 'S]
+  -- -- Inject
+  -- let args' = fmap (inj x) args
+  -- -- Rebuild type
+  -- univ <- mapM getExternalName $ dataConUnivAndExTyCoVars (orig k)
+  -- let res = Inj x (d <$ k) (Var <$> univ)
+  -- return $ Forall univ (foldr (:=>) res args'')
 
 -- -- Extract a constructor's type with tyvars instantiated
 -- -- We assume there are no existentially quantified tyvars

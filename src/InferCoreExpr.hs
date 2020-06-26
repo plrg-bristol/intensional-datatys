@@ -89,7 +89,7 @@ infer (Core.Var v) =
       | isClassTyCon $ dataConTyCon k -> return $ Mono Ambiguous
       -- Infer constructor
       | otherwise -> do
-        scheme <- fromCoreScheme (dataConUserType k)
+        scheme <- fromCoreCons k
         case decompType (body scheme) of
           -- Refinable constructor
           (_, Data d _) -> do
@@ -104,11 +104,11 @@ infer (Core.Var v) =
 infer l@(Core.Lit _) = fromCoreScheme $ exprType l
 -- Type application
 infer (Core.App e1 (Core.Type e2)) = do
-  t' <- fromCore e2
+  t <- fromCore e2
   scheme <- infer e1
   case scheme of
-    Forall (a : as) t ->
-      return $ Forall as (subTyVar a t' t)
+    Forall (a : as) b ->
+      return $ Forall as (subTyVar a t b)
     Mono Ambiguous -> return $ Mono Ambiguous
     _ -> pprPanic "Type is already saturated!" (ppr ())
 -- Term application

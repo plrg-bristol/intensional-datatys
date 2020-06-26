@@ -88,7 +88,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
   exist <- liftIO $ doesDirectoryExist "interface"
   liftIO $ unless exist (createDirectory "interface")
   bh <- liftIO $ openBinMem 1000
-  liftIO $ putWithUserData (const $ return ()) bh (M.toList $ M.filterWithKey (\k _ -> isExternalName k) $ fmap (fmap $ fmap toIfaceTyCon) $ gamma)
+  liftIO $ putWithUserData (const $ return ()) bh (M.toList $ M.filterWithKey (\k _ -> isExternalName k) $ fmap (fmap toIfaceTyCon) $ gamma)
   liftIO $ writeBinMem bh $ interfaceName $ moduleName m
   stop <- liftIO getCurrentTime
   when ("time" `elem` cmd) $ do

@@ -1,187 +1,131 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE UndecidableInstances #-}
-
 module InferM
   ( InferM,
-    Error,
-    InferEnv (..),
-    InferState (..),
     Context,
-    mkSet,
-    mkCon,
-    fresh,
-    branch,
-    branchAny,
-    branchWithoutExpr,
-    isBranchReachable,
+    InferEnv (..),
+    InferState (constraints),
+    runInferM,
+    InferM.saturate,
     topLevel,
+    isBranchReachable,
+    branch,
+    branchWithExpr,
+    branchAny,
+    emit,
+    fresh,
     putVar,
     putVars,
-    emit,
     setLoc,
-    InferM.saturate,
-    runInferM,
+    getExternalName,
   )
 where
 
 import Constraints
 import Constructors
-import Control.Monad.Except hiding (guard)
-import Control.Monad.RWS hiding ((<>), guard)
-import qualified Data.HashMap.Lazy as H
-import qualified Data.IntMap as IM
-import qualified Data.IntSet as IS
+import Control.Monad.RWS hiding (guard)
+import qualified Data.IntSet as I
 import qualified Data.Map as M
-import Data.Maybe
 import DataTypes
-import GhcPlugins hiding (L, Type, empty)
+import GhcPlugins hiding ((<>), singleton)
 import Scheme
-import Types
-import Prelude hiding ((<>))
 
-data Error where
-  Error :: Constraint l r -> Error
-  -- Log :: RVar -> SrcSpan -> Error
+type InferM = RWS InferEnv [Atomic] InferState
 
-instance Outputable Error where
-  -- ppr (Log x i) = text "logged: " <> ppr (x, i)
-  ppr (Error c) = ppr c
+type Path = [(CoreExpr, DataCon)]
 
--- The inference monad
-type InferM = RWS InferEnv [Error] InferState
+type Context = M.Map Name Scheme
 
 data InferEnv
   = InferEnv
-      { modName :: Module,
-        branchPath :: Path,
+      { modName :: Module, -- The current module
+        branchPath :: Path, -- Expressions which have been match upon
         branchGuard :: Guard,
         varEnv :: Context,
-        inferLoc :: SrcSpan
+        inferLoc :: SrcSpan -- The current location in the source text
       }
 
 data InferState
   = InferState
-      { freshRVar :: RVar,
+      { next :: RVar,
         constraints :: ConstraintSet
-        -- Binary decision diagram state
-        -- memo :: H.HashMap (Memo s) (GuardSet s),
-        -- freshId :: ID,
-        -- nodes :: I.IntMap (Node s),
-        -- hashes :: H.HashMap (Node s) ID
       }
 
--- instance GsM (InferState s) s (InferM s) where
---   lookupNode i =
---     gets (I.lookup i . nodes) >>= \case
---       Nothing -> error ("No node with that ID!" ++ show i)
---       Just n -> return n
---   lookupHash n = gets (H.lookup n . hashes)
---   freshNode n = do
---     s@InferState {nodes = ns, hashes = hs, freshId = i} <- get
---     put
---       s
---         { freshId = i + 1,
---           nodes = I.insert i n ns,
---           hashes = H.insert n i hs
---         }
---     return i
---   lookupMemo op = gets (H.lookup op . InferM.memo)
---   insertMemo op r = modify (\s -> s {InferM.memo = H.insert op r (InferM.memo s)})
+runInferM ::
+  InferM a ->
+  Module ->
+  Context ->
+  (a, [Atomic])
+runInferM run mod_name init_env =
+  evalRWS
+    run
+    (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Top level")))
+    (InferState 0 mempty)
 
--- A fresh refinement variable
-fresh :: InferM RVar
-fresh = do
-  s@InferState {freshRVar = i} <- get
-  put s {freshRVar = i + 1}
-  l <- asks inferLoc
-  -- tell [Log i l]
-  return i
+-- Transitively remove local constraints and attach them to variables
+saturate :: Context -> InferM Context
+saturate ts = do
+  let interface = foldMap domain ts
+  cg <- gets InferM.constraints
+  let intermediate = I.difference (domain cg) interface
+  -- Reset constraints
+  modify (\s -> s {InferM.constraints = mempty})
+  return
+    ( ( \s ->
+          s -- Add constraints to every type in the recursive group
+            { boundvs = I.toList interface,
+              Scheme.constraints = Just (Constraints.saturate intermediate cg)
+            }
+      )
+        <$> ts
+    )
 
--- Make constructors tagged by the current location
-mkCon :: DataCon -> InferM (K 'L)
-mkCon k = do
-  l <- asks inferLoc
-  return (Con (getName k) l)
-
-mkSet :: [DataCon] -> InferM (K 'R)
-mkSet ks = do
-  l <- asks inferLoc
-  return (Set (mkUniqSet (getName <$> ks)) l)
-
--- The environment variables and their types
-type Context = M.Map Name Scheme
-
-instance Refined Context where
-  domain = foldr (IS.union . domain) IS.empty
-  rename x = fmap . rename x
-
--- Insert variables into environment
-putVar :: Name -> Scheme -> InferM a -> InferM a
-putVar n s = local (\env -> env {varEnv = M.insert n s (varEnv env)})
-
-putVars :: Context -> InferM a -> InferM a
-putVars ctx = local (\env -> env {varEnv = M.union ctx (varEnv env)})
-
--- A Path records the terms that have been matched against in the current path
-type Path = [(CoreExpr, DataCon)]
-
--- Check if an expression is in the path
+-- Check if an expression has already been pattern matched
 topLevel :: CoreExpr -> InferM Bool
 topLevel e = asks (foldr (\(e', _) es -> not (cheapEqExpr e e') && es) True . branchPath)
 
--- Check if a branch is possible, i.e. doesn't contradict the current branch
+-- Check that a branch doesn't contradict the current branch
 isBranchReachable :: CoreExpr -> DataCon -> InferM Bool
-isBranchReachable e k = asks (foldr (\(e', k') es -> (not (cheapEqExpr e e') || k == k') && es) True . branchPath)
+isBranchReachable e k =
+  asks
+    ( foldr
+        ( \(e', k') es ->
+            (not (cheapEqExpr e e') || k == k') && es
+        )
+        True
+        . branchPath
+    )
 
--- Locally guard constraints and add expression to path
-branch :: CoreExpr -> DataCon -> RVar -> Level -> InferM a -> InferM a
-branch e k x l m = do
-  curr_guard <- asks branchGuard
-  path <- asks branchPath
+-- Locally guard constraints
+branch :: DataCon -> DataType TyCon -> InferM a -> InferM a
+branch k d =
   local
     ( \env ->
         env
-          { branchGuard = IM.insertWith (H.unionWith unionUniqSets) x (H.singleton l (unitUniqSet (getName k))) curr_guard,
-            branchPath = (e, k) : path
+          { branchGuard = singleton (getName k) (fmap getName d) <> branchGuard env
           }
     )
-    m
 
 -- Locally guard constraints and add expression to path
-branchAny :: CoreExpr -> [DataCon] -> RVar -> Level -> InferM a -> InferM ()
-branchAny e ks x l m = mapM_ (\k -> branch e k x l m) ks
-
--- Locally guard constraints without an associated core expression
-branchWithoutExpr :: DataCon -> RVar -> Level -> InferM a -> InferM a
-branchWithoutExpr k x l m = do
-  curr_guard <- asks branchGuard
+branchWithExpr :: CoreExpr -> DataCon -> DataType TyCon -> InferM a -> InferM a
+branchWithExpr e k d =
   local
     ( \env ->
-        env
-          { branchGuard = IM.insertWith (H.unionWith unionUniqSets) x (H.singleton l (unitUniqSet (getName k))) curr_guard
-          }
+        env {branchPath = (e, k) : branchPath env}
     )
-    m
+    . branch k d
 
-setLoc :: RealSrcSpan -> InferM a -> InferM a
-setLoc l = local (\env -> env {inferLoc = RealSrcSpan l})
+-- Locally guard constraints and add expression to path
+branchAny :: CoreExpr -> [DataCon] -> DataType TyCon -> InferM a -> InferM ()
+branchAny e ks d m = mapM_ (\k -> branchWithExpr e k d m) ks
 
+-- Emit a (non-)atomic constriant with the current branch guard
 emit :: K l -> K r -> InferM ()
 emit k1 k2 = do
-  -- | not (trivial (orig d) || full (cons k2) (orig d)) = do
-    l <- asks inferLoc
-    g <- asks branchGuard
-    case toAtomic k1 k2 of
-      Nothing -> tell [Error Constraint { left = k1, right = k2, Constraints.srcSpan = l, guard = g}]
-      Just cs -> do
-        cg <- gets InferM.constraints
-        let cg' =
+  l <- asks inferLoc
+  g <- asks branchGuard
+  modify
+    ( \s ->
+        s
+          { InferM.constraints =
               foldr
                 ( \(k1', k2') ->
                     insert
@@ -192,36 +136,33 @@ emit k1 k2 = do
                           Constraints.srcSpan = l
                         }
                 )
-                cg
-                cs
-        modify (\s -> s {InferM.constraints = cg'})
-  -- | otherwise = return ()
+                (InferM.constraints s)
+                (toAtomic k1 k2)
+          }
+    )
 
-full :: [Name] -> TyCon -> Bool
-full ks d = all (\k -> getName k `elem` ks) (tyConDataCons d)
+-- A fresh refinement variable
+fresh :: InferM RVar
+fresh = do
+  s@InferState {next = i} <- get
+  put s {next = i + 1}
+  return i
 
-runInferM ::
-  InferM a ->
-  Module ->
-  M.Map Name Scheme ->
-  (a, [Error])
-runInferM run mod_name init_env =
-  evalRWS run
-    (InferEnv mod_name [] IM.empty init_env (UnhelpfulSpan (mkFastString "Top level")))
-    (InferState 0 empty)
+-- Insert variables into environment
+putVar :: Name -> Scheme -> InferM a -> InferM a
+putVar n s = local (\env -> env {varEnv = M.insert n s (varEnv env)})
 
--- Transitively remove local constraints and attach them to variables
-saturate :: Context -> InferM Context
-saturate ts = do
-  cg <- gets InferM.constraints
-  let interface = domain ts
-  pprTraceM "Constraints: " (ppr cg)
-  case runExcept (Constraints.saturate interface cg) of
-    Left e -> do
-      tell [Error e]
-      modify (\s -> s {InferM.constraints = empty})
-      -- Continue ignoring the constraints from this recursive group
-      return ((\s -> s {boundvs = IS.toList interface, Scheme.constraints = Nothing}) <$> ts)
-    Right cg' -> do
-      modify (\s -> s {InferM.constraints = empty})
-      return ((\s -> s {boundvs = IS.toList interface, Scheme.constraints = Just cg'}) <$> ts)
+putVars :: Context -> InferM a -> InferM a
+putVars ctx = local (\env -> env {varEnv = M.union ctx (varEnv env)})
+
+-- Add source text location tick
+setLoc :: RealSrcSpan -> InferM a -> InferM a
+setLoc l = local (\env -> env {inferLoc = RealSrcSpan l})
+
+-- Prepare name for interface
+-- Should be used before all type variables
+getExternalName :: NamedThing a => a -> InferM Name
+getExternalName a = do
+  let n = getName a
+  mn <- asks modName
+  return $ mkExternalName (nameUnique n) mn (nameOccName n) (nameSrcSpan n)

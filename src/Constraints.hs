@@ -64,8 +64,8 @@ singleton :: Name -> DataType Name -> Guard
 singleton k d = Guard (HM.singleton d (unitUniqSet k))
 
 -- Remove a constraint from a guard
-remove :: Name -> DataType Name -> Guard -> Guard
-remove k d (Guard g) = Guard (HM.adjust (`delOneFromUniqSet` k) d g)
+removeFromGuard :: Name -> DataType Name -> Guard -> Guard
+removeFromGuard k d (Guard g) = Guard (HM.adjust (`delOneFromUniqSet` k) d g)
 
 type Atomic = Constraint 'L 'R
 
@@ -144,8 +144,8 @@ resolve l r =
               Dom d' ->
                 case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
                   Nothing -> []
-                  Just ks -> [r {guard = singleton k d' <> remove k d guards} | k <- ks] -- Substitute
-              Con k _ -> [r {guard = remove k d guards}] -- Weakening
+                  Just ks -> [r {guard = singleton k d' <> removeFromGuard k d guards} | k <- ks] -- Substitute
+              Con k _ -> [r {guard = removeFromGuard k d guards}] -- Weakening
        in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
     Set _ _ -> []
 
@@ -190,6 +190,14 @@ insert a cs =
     Dom (Base _) -> cs -- Ignore constraints concerning base types
     Dom (Inj x _) -> cs {definite = IM.insertWith HS.union x (HS.singleton a) (definite cs)}
     Set _ _ -> cs {goal = HS.insert a (goal cs)}
+
+-- Remove a constraint from a set
+removeConstraint :: Atomic -> ConstraintSet -> ConstraintSet
+removeConstraint a cs =
+  case right a of
+    Dom (Base _) -> cs -- Ignore constraints concerning base types
+    Dom (Inj x _) -> cs {definite = IM.adjust (HS.delete a) x (definite cs)}
+    Set _ _ -> cs {goal = HS.delete a (goal cs)}
 
 -- Add a guard to every constraint
 guardWith :: Guard -> ConstraintSet -> ConstraintSet
@@ -244,7 +252,7 @@ saturateF x =
       -- If there are only recursive clauses the minimum model is empty
       | not (all recursive cs) ->
         mapM_
-          ( \c ->
+          ( \c -> do
               Control.Monad.RWS.get
                 >>= mapM_
                   ( mapM_
@@ -257,6 +265,8 @@ saturateF x =
                       )
                       . resolve c
                   )
+              -- Eliminate non-recursive after a single application
+              unless (recursive c) $ modify (removeConstraint c)
           )
           cs
     _ -> return ()

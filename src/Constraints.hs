@@ -102,6 +102,23 @@ instance Refined (Constraint l r) where
         guard = rename x y (guard c)
       }
 
+-- Is the first constraint a weaker version of the second, i.e. has a larger guard
+impliedBy :: Atomic -> Atomic -> Bool
+impliedBy a a'
+  | left a == left a',
+    right a == right a' =
+    let Guard g = guard a
+        Guard g' = guard a'
+     in getAll $
+          HM.foldMapWithKey
+            ( \d ks ->
+                case HM.lookup d g of
+                  Nothing -> All (isEmptyUniqSet ks)
+                  Just ks' -> All (uniqSetAll (`elementOfUniqSet` ks') ks)
+            )
+            g'
+impliedBy _ _ = False
+
 -- A constraint is trivially satisfied
 tautology :: Atomic -> Bool
 tautology a =
@@ -209,13 +226,13 @@ guardWith g cs =
   where
     go a = a {guard = g <> guard a}
 
--- Is an atomic constraint already in the set
+-- Is an atomic constraint already (effectively) in the set
 member :: Atomic -> ConstraintSet -> Bool
 member a cs =
   case right a of
     Dom (Inj x _)
-      | Just as <- IM.lookup x (definite cs) -> HS.member a as
-    Set _ _ -> HS.member a (goal cs)
+      | Just as <- IM.lookup x (definite cs) -> any (impliedBy a) as
+    Set _ _ -> any (impliedBy a) (goal cs)
     _ -> False
 
 -- Apply the saturation rules and remove intermediate variables until a fixedpoint is reached

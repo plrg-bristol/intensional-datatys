@@ -1,70 +1,75 @@
-{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE LambdaCase #-}
 
 module DataTypes
-  ( Level (..),
+  ( RVar,
+    Domain,
+    Refined (..),
     DataType (..),
-    contravariant,
     trivial,
   )
 where
 
 import Binary
 import Data.Hashable
+import qualified Data.IntSet as I
 import GHC.Generics
-import GhcPlugins hiding (Expr (..), Type)
-import TyCoRep
-import Prelude hiding ((<>))
+import GhcPlugins
 
-data Level
-  = Neutral -- Not unrolled
-  | Initial -- Unrolled; Singletons or Non-empty etc.
-  | Full -- Unrolled; Infinite or Empty
-  deriving (Eq, Ord, Generic)
+type RVar = Int
 
-instance Hashable Level
+type Domain = I.IntSet
 
--- Internal representation of datatypes
+-- The class of objects containing refinement variables
+class Refined t where
+  domain :: t -> Domain
+  rename :: RVar -> RVar -> t -> t
+
+-- A datatype identifier
+-- d is TyCon, IfaceTyCon or Name
 data DataType d
-  = DataType
-      { level :: Level,
-        orig :: d
-      }
-  deriving (Eq, Ord, Functor, Foldable, Traversable, Generic)
+  = Base d
+  | Inj RVar d -- Extended datatypes from the canonical environment
+  deriving (Eq, Functor, Foldable, Generic, Traversable)
+
+instance Binary d => Binary (DataType d) where
+  put_ bh (Base d) = put_ bh False >> put_ bh d
+  put_ bh (Inj x d) = put_ bh True >> put_ bh x >> put_ bh d
+  get bh =
+    get bh >>= \case
+      False -> Base <$> get bh
+      True -> Inj <$> get bh <*> get bh
 
 instance Hashable d => Hashable (DataType d)
 
 instance Outputable d => Outputable (DataType d) where
-  ppr d
-    | level d == Initial = char '\'' <> ppr (orig d)
-    | otherwise = ppr (orig d)
+  ppr (Base d) = ppr d
+  ppr (Inj x d) = hcat [text "inj_", ppr x] <+> ppr d
 
-instance Binary d => Binary (DataType d) where
-  put_ bh (DataType Initial d) = put_ bh (0 :: Int) >> put_ bh d
-  put_ bh (DataType Full d) = put_ bh (1 :: Int) >> put_ bh d
-  put_ bh (DataType Neutral d) = put_ bh (2 :: Int) >> put_ bh d
+instance Refined (DataType d) where
+  domain (Base _) = I.empty
+  domain (Inj x _) = I.singleton x
 
-  get bh = do
-    l <- get bh
-    case l :: Int of
-      0 -> DataType Initial <$> get bh
-      1 -> DataType Full <$> get bh
-      2 -> DataType Neutral <$> get bh
-      _ -> pprPanic "Binary is not a datatype!" (ppr l)
+  rename x y (Inj z d)
+    | x == z = Inj y d
+  rename _ _ d = d
 
--- Check if a core datatype is contravariant in every type argument
-contravariant :: TyCon -> Bool
-contravariant = not . all pos . concatMap dataConOrigArgTys . tyConDataCons
-  where
-    pos :: Type -> Bool
-    pos (FunTy t1 t2) = neg t1 && pos t2
-    pos _ = True
-    neg :: Type -> Bool
-    neg (TyConApp _ _) = False -- ? Could this test whether the tycon is covariant
-    neg (TyVarTy _) = False
-    neg (FunTy t1 t2) = pos t1 && neg t2
-    neg _ = True
-
--- Check if a core datatype has one constructor
+-- Check if a core datatype has only one constructor
 trivial :: TyCon -> Bool
 trivial = (== 1) . length . tyConDataCons
+-- Check if a core datatype is covariant in every type argument
+-- covariant :: TyCon -> Bool
+-- covariant = all pos . concatMap dataConOrigArgTys . tyConDataCons
+--   where
+--     pos, neg :: Type -> Bool
+--     pos (FunTy t1 t2) = neg t1 && pos t2
+--     pos _ = True
+--     neg (TyConApp _ _) = False -- This is an overapproximation
+--     neg (TyVarTy _) = False
+--     neg (FunTy t1 t2) = pos t1 && neg t2
+--     neg _ = True
+
+-- underlying :: DataType d -> d
+-- underlying (Base b) = b
+-- underlying (Inj _ d) = d

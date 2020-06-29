@@ -11,7 +11,6 @@ import Control.Monad
 import qualified Data.Map as M
 import Data.Time
 import GhcPlugins
-import Guards
 import IfaceEnv
 import IfaceSyn
 import IfaceType
@@ -69,11 +68,9 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
   -- Infer constraints
   let ~(gamma, errs) =
         runInferM
-          ( inferProg (dependancySort p)
-              >>= mapM (\(Scheme tyvs dvs t g) -> Scheme tyvs dvs (fmap toIfaceTyCon t) <$> mapM (mapM toList) g)
-          )
-          unrollDataTypes
-          allowContra
+          ( inferProg (dependancySort p) )
+          -- unrollDataTypes
+          -- allowContra
           m
           env
   -- Display typeschemes
@@ -91,7 +88,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
   exist <- liftIO $ doesDirectoryExist "interface"
   liftIO $ unless exist (createDirectory "interface")
   bh <- liftIO $ openBinMem 1000
-  liftIO $ putWithUserData (const $ return ()) bh (M.toList $ M.filterWithKey (\k _ -> isExternalName k) gamma)
+  liftIO $ putWithUserData (const $ return ()) bh (M.toList $ M.filterWithKey (\k _ -> isExternalName k) $ fmap (fmap toIfaceTyCon) $ gamma)
   liftIO $ writeBinMem bh $ interfaceName $ moduleName m
   stop <- liftIO getCurrentTime
   when ("time" `elem` cmd) $ do

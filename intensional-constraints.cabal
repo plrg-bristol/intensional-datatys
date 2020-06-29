@@ -27,9 +27,8 @@ library
   other-modules:
       DataTypes
       Types
+      Constructors
       Constraints
-      Guards
-      ConGraph
       Scheme
       InferM
       FromCore
@@ -40,6 +39,7 @@ library
   build-depends:
       base >=4 && <5
     , ghc >=8.6 && <8.10
+    , extra
     , containers
     , unordered-containers
     , mtl
@@ -50,10 +50,10 @@ library
 
 test-suite test
   type: exitcode-stdio-1.0
-  main-is: SimpleTest.hs
+  main-is: DNF.hs
   hs-source-dirs:
       test
-  ghc-options: -g -O0 -fplugin Lib -fplugin-opt Lib:time -fplugin-opt Lib:unroll
+  ghc-options: -g -O0 -fplugin Lib
   build-depends:
       base >=4 && <5
     , intensional-constraints

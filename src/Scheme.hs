@@ -1,9 +1,5 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE UndecidableInstances #-}
 
 module Scheme
   ( Scheme,
@@ -16,25 +12,27 @@ module Scheme
 where
 
 import Binary
-import ConGraph
-import GhcPlugins hiding (Type, empty, pprTyVars)
+import Constraints
+import DataTypes
+import GhcPlugins
+import IfaceType
 import Types
-import Prelude hiding ((<>))
+
+type Scheme = SchemeGen TyCon
+
+type IfScheme = SchemeGen IfaceTyCon
 
 -- Constrained polymorphic types
-type Scheme s = SchemeGen (Type 'T) (ConGraph s)
-
-type IfScheme = SchemeGen (IfType 'T) IfConGraph
-
-data SchemeGen t g
+data SchemeGen d
   = Scheme
       { tyvars :: [Name],
         boundvs :: [Int],
-        body :: t,
-        constraints :: Maybe g
+        body :: TypeGen d,
+        constraints :: Maybe ConstraintSet
       }
+      deriving (Functor)
 
-instance Binary IfScheme where
+instance Binary d => Binary (SchemeGen d) where
   put_ bh scheme =
     put_ bh (tyvars scheme)
       >> put_ bh (boundvs scheme)
@@ -43,53 +41,36 @@ instance Binary IfScheme where
 
   get bh = Scheme <$> get bh <*> get bh <*> get bh <*> get bh
 
-instance Outputable d => Outputable (SchemeGen d IfConGraph) where
+instance Outputable d => Outputable (SchemeGen d) where
   ppr scheme =
     case constraints scheme of
       Just cs
-        | cs /= empty ->
-          hang
-            (pprTyVars <> pprConVars <> ppr (body scheme))
-            2
-            (hang (text "where") 2 (ppr cs))
-      _ -> pprTyVars <> pprConVars <> ppr (body scheme)
+        | cs /= mempty ->
+          hang (hcat [pprTyQuant, dot, pprConQuant, dot, ppr (body scheme)]) 2 (hang (text "where") 2 (ppr cs))
+      _ -> hcat [pprTyQuant, dot, pprConQuant, dot, ppr (body scheme)]
     where
-      pprTyVars
-        | null (tyvars scheme) = text ""
-        | otherwise = forAllLit <+> fsep (map ppr $ tyvars scheme) <> dot
-      pprConVars
-        | null (boundvs scheme) = text ""
-        | otherwise = forAllLit <+> fsep (ppr <$> boundvs scheme) <> dot
+      pprTyQuant
+        | null (tyvars scheme) = empty
+        | otherwise = forAllLit <+> fsep (map ppr $ tyvars scheme)
+      pprConQuant
+        | null (boundvs scheme) = empty
+        | otherwise = forAllLit <+> fsep (ppr <$> boundvs scheme)
 
-instance (Monad m, Refined d m, Refined g m) => Refined (SchemeGen d g) m where
+instance Refined (SchemeGen d) where
   domain s = domain (body s)
 
   rename x y s
-    | x `elem` boundvs s = return s
+    | x `elem` boundvs s = s
     | y `elem` boundvs s = pprPanic "Alpha renaming of polymorphic types is not implemented!!" $ ppr (x, y)
-    | otherwise = do
-      bod <- rename x y $ body s
-      cg <- mapM (rename x y) $ constraints s
-      return $
-        Scheme
-          { tyvars = tyvars s,
-            boundvs = boundvs s,
-            body = bod,
-            constraints = cg
-          }
-
-  renameAll xys s = do
-    bod <- renameAll xys $ body s
-    cg <- mapM (renameAll xys) $ constraints s
-    return $
+    | otherwise =
       Scheme
         { tyvars = tyvars s,
           boundvs = boundvs s,
-          body = bod,
-          constraints = cg
+          body = rename x y $ body s,
+          constraints = rename x y <$> constraints s
         }
 
-pattern Mono :: t -> SchemeGen t g
+pattern Mono :: TypeGen d -> SchemeGen d
 pattern Mono t =
   Scheme
     { tyvars = [],
@@ -98,7 +79,7 @@ pattern Mono t =
       constraints = Nothing
     }
 
-pattern Forall :: [Name] -> t -> SchemeGen t g
+pattern Forall :: [Name] -> TypeGen d -> SchemeGen d
 pattern Forall as t =
   Scheme
     { tyvars = as,
@@ -108,6 +89,6 @@ pattern Forall as t =
     }
 
 -- Demand a monomorphic type
-mono :: Scheme s -> Type 'T
+mono :: SchemeGen d -> TypeGen d
 mono (Mono t) = t
 mono _ = Ambiguous

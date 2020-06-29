@@ -18,6 +18,7 @@ import InferM
 import Pair
 import Scheme
 import Types
+import CoreArity
 
 -- Infer set constraints for a subtyping constraint
 inferSubType :: Type -> Type -> InferM ()
@@ -126,7 +127,7 @@ infer (Core.Case e bind_e core_ret alts) = do
           mapMaybeM
             ( \case
                 (Core.DataAlt k, xs, rhs)
-                  | not (exprIsBottom rhs) -> do
+                  | not (isBottoming rhs) -> do
                     reach <- isBranchReachable e k
                     if reach
                       then do
@@ -144,7 +145,7 @@ infer (Core.Case e bind_e core_ret alts) = do
             )
             alts
         case findDefault alts of
-          (_, Just rhs) | not (exprIsBottom rhs) ->
+          (_, Just rhs) | not (isBottoming rhs) ->
             -- Guard by unseen constructors
             branchAny e (tyConDataCons d L.\\ ks) (Inj x d) $ do
                 -- Ensure return type is valid
@@ -174,3 +175,9 @@ infer (Core.Tick SourceNote {sourceSpan = s} e) = setLoc s $ infer e -- Track lo
 infer (Core.Tick _ e) = infer e -- Ignore other ticks
 infer (Core.Coercion g) = pprPanic "Unexpected coercion" (ppr g)
 infer (Core.Type t) = pprPanic "Unexpected type" (ppr t)
+
+isBottoming :: CoreExpr -> Bool
+isBottoming e =
+  case exprBotStrictness_maybe e of
+    Nothing -> exprIsBottom e
+    Just (_, _) -> True

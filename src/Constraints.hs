@@ -165,29 +165,42 @@ recursive a =
     Set _ _ -> False
 
 -- Apply the saturation rules in one direction
-resolve :: Atomic -> Atomic -> [Atomic]
+-- Returns Nothing if l and r are not resolvable
+resolve :: Atomic -> Atomic -> Maybe Atomic
 resolve l r =
   case right l of
     Dom d ->
-      -- The combined guards
-      let guards = guard l <> guard r
-          trans =
+      let leftr =
             case left r of
-              Dom d' | d == d' -> [r {left = left l, guard = guards}] -- Trans
-              _ -> []
-          weak =
+              Dom d' | d == d' -> Just (left l) -- Trans
+              _ -> Nothing
+          guardsr =
             case left l of
               Dom d' ->
                 -- l is of shape d' <= d
                 case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
-                  Nothing -> []
+                  Nothing -> Nothing
                   Just ks ->
-                    let rmdGuards = removeAllFromGuard ks d guards
+                    let rmdGuards = removeAllFromGuard ks d (guard r)
                         newGuards = foldr (\k gs -> singleton k d' <> gs) rmdGuards ks
-                     in [r {guard = newGuards}] -- Substitute
-              Con k _ -> [r {guard = removeFromGuard k d guards}] -- Weakening
-       in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
-    Set _ _ -> []
+                     in Just newGuards -- Substitute
+              Con k _ -> 
+                case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
+                  Nothing -> Nothing 
+                  Just _ -> Just (removeFromGuard k d (guard r)) -- Weakening
+          new = 
+            -- Check whether anything happened 
+            -- When combining, ensure to apply all resolution rules simultaneously
+            -- otherwise inconsistent with saturateF removing l in case non-recursive
+            case (leftr, guardsr) of
+              (Nothing, Nothing) -> Nothing
+              (Nothing, Just gs) -> Just $ r { guard = guard l <> gs }
+              (Just l', Nothing)  -> Just $ r { left = l', guard = guard l <> guard r}
+              (Just l', Just gs)  -> Just $ r { left = l', guard = guard l <> gs}
+       in case new of 
+         Just a | not (tautology a) -> new -- Remove redundant constriants
+         _                          -> Nothing
+    Set _ _ -> Nothing
 
 type ConstraintSet = ConstraintSetGen Atomic
 

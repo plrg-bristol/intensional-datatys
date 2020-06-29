@@ -290,22 +290,19 @@ saturateF x =
     Just cs
       -- If there are only recursive clauses the minimum model is empty
       | not (all recursive cs) ->
-        mapM_
-          ( \c -> do
-              Control.Monad.RWS.get
-                >>= mapM_
-                  ( mapM_
-                      ( \resolvant ->
-                          gets (member resolvant) >>= \case
-                            True -> return ()
-                            False -> do
-                              modify (insert resolvant) -- Add every resolvant
-                              tell (Any True)
-                      )
-                      . resolve c
-                  )
-              -- Eliminate non-recursive after a single application
-              unless (recursive c) $ modify (removeConstraint c)
-          )
-          cs
+        mapM_ resolveAllWith cs
     _ -> return ()
+  
+  where
+    addResolvant r = 
+      do b <- gets (member r) 
+         case b of
+           True -> return ()
+           False ->
+             do modify (insert r)
+                tell (Any True)
+    
+    resolveAllWith c =
+      do ds <- Control.Monad.RWS.get
+         mapM_ (mapM_ addResolvant . resolve c) ds
+         unless (recursive c) $ modify (removeConstraint c)

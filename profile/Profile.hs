@@ -31,6 +31,6 @@ initGhcM xs = do
 
 main :: IO ()
 main = do
-    xs <- words <$> readFile "args"
+    xs <- words <$> readFile "./profile/ghc-options"
     let libdir = "/opt/ghc/8.8.3/lib/ghc-8.8.3"
     runGhc (Just libdir) $ initGhcM xs

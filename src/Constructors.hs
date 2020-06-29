@@ -5,8 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 
 module Constructors
-  (
-    Side (..),
+  ( Side (..),
     K (..),
     toAtomic,
   )
@@ -14,9 +13,15 @@ where
 
 import Binary
 import Data.Hashable
-import DataTypes
 import GhcPlugins hiding (L)
+import Types
 import Unique
+
+instance Hashable Unique where
+  hashWithSalt s = hashWithSalt s . getKey
+
+instance Hashable Name where
+  hashWithSalt s = hashWithSalt s . getUnique
 
 data Side = L | R
 
@@ -25,6 +30,23 @@ data K (s :: Side) where
   Dom :: DataType Name -> K s
   Con :: Name -> SrcSpan -> K 'L
   Set :: UniqSet Name -> SrcSpan -> K 'R
+
+-- Disregard location in comparison
+instance Eq (K s) where
+  Dom d == Dom d' = d == d'
+  Con k _ == Con k' _ = k == k'
+  Set s _ == Set s' _ = s == s'
+  _ == _ = False
+
+instance Hashable (K s) where
+  hashWithSalt s (Dom d) = hashWithSalt s d
+  hashWithSalt s (Con k _) = hashWithSalt s k
+  hashWithSalt s (Set ks _) = hashWithSalt s (nonDetKeysUniqSet ks)
+
+instance Outputable (K s) where
+  ppr (Dom d) = ppr d
+  ppr (Con k _) = ppr k
+  ppr (Set ks _) = hcat [char '{', pprWithBars ppr (nonDetEltsUniqSet ks), char '}']
 
 instance Binary (K 'L) where
   put_ bh (Dom d) = put_ bh False >> put_ bh d
@@ -43,29 +65,6 @@ instance Binary (K 'R) where
     get bh >>= \case
       False -> Dom <$> get bh
       True -> Set . mkUniqSet <$> get bh <*> get bh
-
--- Disregard location in comparison
-instance Eq (K s) where
-  Dom d == Dom d' = d == d'
-  Con k _ == Con k' _ = k == k'
-  Set s _ == Set s' _ = s == s'
-  _ == _ = False
-
-instance Hashable Unique where
-  hashWithSalt s = hashWithSalt s . getKey
-
-instance Hashable Name where
-  hashWithSalt s = hashWithSalt s . getUnique
-
-instance Hashable (K s) where
-  hashWithSalt s (Dom d) = hashWithSalt s d
-  hashWithSalt s (Con k _) = hashWithSalt s k
-  hashWithSalt s (Set ks _) = hashWithSalt s (nonDetKeysUniqSet ks)
-
-instance Outputable (K s) where
-  ppr (Dom d) = ppr d
-  ppr (Con k _) = ppr k
-  ppr (Set ks _) = hcat [char '{', pprWithBars ppr (nonDetEltsUniqSet ks), char '}']
 
 instance Refined (K l) where
   domain (Dom d) = domain d

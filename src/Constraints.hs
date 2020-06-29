@@ -25,19 +25,18 @@ import qualified Data.HashSet as HS
 import Data.Hashable
 import qualified Data.IntMap as IM
 import qualified Data.IntSet as IS
-import DataTypes
 import GhcPlugins hiding ((<>), L, singleton)
+import Types
 
--- A set of simple inclusion constraints, i.e. k in X, grouped by X
+-- A set of simple inclusion constraints, i.e. k in X(d), grouped by X(d)
 newtype Guard
   = Guard
       { groups :: HM.HashMap (DataType Name) (UniqSet Name)
       }
   deriving (Eq)
 
-instance Binary Guard where
-  put_ bh (Guard g) = put_ bh (HM.toList $ fmap nonDetEltsUniqSet g)
-  get bh = Guard . HM.fromList . fmap (second mkUniqSet) <$> Binary.get bh
+instance Semigroup Guard where
+  Guard g <> Guard g' = Guard (HM.unionWith unionUniqSets g g')
 
 instance Monoid Guard where
   mempty = Guard mempty
@@ -46,6 +45,10 @@ instance Outputable Guard where
   ppr (Guard g) =
     pprWithCommas (\(d, k) -> hsep [ppr k, text "in", ppr d]) $
       second nonDetEltsUniqSet <$> HM.toList g
+
+instance Binary Guard where
+  put_ bh (Guard g) = put_ bh (HM.toList $ fmap nonDetEltsUniqSet g)
+  get bh = Guard . HM.fromList . fmap (second mkUniqSet) <$> Binary.get bh
 
 instance Refined Guard where
   domain (Guard g) = HM.foldrWithKey ((const . (<>)) . domain) mempty g
@@ -56,23 +59,9 @@ instance Refined Guard where
           HM.foldrWithKey (\k a as -> (rename x y k, a) : as) [] g
       )
 
-instance Semigroup Guard where
-  Guard g <> Guard g' = Guard (HM.unionWith unionUniqSets g g')
-
 -- A guard literal
 singleton :: Name -> DataType Name -> Guard
 singleton k d = Guard (HM.singleton d (unitUniqSet k))
-
--- Remove a constraint from a guard
-removeFromGuard :: Name -> DataType Name -> Guard -> Guard
-removeFromGuard k d (Guard g) = 
-  let g' = 
-        case HM.lookup d g of
-          Nothing -> g
-          Just ks -> 
-            let ks' = delOneFromUniqSet ks k
-            in if isEmptyUniqSet ks' then HM.delete d g else HM.insert d ks' g
-  in Guard g'
 
 -- Remove a list of constraints from a guard
 removeAllFromGuard :: [Name] -> DataType Name -> Guard -> Guard
@@ -96,10 +85,6 @@ data Constraint l r
         srcSpan :: SrcSpan
       }
 
-instance (Binary (K l), Binary (K r)) => Binary (Constraint l r) where
-  put_ bh c = put_ bh (left c) >> put_ bh (right c) >> put_ bh (guard c) >> put_ bh (Constraints.srcSpan c)
-  get bh = Constraint <$> Binary.get bh <*> Binary.get bh <*> Binary.get bh <*> Binary.get bh
-
 -- Disregard location in comparison
 instance Eq (Constraint l r) where
   Constraint l r g _ == Constraint l' r' g' _ = l == l' && r == r' && g == g'
@@ -109,6 +94,10 @@ instance Hashable (Constraint l r) where
 
 instance Outputable (Constraint l r) where
   ppr a = ppr (guard a) <+> char '?' <+> ppr (left a) <+> arrowt <+> ppr (right a)
+
+instance (Binary (K l), Binary (K r)) => Binary (Constraint l r) where
+  put_ bh c = put_ bh (left c) >> put_ bh (right c) >> put_ bh (guard c) >> put_ bh (Constraints.srcSpan c)
+  get bh = Constraint <$> Binary.get bh <*> Binary.get bh <*> Binary.get bh <*> Binary.get bh
 
 instance Refined (Constraint l r) where
   domain c = domain (left c) <> domain (right c) <> domain (guard c)
@@ -153,7 +142,9 @@ tautology a =
             Nothing -> False
         Set ks _ -> elementOfUniqSet k ks
 
--- A constraint that defines a variable which also appears in the guard
+-- A constraint that defines a refinement variable which also appears in the guard
+-- i.e. k in X(d) ? Y(d) => X(d)
+-- A group of recursive constraints has an empty minimum model
 recursive :: Atomic -> Bool
 recursive a =
   case right a of
@@ -163,7 +154,7 @@ recursive a =
         Just ks -> not (isEmptyUniqSet ks)
     Set _ _ -> False
 
--- Apply the saturation rules
+-- Apply the saturation rules in one direction
 resolve :: Atomic -> Atomic -> [Atomic]
 resolve l r =
   case right l of
@@ -187,6 +178,9 @@ resolve l r =
               Con k _ -> [r {guard = removeFromGuard k d guards}] -- Weakening
        in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
     Set _ _ -> []
+  where
+    removeFromGuard :: Name -> DataType Name -> Guard -> Guard
+    removeFromGuard k d (Guard g) = Guard (HM.adjust (`delOneFromUniqSet` k) d g)
 
 type ConstraintSet = ConstraintSetGen Atomic
 
@@ -197,29 +191,31 @@ data ConstraintSetGen a
       }
   deriving (Eq, Foldable)
 
-instance (Binary a, Hashable a, Eq a) => Binary (ConstraintSetGen a) where
-  put_ bh cs = put_ bh (second HS.toList <$> IM.toList (definite cs)) >> put_ bh (HS.toList (goal cs))
-  get bh = ConstraintSet . IM.fromList . fmap (second HS.fromList) <$> Binary.get bh <*> (HS.fromList <$> Binary.get bh)
-
-instance (Hashable a, Eq a) => Monoid (ConstraintSetGen a) where
-  mempty = ConstraintSet {definite = mempty, goal = mempty}
-
-instance Outputable a => Outputable (ConstraintSetGen a) where
-  ppr cs = vcat ((ppr . HS.toList . snd <$> IM.toList (definite cs)) ++ (ppr <$> HS.toList (goal cs)))
-
-instance (Refined a, Hashable a, Eq a) => Refined (ConstraintSetGen a) where
-  domain cs = foldMap (foldMap domain) (definite cs) <> foldMap domain (goal cs)
-  rename x y cs =
-    ConstraintSet
-      { definite = IM.fromListWith HS.union $ bimap (\z -> if z == x then y else z) (HS.map $ rename x y) <$> IM.toList (definite cs),
-        goal = HS.map (rename x y) (goal cs)
-      }
-
 instance (Hashable a, Eq a) => Semigroup (ConstraintSetGen a) where
   cs <> cs' =
     ConstraintSet
       { definite = IM.unionWith HS.union (definite cs) (definite cs'),
         goal = HS.union (goal cs) (goal cs')
+      }
+
+instance (Hashable a, Eq a) => Monoid (ConstraintSetGen a) where
+  mempty = ConstraintSet {definite = mempty, goal = mempty}
+
+instance Outputable a => Outputable (ConstraintSetGen a) where
+  ppr = foldr (($$) . ppr) empty
+
+instance (Binary a, Hashable a, Eq a) => Binary (ConstraintSetGen a) where
+  put_ bh cs = put_ bh (second HS.toList <$> IM.toList (definite cs)) >> put_ bh (HS.toList (goal cs))
+  get bh = ConstraintSet . IM.fromList . fmap (second HS.fromList) <$> Binary.get bh <*> (HS.fromList <$> Binary.get bh)
+
+instance (Refined a, Hashable a, Eq a) => Refined (ConstraintSetGen a) where
+  domain cs = foldMap (foldMap domain) (definite cs) <> foldMap domain (goal cs)
+  rename x y cs =
+    ConstraintSet
+      { definite =
+          IM.fromListWith HS.union $
+            bimap (\z -> if z == x then y else z) (HS.map $ rename x y) <$> IM.toList (definite cs),
+        goal = HS.map (rename x y) (goal cs)
       }
 
 -- Add an atomic constriant to the set
@@ -230,9 +226,18 @@ insert a cs =
     Dom (Inj x _) -> cs {definite = IM.insertWith HS.union x (HS.singleton a) (definite cs)}
     Set _ _ -> cs {goal = HS.insert a (goal cs)}
 
+-- Check if a constraint will expand the minimum model, i.e. it is not already entailed by an existing constraint
+newMember :: Atomic -> ConstraintSet -> Bool
+newMember a cs =
+  case right a of
+    Dom (Inj x _)
+      | Just as <- IM.lookup x (definite cs) -> any (impliedBy a) as
+    Set _ _ -> any (impliedBy a) (goal cs)
+    _ -> False
+
 -- Remove a constraint from a set
-removeConstraint :: Atomic -> ConstraintSet -> ConstraintSet
-removeConstraint a cs =
+remove :: Atomic -> ConstraintSet -> ConstraintSet
+remove a cs =
   case right a of
     Dom (Base _) -> cs -- Ignore constraints concerning base types
     Dom (Inj x _) -> cs {definite = IM.adjust (HS.delete a) x (definite cs)}
@@ -248,15 +253,6 @@ guardWith g cs =
   where
     go a = a {guard = g <> guard a}
 
--- Is an atomic constraint already (effectively) in the set
-member :: Atomic -> ConstraintSet -> Bool
-member a cs =
-  case right a of
-    Dom (Inj x _)
-      | Just as <- IM.lookup x (definite cs) -> any (impliedBy a) as
-    Set _ _ -> any (impliedBy a) (goal cs)
-    _ -> False
-
 -- Apply the saturation rules and remove intermediate variables until a fixedpoint is reached
 saturate :: IS.IntSet -> ConstraintSet -> ConstraintSet
 saturate is cs
@@ -264,8 +260,8 @@ saturate is cs
   | otherwise = do
     let i = IS.findMin is
     case runRWS (saturateF i) () cs of
-      ((), cs', Any True) -> saturate is cs'
-      ((), cs', Any False) -> saturate (IS.deleteMin is) (eliminate i cs') -- i has been saturated
+      ((), cs', Any True) -> saturate is cs' -- New constriant have been found, i.e. not a fixedpoint
+      ((), cs', Any False) -> saturate (IS.deleteMin is) (eliminate i cs')
 
 -- Remove constraints concerning a particular refinement variable
 eliminate :: Int -> ConstraintSet -> ConstraintSet
@@ -284,9 +280,9 @@ eliminate i cs =
 
 -- One step consequence operator for saturation rules concerning a particular refinement variable
 saturateF :: Int -> RWS () Any ConstraintSet ()
-saturateF x =
+saturateF i =
   -- Lookup constraints with x in the head
-  gets (IM.lookup x . definite) >>= \case
+  gets (IM.lookup i . definite) >>= \case
     Just cs
       -- If there are only recursive clauses the minimum model is empty
       | not (all recursive cs) ->

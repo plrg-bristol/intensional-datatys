@@ -63,6 +63,16 @@ instance Refined Guard where
 singleton :: Name -> DataType Name -> Guard
 singleton k d = Guard (HM.singleton d (unitUniqSet k))
 
+-- Remove a constraint from a guard
+removeFromGuard :: Name -> DataType Name -> Guard -> Guard
+removeFromGuard k d = Guard . HM.update removeFromGroup d . groups
+  where
+    removeFromGroup ks =
+      let ks' = delOneFromUniqSet ks k
+      in if isEmptyUniqSet ks'
+        then Nothing
+        else Just ks'
+
 -- Remove a list of constraints from a guard
 removeAllFromGuard :: [Name] -> DataType Name -> Guard -> Guard
 removeAllFromGuard kk d (Guard g) =
@@ -178,9 +188,6 @@ resolve l r =
               Con k _ -> [r {guard = removeFromGuard k d guards}] -- Weakening
        in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
     Set _ _ -> []
-  where
-    removeFromGuard :: Name -> DataType Name -> Guard -> Guard
-    removeFromGuard k d (Guard g) = Guard (HM.adjust (`delOneFromUniqSet` k) d g)
 
 type ConstraintSet = ConstraintSetGen Atomic
 

@@ -63,6 +63,17 @@ instance Refined Guard where
 singleton :: Name -> DataType Name -> Guard
 singleton k d = Guard (HM.singleton d (unitUniqSet k))
 
+-- Remove a list of constraints from a guard
+removeAllFromGuard :: [Name] -> DataType Name -> Guard -> Guard
+removeAllFromGuard kk d (Guard g) = 
+  let g' = 
+        case HM.lookup d g of
+          Nothing -> g
+          Just ks -> 
+            let ks' = delListFromUniqSet ks kk
+            in if isEmptyUniqSet ks' then HM.delete d g else HM.insert d ks' g
+  in Guard g'
+
 type Atomic = Constraint 'L 'R
 
 -- A pair of constructor sets
@@ -157,9 +168,13 @@ resolve l r =
           weak =
             case left l of
               Dom d' ->
+                -- l is of shape d' <= d
                 case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
                   Nothing -> []
-                  Just ks -> [r {guard = singleton k d' <> removeFromGuard k d guards} | k <- ks] -- Substitute
+                  Just ks -> 
+                    let rmdGuards = removeAllFromGuard ks d guards
+                        newGuards = foldr (\k gs -> singleton k d' <> gs) rmdGuards ks
+                    in [r {guard = newGuards}] -- Substitute
               Con k _ -> [r {guard = removeFromGuard k d guards}] -- Weakening
        in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
     Set _ _ -> []
@@ -271,20 +286,19 @@ saturateF i =
     Just cs
       -- If there are only recursive clauses the minimum model is empty
       | not (all recursive cs) ->
-        mapM_
-          ( \c -> do
-              Control.Monad.RWS.get
-                >>= mapM_
-                  ( mapM_ -- Iterate through resolvants
-                      ( \resolvant -> do
-                          new <- gets (newMember resolvant)
-                          when new $ modify (insert resolvant)
-                          tell (Any new)
-                      )
-                      . resolve c -- Resolve every constraint with c
-                  )
-              -- Eliminate non-recursive after a single application
-              unless (recursive c) $ modify (remove c)
-          )
-          cs
+        mapM_ resolveAllWith cs
     _ -> return ()
+  
+  where
+    addResolvant r = 
+      do b <- gets (member r) 
+         case b of
+           True -> return ()
+           False ->
+             do modify (insert r)
+                tell (Any True)
+    
+    resolveAllWith c =
+      do ds <- Control.Monad.RWS.get
+         mapM_ (mapM_ addResolvant . resolve c) ds
+         unless (recursive c) $ modify (removeConstraint c)

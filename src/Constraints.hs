@@ -65,7 +65,14 @@ singleton k d = Guard (HM.singleton d (unitUniqSet k))
 
 -- Remove a constraint from a guard
 removeFromGuard :: Name -> DataType Name -> Guard -> Guard
-removeFromGuard k d (Guard g) = Guard (HM.adjust (`delOneFromUniqSet` k) d g)
+removeFromGuard k d (Guard g) = 
+  let g' = 
+        case HM.lookup d g of
+          Nothing -> g
+          Just ks -> 
+            let ks' = delOneFromUniqSet ks k
+            in if isEmptyUniqSet ks' then HM.delete d g else HM.insert d ks' g
+  in Guard g'
 
 type Atomic = Constraint 'L 'R
 

@@ -1,6 +1,0 @@
-cradle:
-  multi:
-    - path: "./src"
-      config: { cradle: {cabal: {component: "lib:intensional-constraints"}} }
-    - path: "./test"
-      config: { cradle: {none} }

@@ -41,14 +41,14 @@ instance Outputable d => Outputable (SchemeGen d) where
         (hcat [pprTyQuant, dot, pprConQuant, dot, ppr (body scheme)])
         2
         (hang (text "where") 2 (ppr (constraints scheme)))
-    | otherwise = hcat [pprTyQuant, dot, pprConQuant, dot, ppr (body scheme)]
+    | otherwise = hcat [pprTyQuant, pprConQuant, ppr (body scheme)]
     where
       pprTyQuant
         | null (tyvars scheme) = empty
-        | otherwise = forAllLit <+> fsep (map ppr $ tyvars scheme)
+        | otherwise = hcat [forAllLit <+> fsep (map ppr $ tyvars scheme), dot]
       pprConQuant
         | null (boundvs scheme) = empty
-        | otherwise = forAllLit <+> fsep (ppr <$> boundvs scheme)
+        | otherwise = hcat [forAllLit <+> fsep (ppr <$> boundvs scheme), dot]
 
 instance Binary d => Binary (SchemeGen d) where
   put_ bh scheme =

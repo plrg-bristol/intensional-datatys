@@ -65,14 +65,14 @@ singleton k d = Guard (HM.singleton d (unitUniqSet k))
 
 -- Remove a list of constraints from a guard
 removeAllFromGuard :: [Name] -> DataType Name -> Guard -> Guard
-removeAllFromGuard kk d (Guard g) = 
-  let g' = 
+removeAllFromGuard kk d (Guard g) =
+  let g' =
         case HM.lookup d g of
           Nothing -> g
-          Just ks -> 
+          Just ks ->
             let ks' = delListFromUniqSet ks kk
-            in if isEmptyUniqSet ks' then HM.delete d g else HM.insert d ks' g
-  in Guard g'
+             in if isEmptyUniqSet ks' then HM.delete d g else HM.insert d ks' g
+   in Guard g'
 
 type Atomic = Constraint 'L 'R
 
@@ -171,10 +171,10 @@ resolve l r =
                 -- l is of shape d' <= d
                 case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
                   Nothing -> []
-                  Just ks -> 
+                  Just ks ->
                     let rmdGuards = removeAllFromGuard ks d guards
                         newGuards = foldr (\k gs -> singleton k d' <> gs) rmdGuards ks
-                    in [r {guard = newGuards}] -- Substitute
+                     in [r {guard = newGuards}] -- Substitute
               Con k _ -> [r {guard = removeFromGuard k d guards}] -- Weakening
        in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
     Set _ _ -> []
@@ -226,9 +226,10 @@ insert a cs =
     Dom (Inj x _) -> cs {definite = IM.insertWith HS.union x (HS.singleton a) (definite cs)}
     Set _ _ -> cs {goal = HS.insert a (goal cs)}
 
--- Check if a constraint will expand the minimum model, i.e. it is not already entailed by an existing constraint
-newMember :: Atomic -> ConstraintSet -> Bool
-newMember a cs =
+-- Check if a constraint will expand the minimum model
+-- i.e. it is not already entailed by an existing constraint
+member :: Atomic -> ConstraintSet -> Bool
+member a cs =
   case right a of
     Dom (Inj x _)
       | Just as <- IM.lookup x (definite cs) -> any (impliedBy a) as
@@ -288,14 +289,13 @@ saturateF i =
       | not (all recursive cs) ->
         mapM_ resolveAllWith cs
     _ -> return ()
-  
   where
-    addResolvant r = 
-      do b <- gets (newMember r) 
-         when b $ modify (insert r)
-         tell (Any b)
-    
-    resolveAllWith c =
-      do ds <- Control.Monad.RWS.get
-         mapM_ (mapM_ addResolvant . resolve c) ds
-         unless (recursive c) $ modify (remove c)
+    addResolvant r = do
+      b <- gets (member r)
+      unless b $ do
+        modify (insert r)
+        tell (Any True)
+    resolveAllWith c = do
+      ds <- Control.Monad.RWS.get
+      mapM_ (mapM_ addResolvant . resolve c) ds
+      unless (recursive c) $ modify (remove c)

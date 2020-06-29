@@ -291,14 +291,11 @@ saturateF i =
   
   where
     addResolvant r = 
-      do b <- gets (member r) 
-         case b of
-           True -> return ()
-           False ->
-             do modify (insert r)
-                tell (Any True)
+      do b <- gets (newMember r) 
+         when b $ modify (insert r)
+         tell (Any b)
     
     resolveAllWith c =
       do ds <- Control.Monad.RWS.get
          mapM_ (mapM_ addResolvant . resolve c) ds
-         unless (recursive c) $ modify (removeConstraint c)
+         unless (recursive c) $ modify (remove c)

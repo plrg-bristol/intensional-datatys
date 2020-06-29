@@ -74,6 +74,17 @@ removeFromGuard k d (Guard g) =
             in if isEmptyUniqSet ks' then HM.delete d g else HM.insert d ks' g
   in Guard g'
 
+-- Remove a list of constraints from a guard
+removeAllFromGuard :: [Name] -> DataType Name -> Guard -> Guard
+removeAllFromGuard kk d (Guard g) = 
+  let g' = 
+        case HM.lookup d g of
+          Nothing -> g
+          Just ks -> 
+            let ks' = delListFromUniqSet ks kk
+            in if isEmptyUniqSet ks' then HM.delete d g else HM.insert d ks' g
+  in Guard g'
+
 type Atomic = Constraint 'L 'R
 
 -- A pair of constructor sets
@@ -166,9 +177,13 @@ resolve l r =
           weak =
             case left l of
               Dom d' ->
+                -- l is of shape d' <= d
                 case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
                   Nothing -> []
-                  Just ks -> [r {guard = singleton k d' <> removeFromGuard k d guards} | k <- ks] -- Substitute
+                  Just ks -> 
+                    let rmdGuards = removeAllFromGuard ks d guards
+                        newGuards = foldr (\k gs -> singleton k d' <> gs) rmdGuards ks
+                    in [r {guard = newGuards}] -- Substitute
               Con k _ -> [r {guard = removeFromGuard k d guards}] -- Weakening
        in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
     Set _ _ -> []

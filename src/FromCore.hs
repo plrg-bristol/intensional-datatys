@@ -1,9 +1,10 @@
 {-# LANGUAGE LambdaCase #-}
 
 module FromCore
-  ( fromCore,
-    fromCoreScheme,
+  ( freshCoreType,
+    freshCoreScheme,
     fromCoreCons,
+    consInstArgs,
     getVar,
   )
 where
@@ -12,88 +13,83 @@ import Constraints
 import Constructors
 import Control.Monad.RWS
 import qualified Data.Map as M
-import DataTypes
-import GhcPlugins hiding (Expr (..), Type, (<>))
+import GhcPlugins hiding ((<>), Expr (..), Type)
 import InferM
 import Scheme
 import ToIface
 import qualified TyCoRep as Tcr
 import Types
 
--- Convert a monomorphic core type with fresh refinement variables
-fromCore :: Tcr.Type -> InferM Type
-fromCore (Tcr.TyVarTy a) = Var <$> getExternalName a
-fromCore (Tcr.AppTy a b) = liftM2 App (fromCore a) (fromCore b)
-fromCore (Tcr.TyConApp d as)
-  | isTypeSynonymTyCon d,
-    Just (as', s) <- synTyConDefn_maybe d =
-    fromCore (substTy (extendTvSubstList emptySubst (zip as' as)) s) -- Instantiate type synonyms
-  | isClassTyCon d = return Ambiguous -- Disregard type class evidence
-  | trivial d = Data (Base d) <$> mapM fromCore as -- Datatypes with only one constructor
-  | otherwise = do
-    x <- fresh
-    Data (Inj x d) <$> mapM fromCore as
-fromCore (Tcr.FunTy a b) = liftM2 (:=>) (fromCore a) (fromCore b)
-fromCore (Tcr.LitTy l) = return $ Lit $ toIfaceTyLit l
-fromCore (Tcr.ForAllTy a t) = pprPanic "Unexpected polymorphic type!" $ ppr $ Tcr.ForAllTy a t
-fromCore (Tcr.CastTy t k) = pprPanic "Unexpected cast type!" $ ppr (t, k)
-fromCore (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
+-- A fresh monomorphic type
+freshCoreType :: Tcr.Type -> InferM Type
+freshCoreType = fromCore Nothing
 
--- Convert a polymorphic core type
-fromCoreScheme :: Tcr.Type -> InferM Scheme
-fromCoreScheme (Tcr.ForAllTy b t) = do
-  a <- getExternalName (Tcr.binderVar b)
-  scheme <- fromCoreScheme t
-  return scheme {tyvars = a : tyvars scheme}
-fromCoreScheme (Tcr.FunTy t1 t2) = do
-  s1 <- fromCore t1
-  scheme <- fromCoreScheme t2 -- Optimistically push arrows inside univiersal quantifier
-  return scheme {body = s1 :=> body scheme}
-fromCoreScheme (Tcr.CastTy t k) = pprPanic "Unexpected cast type!" $ ppr (t, k)
-fromCoreScheme (Tcr.CoercionTy g) = pprPanic "Unexpected coercion type!" $ ppr g
-fromCoreScheme t = Mono <$> fromCore t
+-- A fresh polymorphic type
+freshCoreScheme :: Tcr.Type -> InferM Scheme
+freshCoreScheme = fromCoreScheme Nothing
 
 -- The type of a constructor injected into a fresh refinement environment
--- TODO: Specialise
 fromCoreCons :: DataCon -> InferM Scheme
 fromCoreCons k = do
-  scheme <- fromCoreScheme (dataConUserType k)
   x <- fresh
-  return scheme{body = inj x (body scheme)}
-  -- let d = dataConTyCon k
-  -- x <- fresh
-  -- args <- mapM fromCore $ dataConOrigArgTys k
-  -- -- Unroll datatype
-  -- -- u <- asks unrollDataTypes
-  -- -- let args' = if u then fmap (increaseLevel d) args else args :: [Type 'S]
-  -- -- Inject
-  -- let args' = fmap (inj x) args
-  -- -- Rebuild type
-  -- univ <- mapM getExternalName $ dataConUnivAndExTyCoVars (orig k)
-  -- let res = Inj x (d <$ k) (Var <$> univ)
-  -- return $ Forall univ (foldr (:=>) res args'')
+  let d = dataConTyCon k
+  unless (trivial d) $ do
+    l <- asks inferLoc
+    emit (Con (getName k) l) (Dom (Inj x (getName d)))
+  fromCoreScheme (Just x) (dataConUserType k)
 
--- -- Extract a constructor's type with tyvars instantiated
--- -- We assume there are no existentially quantified tyvars
--- fromCoreConsInst :: DataCon -> [Type] -> InferM Type
--- fromCoreConsInst k tyargs = do
---   let d = dataConTyCon (orig k)
---   x <- fresh
---   args <- mapM fromCore $ dataConOrigArgTys (orig k)
---   -- Unroll datatype
---   -- u <- asks unrollDataTypes
---   -- let args' = if u then fmap (increaseLevel d) args else args
---   let args' = fmap (increaseLevel d) args
---   -- Instantiate and inject
---   let args'' = fmap (inj x . inst) args'
---   -- Rebuild type
---   let res = Inj x (d <$ k) tyargs
---   return $ foldr (:=>) res (reverse args'')
---   where
---     inst :: Type -> Type
---     inst t = foldr (uncurry subTyVar) t (zip (fmap getName $ dataConUnivAndExTyCoVars $ orig k) tyargs)
+-- The argument types of an instantiated constructor
+consInstArgs :: RVar -> [Type] -> DataCon -> [Type]
+consInstArgs x as k = fmap fromCoreInst (dataConRepArgTys k)
+  where
+    fromCoreInst :: Tcr.Type -> Type
+    fromCoreInst (Tcr.TyVarTy a) =
+      case lookup a (zip (dataConUnivTyVars k) as) of
+        Nothing -> pprPanic "Type arguments aren't fully instantiated!" (ppr a)
+        Just t -> t
+    fromCoreInst (Tcr.AppTy a b) = App (fromCoreInst a) (fromCoreInst b)
+    fromCoreInst (Tcr.TyConApp d as')
+      | isTypeSynonymTyCon d,
+        Just (as'', s) <- synTyConDefn_maybe d =
+        fromCoreInst (substTy (extendTvSubstList emptySubst (zip as'' as')) s) -- Instantiate type synonym arguments
+      | isClassTyCon d = Ambiguous -- Disregard type class evidence
+      | trivial d = Data (Base d) (fmap fromCoreInst as') -- Datatypes with only one constructor
+      | otherwise = Data (Inj x d) (fmap fromCoreInst as')
+    fromCoreInst (Tcr.FunTy a b) = fromCoreInst a :=> fromCoreInst b
+    fromCoreInst (Tcr.LitTy l) = Lit $ toIfaceTyLit l
+    fromCoreInst _ = Ambiguous
 
--- Lookup constrained variable emit its constraints
+-- Convert a monomorphic core type
+fromCore :: Maybe RVar -> Tcr.Type -> InferM Type
+fromCore _ (Tcr.TyVarTy a) = Var <$> getExternalName a
+fromCore f (Tcr.AppTy a b) = liftM2 App (fromCore f a) (fromCore f b)
+fromCore f (Tcr.TyConApp d as)
+  | isTypeSynonymTyCon d,
+    Just (as', s) <- synTyConDefn_maybe d =
+    fromCore f (substTy (extendTvSubstList emptySubst (zip as' as)) s) -- Instantiate type synonyms
+  | isClassTyCon d = return Ambiguous -- Disregard type class evidence
+  | trivial d = Data (Base d) <$> mapM (fromCore f) as -- Datatypes with only one constructor
+fromCore Nothing (Tcr.TyConApp d as) = do
+  x <- fresh
+  Data (Inj x d) <$> mapM (fromCore Nothing) as
+fromCore (Just x) (Tcr.TyConApp d as) = Data (Inj x d) <$> mapM (fromCore (Just x)) as
+fromCore f (Tcr.FunTy a b) = liftM2 (:=>) (fromCore f a) (fromCore f b)
+fromCore _ (Tcr.LitTy l) = return $ Lit $ toIfaceTyLit l
+fromCore _ _ = return Ambiguous -- Higher-ranked or impredicative types, casts and coercions
+
+-- Convert a polymorphic core type
+fromCoreScheme :: Maybe RVar -> Tcr.Type -> InferM Scheme
+fromCoreScheme f (Tcr.ForAllTy b t) = do
+  a <- getExternalName (Tcr.binderVar b)
+  scheme <- fromCoreScheme f t
+  return scheme {tyvars = a : tyvars scheme}
+fromCoreScheme f (Tcr.FunTy a b) = do
+  a' <- fromCore f a
+  scheme <- fromCoreScheme f b -- Optimistically push arrows inside univiersal quantifier
+  return scheme {body = a' :=> body scheme}
+fromCoreScheme f t = Forall [] <$> fromCore f t
+
+-- Lookup constrained variable and emit its constraints
 getVar :: Var -> InferM Scheme
 getVar v =
   asks (M.lookup (getName v) . varEnv) >>= \case
@@ -107,16 +103,12 @@ getVar v =
           )
           (scheme {boundvs = []})
           (boundvs scheme)
-      case Scheme.constraints fre_scheme of
-        Nothing ->
-          return fre_scheme {Scheme.constraints = Nothing}
-        Just var_cg -> do
-          --- Emit constriants associated with a variable
-          g <- asks branchGuard
-          modify (\s -> s {InferM.constraints = InferM.constraints s <> guardWith g var_cg})
-          return fre_scheme {Scheme.constraints = Nothing}
+      -- Emit constriants associated with a variable
+      g <- asks branchGuard
+      modify (\s -> s {InferM.constraints = InferM.constraints s <> guardWith g (Scheme.constraints fre_scheme)})
+      return fre_scheme {Scheme.constraints = mempty}
     Nothing -> do
-      var_scheme <- fromCoreScheme $ varType v
+      var_scheme <- freshCoreScheme $ varType v
       maximise True (body var_scheme)
       return var_scheme
 

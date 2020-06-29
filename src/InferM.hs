@@ -24,9 +24,9 @@ import Constructors
 import Control.Monad.RWS hiding (guard)
 import qualified Data.IntSet as I
 import qualified Data.Map as M
-import DataTypes
 import GhcPlugins hiding ((<>), singleton)
 import Scheme
+import Types
 
 type InferM = RWS InferEnv [Atomic] InferState
 
@@ -72,7 +72,7 @@ saturate ts = do
     ( ( \s ->
           s -- Add constraints to every type in the recursive group
             { boundvs = I.toList interface,
-              Scheme.constraints = Just (Constraints.saturate intermediate cg)
+              Scheme.constraints = Constraints.saturate intermediate cg
             }
       )
         <$> ts

@@ -165,8 +165,12 @@ recursive a =
     Set _ _ -> False
 
 -- Apply the saturation rules in one direction
--- Returns Nothing if l and r are not resolvable
-resolve :: Atomic -> Atomic -> Maybe Atomic
+-- Returns:
+--   0 constraints if `right l` of shape `Dom d` does not occur in r
+--   1 constraint if `right l` occurs in `left r` xor `guard r`
+--   2 constraints if `right l` occurs in both `left r` and `guard r`
+--
+resolve :: Atomic -> Atomic -> [Atomic]
 resolve l r =
   case right l of
     Dom d ->
@@ -189,18 +193,18 @@ resolve l r =
                   Nothing -> Nothing 
                   Just _ -> Just (removeFromGuard k d (guard r)) -- Weakening
           new = 
-            -- Check whether anything happened 
-            -- When combining, ensure to apply all resolution rules simultaneously
-            -- otherwise inconsistent with saturateF removing l in case non-recursive
+            -- Check what resolutions were able to occur and aggregate appropriately
             case (leftr, guardsr) of
-              (Nothing, Nothing) -> Nothing
-              (Nothing, Just gs) -> Just $ r { guard = guard l <> gs }
-              (Just l', Nothing)  -> Just $ r { left = l', guard = guard l <> guard r}
-              (Just l', Just gs)  -> Just $ r { left = l', guard = guard l <> gs}
-       in case new of 
-         Just a | not (tautology a) -> new -- Remove redundant constriants
-         _                          -> Nothing
-    Set _ _ -> Nothing
+              (Nothing, Nothing) -> []
+              (Nothing, Just gs) -> [r { guard = guard l <> gs }]
+              (Just l', Nothing)  -> [r { left = l', guard = guard l <> guard r}]
+              (Just l', Just gs)  -> [
+                  r { guard = guard l <> gs },
+                  r { left = l', guard = guard l <> guard r},
+                  r { left = l', guard = guard l <> gs}
+                ]
+       in filter (not . tautology) new -- Remove redundant constriants
+    Set _ _ -> []
 
 type ConstraintSet = ConstraintSetGen Atomic
 

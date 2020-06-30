@@ -128,7 +128,7 @@ infer (Core.Lam x e)
     putVar (getName x) (Forall [] t1) (infer e) >>= \case
       Forall as t2 -> return $ Forall as (t1 :=> t2)
 infer (Core.Let b e) = saturate $ do
-  ts <- associate b
+  ts <- inferRec b
   putVars ts $ infer e
 infer (Core.Case e bind_e core_ret alts) = saturate $ do
   -- Fresh return type

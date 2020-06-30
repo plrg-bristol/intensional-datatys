@@ -173,13 +173,13 @@ resolve l r =
               Dom d' ->
                 -- l is of shape d' <= d
                 case GHC.nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
-                  Nothing -> []
+                  Nothing -> Nothing
                   Just ks ->
                     let rmdGuards = removeFromGuard ks d (guard r)
                         newGuards = foldr (\k gs -> singleton k d' <> gs) rmdGuards ks
                      in Just newGuards -- Substitute
               Con k _ -> 
-                case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
+                case GHC.nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
                   Nothing -> Nothing 
                   Just _ -> Just (removeFromGuard [k] d (guard r)) -- Weakening
           new = 

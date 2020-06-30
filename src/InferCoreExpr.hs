@@ -11,6 +11,7 @@ import Control.Monad.RWS
 import CoreArity
 import qualified CoreSyn as Core
 import Data.Bifunctor
+import qualified Data.IntSet as I
 import qualified Data.List as L
 import qualified Data.Map as M
 import FromCore
@@ -50,11 +51,12 @@ inferProg (r : rs) = do
 -- Infer a set of constraints and associate them to qualified type scheme
 associate :: CoreBind -> InferM Context
 associate r = do
+  env <- asks varEnv
   (ctx, cs) <- listen $ saturate $ inferRec r
   return
     ( ( \s ->
           s -- Add constraints to every type in the recursive group
-            { boundvs = domain cs,
+            { boundvs = domain cs I.\\ domain env,
               Scheme.constraints = cs
             }
       )
@@ -128,7 +130,7 @@ infer (Core.Lam x e)
     putVar (getName x) (Forall [] t1) (infer e) >>= \case
       Forall as t2 -> return $ Forall as (t1 :=> t2)
 infer (Core.Let b e) = saturate $ do
-  ts <- inferRec b
+  ts <- associate b
   putVars ts $ infer e
 infer (Core.Case e bind_e core_ret alts) = saturate $ do
   -- Fresh return type

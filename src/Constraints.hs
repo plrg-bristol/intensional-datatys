@@ -180,9 +180,9 @@ resolve l r =
     Set _ _ -> []
 
 {-
-  The list `xs` associated with each variable inside the map `definite`
-  of shape, say, `[xs !! 1, xs !! 2, ..., xs !! k]` is a list of 
-  atomic constraints that obeys the following invariant: 
+  The lists of atomic constraints inside the set representation
+  of shape, say, `[xs !! 1, xs !! 2, ..., xs !! k]` obey the
+  following invariant: 
   
     for all i,j from 1 to k: 
         not (xs !! i `impliedBy` xs !! j) 

@@ -66,7 +66,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
         M.empty
         deps
   -- Infer constraints
-  let ~(gamma, errs) =
+  let gamma =
         runInferM
           ( inferProg (dependancySort p) )
           -- unrollDataTypes
@@ -83,7 +83,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
       )
     $ M.toList gamma
   -- Display errors
-  liftIO $ mapM_ (putStrLn . showSDocUnsafe . ppr) errs
+  -- liftIO $ mapM_ (putStrLn . showSDocUnsafe . ppr) errs
   -- Save typescheme to temporary file
   exist <- liftIO $ doesDirectoryExist "interface"
   liftIO $ unless exist (createDirectory "interface")

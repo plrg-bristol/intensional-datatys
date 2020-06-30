@@ -8,6 +8,7 @@ where
 import Constructors
 import Control.Monad.Extra
 import Control.Monad.RWS
+import CoreArity
 import qualified CoreSyn as Core
 import Data.Bifunctor
 import qualified Data.List as L
@@ -18,7 +19,6 @@ import InferM
 import Pair
 import Scheme
 import Types
-import CoreArity
 
 -- Infer set constraints for a subtyping constraint
 inferSubType :: Type -> Type -> InferM ()
@@ -43,10 +43,23 @@ inferSubType = inferSubTypeStep []
 inferProg :: CoreProgram -> InferM Context
 inferProg [] = return M.empty
 inferProg (r : rs) = do
-  ictx <- inferRec r
-  ctx <- saturate ictx
+  ctx <- associate r
   ctxs <- putVars ctx (inferProg rs)
   return (ctxs <> ctx)
+
+-- Infer a set of constraints and associate them to qualified type scheme
+associate :: CoreBind -> InferM Context
+associate r = do
+  (ctx, cs) <- listen $ saturate $ inferRec r
+  return
+    ( ( \s ->
+          s -- Add constraints to every type in the recursive group
+            { boundvs = domain cs,
+              Scheme.constraints = cs
+            }
+      )
+        <$> ctx
+    )
 
 -- Infer constraints for a mutually recursive binders
 inferRec :: CoreBind -> InferM Context
@@ -94,14 +107,17 @@ infer (Core.App e1 (Core.Type e2)) = do
       return $ Forall as (subTyVar a t b) -- Type application
     Forall [] Ambiguous -> return (Forall [] Ambiguous)
     _ -> pprPanic "Type application to monotype!" (ppr (scheme, e2))
-infer (Core.App e1 e2) = infer e1 >>= \case
-  Forall as Ambiguous -> Forall as Ambiguous <$ infer e2
-  -- See FromCore 88 for the case when as /= []
-  Forall as (t3 :=> t4) -> do
-    t2 <- mono <$> infer e2
-    inferSubType t2 t3
-    return $ Forall as t4
-  _ -> pprPanic "The expression has been given too many arguments!" $ ppr (exprType e1, exprType e2)
+infer (Core.App e1 e2) =
+  saturate
+    ( infer e1 >>= \case
+        Forall as Ambiguous -> Forall as Ambiguous <$ infer e2
+        -- See FromCore 88 for the case when as /= []
+        Forall as (t3 :=> t4) -> do
+          t2 <- mono <$> infer e2
+          inferSubType t2 t3
+          return $ Forall as t4
+        _ -> pprPanic "The expression has been given too many arguments!" $ ppr (exprType e1, exprType e2)
+    )
 infer (Core.Lam x e)
   | isTyVar x = do
     a <- getExternalName x
@@ -111,10 +127,10 @@ infer (Core.Lam x e)
     t1 <- freshCoreType (varType x)
     putVar (getName x) (Forall [] t1) (infer e) >>= \case
       Forall as t2 -> return $ Forall as (t1 :=> t2)
-infer (Core.Let b e) = do
-  ts <- inferRec b
+infer (Core.Let b e) = saturate $ do
+  ts <- associate b
   putVars ts $ infer e
-infer (Core.Case e bind_e core_ret alts) = do
+infer (Core.Case e bind_e core_ret alts) = saturate $ do
   -- Fresh return type
   ret <- freshCoreType core_ret
   -- Infer expression on which to pattern match
@@ -148,9 +164,9 @@ infer (Core.Case e bind_e core_ret alts) = do
           (_, Just rhs) | not (isBottoming rhs) ->
             -- Guard by unseen constructors
             branchAny e (tyConDataCons d L.\\ ks) (Inj x d) $ do
-                -- Ensure return type is valid
-                ret_i <- mono <$> infer rhs
-                inferSubType ret_i ret
+              -- Ensure return type is valid
+              ret_i <- mono <$> infer rhs
+              inferSubType ret_i ret
           _ -> do
             -- Ensure destructor is total if not nested
             top <- topLevel e

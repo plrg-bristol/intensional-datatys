@@ -1,36 +1,25 @@
 module Main where
 
-import Lib
-import GHC as G
-import GhcMake as G
-import DynFlags
-import SrcLoc as G
-import Plugins
-
 import Control.Monad
-import Control.Monad.IO.Class
+import GHC
+import Lib
+import Plugins
 import System.Environment
 
-import Lib
-
--- cabal new-profile -- +RTS -pj -l-au
+-- cabal new-run profile -- +RTS -pj -l-au
 -- https://www.speedscope.app/
-
-initGhcM :: [String] -> Ghc ()
-initGhcM xs = do
-    df1 <- getSessionDynFlags
-    let df1' = df1{staticPlugins = [StaticPlugin (PluginWithArgs plugin [])]}
-    let cmdOpts = ["-fforce-recomp"] ++ xs
-    (df2, leftovers, warns) <- G.parseDynamicFlags df1' (map G.noLoc cmdOpts)
-    setSessionDynFlags df2
-    ts <- mapM (flip G.guessTarget Nothing) $ map unLoc leftovers
-
-    setTargets ts
-
-    void $ G.load LoadAllTargets
 
 main :: IO ()
 main = do
-    xs <- words <$> readFile "./profile/ghc-options"
-    let libdir = "/opt/ghc/8.8.3/lib/ghc-8.8.3"
-    runGhc (Just libdir) $ initGhcM xs
+  files <- getArgs
+  runGhc (Just "/opt/ghc/8.8.3/lib/ghc-8.8.3") $ do
+    df1 <- getSessionDynFlags
+    let cmdOpts = ["-fforce-recomp", "-O0", "-prof", "-fprof-auto", "-g"] ++ files
+    (df2, leftovers, warns) <-
+      parseDynamicFlags
+        (df1 {staticPlugins = [StaticPlugin (PluginWithArgs plugin [])]})
+        (map noLoc cmdOpts)
+    setSessionDynFlags df2
+    ts <- mapM (flip guessTarget Nothing . unLoc) leftovers
+    setTargets ts
+    void $ load LoadAllTargets

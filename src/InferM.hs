@@ -1,8 +1,9 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 module InferM
   ( InferM,
     Context,
     InferEnv (..),
-    InferState (constraints),
     runInferM,
     InferM.saturate,
     topLevel,
@@ -22,17 +23,20 @@ where
 import Constraints
 import Constructors
 import Control.Monad.RWS hiding (guard)
-import qualified Data.IntSet as I
 import qualified Data.Map as M
 import GhcPlugins hiding ((<>), singleton)
 import Scheme
 import Types
 
-type InferM = RWS InferEnv [Atomic] InferState
+type InferM = RWS InferEnv ConstraintSet RVar
 
 type Path = [(CoreExpr, DataCon)]
 
 type Context = M.Map Name Scheme
+
+instance Refined Context where
+  domain = foldMap domain
+  rename x y = fmap (rename x y)
 
 data InferEnv
   = InferEnv
@@ -43,40 +47,26 @@ data InferEnv
         inferLoc :: SrcSpan -- The current location in the source text
       }
 
-data InferState
-  = InferState
-      { next :: RVar,
-        constraints :: ConstraintSet
-      }
-
 runInferM ::
   InferM a ->
   Module ->
   Context ->
-  (a, [Atomic])
+  a
 runInferM run mod_name init_env =
-  evalRWS
-    run
-    (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Top level")))
-    (InferState 0 mempty)
+  fst $
+    evalRWS
+      run
+      (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Top level")))
+      0
 
--- Transitively remove local constraints and attach them to variables
-saturate :: Context -> InferM Context
-saturate ts = do
-  let interface = foldMap domain ts
-  cg <- gets InferM.constraints
-  let intermediate = I.difference (domain cg) interface
-  -- Reset constraints
-  modify (\s -> s {InferM.constraints = mempty})
-  return
-    ( ( \s ->
-          s -- Add constraints to every type in the recursive group
-            { boundvs = I.toList interface,
-              Scheme.constraints = Constraints.saturate intermediate cg
-            }
-      )
-        <$> ts
-    )
+-- Transitively remove local constraints
+saturate :: Refined a => InferM a -> InferM a
+saturate ma = pass $ do
+  a <- ma
+  env <- asks varEnv
+  g <- asks branchGuard
+  let interface = domain a <> domain env <> domain g
+  return (a, Constraints.saturate interface)
 
 -- Check if an expression has already been pattern matched
 topLevel :: CoreExpr -> InferM Bool
@@ -122,30 +112,27 @@ emit :: K l -> K r -> InferM ()
 emit k1 k2 = do
   l <- asks inferLoc
   g <- asks branchGuard
-  modify
-    ( \s ->
-        s
-          { InferM.constraints =
-              foldr
-                ( \(k1', k2') ->
-                    insert
-                      Constraint
-                        { left = k1',
-                          right = k2',
-                          guard = g,
-                          Constraints.srcSpan = l
-                        }
-                )
-                (InferM.constraints s)
-                (toAtomic k1 k2)
-          }
+  tell
+    ( foldMap
+        ( \(k1', k2') ->
+            insert
+              ( Constraint
+                  { left = k1',
+                    right = k2',
+                    guard = g,
+                    Constraints.srcSpan = l
+                  }
+              )
+              mempty
+        )
+        (toAtomic k1 k2)
     )
 
 -- A fresh refinement variable
 fresh :: InferM RVar
 fresh = do
-  s@InferState {next = i} <- get
-  put s {next = i + 1}
+  i <- get
+  put (i + 1)
   return i
 
 -- Insert variables into environment

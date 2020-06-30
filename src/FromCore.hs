@@ -12,6 +12,7 @@ where
 import Constraints
 import Constructors
 import Control.Monad.RWS
+import qualified Data.IntSet as I
 import qualified Data.Map as M
 import GhcPlugins hiding ((<>), Expr (..), Type)
 import InferM
@@ -101,11 +102,11 @@ getVar v =
               y <- fresh
               return (rename x y s)
           )
-          (scheme {boundvs = []})
-          (boundvs scheme)
+          (scheme {boundvs = mempty})
+          (I.toList (boundvs scheme))
       -- Emit constriants associated with a variable
       g <- asks branchGuard
-      modify (\s -> s {InferM.constraints = InferM.constraints s <> guardWith g (Scheme.constraints fre_scheme)})
+      tell (guardWith g (constraints fre_scheme))
       return fre_scheme {Scheme.constraints = mempty}
     Nothing -> do
       var_scheme <- freshCoreScheme $ varType v

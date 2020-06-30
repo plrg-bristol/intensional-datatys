@@ -10,7 +10,7 @@ module Types
     trivial,
     Type,
     TypeGen (..),
-    inj,
+    -- inj,
     decompType,
     subTyVar,
   )
@@ -133,14 +133,14 @@ instance Refined (TypeGen d) where
   rename _ _ t = t
 
 -- Inject a sort into a refinement environment
-inj :: Int -> TypeGen d -> TypeGen d
-inj _ (Var a) = Var a
-inj x (App a b) = App (inj x a) (inj x b)
-inj x (Data (Base b) as) = Data (Base b) (inj x <$> as)
-inj x (Data (Inj _ d) as) = Data (Inj x d) (inj x <$> as)
-inj x (a :=> b) = inj x a :=> inj x b
-inj _ (Lit l) = Lit l
-inj _ Ambiguous = Ambiguous
+-- inj :: Int -> TypeGen d -> TypeGen d
+-- inj _ (Var a) = Var a
+-- inj x (App a b) = App (inj x a) (inj x b)
+-- inj x (Data (Base b) as) = Data (Base b) (inj x <$> as)
+-- inj x (Data (Inj _ d) as) = Data (Inj x d) (inj x <$> as)
+-- inj x (a :=> b) = inj x a :=> inj x b
+-- inj _ (Lit l) = Lit l
+-- inj _ Ambiguous = Ambiguous
 
 -- Decompose a functions into its arguments and eventual return type
 decompType :: TypeGen d -> ([TypeGen d], TypeGen d)

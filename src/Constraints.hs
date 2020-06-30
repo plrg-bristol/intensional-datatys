@@ -63,26 +63,15 @@ instance Refined Guard where
 singleton :: Name -> DataType Name -> Guard
 singleton k d = Guard (HM.singleton d (unitUniqSet k))
 
--- Remove a constraint from a guard
-removeFromGuard :: Name -> DataType Name -> Guard -> Guard
+-- Remove a list of constraints from a guard
+removeFromGuard :: [Name] -> DataType Name -> Guard -> Guard
 removeFromGuard k d = Guard . HM.update removeFromGroup d . groups
   where
     removeFromGroup ks =
-      let ks' = delOneFromUniqSet ks k
-      in if isEmptyUniqSet ks'
-        then Nothing
-        else Just ks'
-
--- Remove a list of constraints from a guard
-removeAllFromGuard :: [Name] -> DataType Name -> Guard -> Guard
-removeAllFromGuard kk d (Guard g) =
-  let g' =
-        case HM.lookup d g of
-          Nothing -> g
-          Just ks ->
-            let ks' = delListFromUniqSet ks kk
-             in if isEmptyUniqSet ks' then HM.delete d g else HM.insert d ks' g
-   in Guard g'
+      let ks' = delListFromUniqSet ks k
+       in if isEmptyUniqSet ks'
+            then Nothing
+            else Just ks'
 
 type Atomic = Constraint 'L 'R
 
@@ -182,10 +171,10 @@ resolve l r =
                 case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
                   Nothing -> []
                   Just ks ->
-                    let rmdGuards = removeAllFromGuard ks d guards
+                    let rmdGuards = removeFromGuard ks d guards
                         newGuards = foldr (\k gs -> singleton k d' <> gs) rmdGuards ks
                      in [r {guard = newGuards}] -- Substitute
-              Con k _ -> [r {guard = removeFromGuard k d guards}] -- Weakening
+              Con k _ -> [r {guard = removeFromGuard [k] d guards}] -- Weakening
        in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
     Set _ _ -> []
 
@@ -216,7 +205,7 @@ instance (Binary a, Hashable a, Eq a) => Binary (ConstraintSetGen a) where
   get bh = ConstraintSet . IM.fromList . fmap (second HS.fromList) <$> Binary.get bh <*> (HS.fromList <$> Binary.get bh)
 
 instance (Refined a, Hashable a, Eq a) => Refined (ConstraintSetGen a) where
-  domain cs = foldMap (foldMap domain) (definite cs) <> foldMap domain (goal cs)
+  domain = foldMap domain
   rename x y cs =
     ConstraintSet
       { definite =
@@ -248,8 +237,14 @@ remove :: Atomic -> ConstraintSet -> ConstraintSet
 remove a cs =
   case right a of
     Dom (Base _) -> cs -- Ignore constraints concerning base types
-    Dom (Inj x _) -> cs {definite = IM.adjust (HS.delete a) x (definite cs)}
+    Dom (Inj x _) -> cs {definite = IM.update deleteA x (definite cs)}
     Set _ _ -> cs {goal = HS.delete a (goal cs)}
+  where
+    deleteA as =
+      let as' = HS.delete a as
+       in if HS.null as'
+            then Nothing
+            else Just as'
 
 -- Add a guard to every constraint
 guardWith :: Guard -> ConstraintSet -> ConstraintSet
@@ -264,12 +259,12 @@ guardWith g cs =
 -- Apply the saturation rules and remove intermediate variables until a fixedpoint is reached
 saturate :: IS.IntSet -> ConstraintSet -> ConstraintSet
 saturate is cs
-  | IS.null is = cs
+  | IS.null (domain cs IS.\\ is) = cs
   | otherwise = do
-    let i = IS.findMin is
+    let i = IS.findMin (domain cs IS.\\ is)
     case runRWS (saturateF i) () cs of
       ((), cs', Any True) -> saturate is cs' -- New constriant have been found, i.e. not a fixedpoint
-      ((), cs', Any False) -> saturate (IS.deleteMin is) (eliminate i cs')
+      ((), cs', Any False) -> saturate (IS.insert i is) (eliminate i cs')
 
 -- Remove constraints concerning a particular refinement variable
 eliminate :: Int -> ConstraintSet -> ConstraintSet

@@ -155,28 +155,45 @@ recursive a =
     Set _ _ -> False
 
 -- Apply the saturation rules in one direction
+-- Returns:
+--   0 constraints if `right l` of shape `Dom d` does not occur in r
+--   1 constraint if `right l` occurs in `left r` xor `guard r`
+--   2 constraints if `right l` occurs in both `left r` and `guard r`
+--
 resolve :: Atomic -> Atomic -> [Atomic]
 resolve l r =
   case right l of
     Dom d ->
-      -- The combined guards
-      let guards = guard l <> guard r
-          trans =
+      let leftr =
             case left r of
-              Dom d' | d == d' -> [r {left = left l, guard = guards}] -- Trans
-              _ -> []
-          weak =
+              Dom d' | d == d' -> Just (left l) -- Trans
+              _ -> Nothing
+          guardsr =
             case left l of
               Dom d' ->
                 -- l is of shape d' <= d
                 case GHC.nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
                   Nothing -> []
                   Just ks ->
-                    let rmdGuards = removeFromGuard ks d guards
+                    let rmdGuards = removeFromGuard ks d (guard r)
                         newGuards = foldr (\k gs -> singleton k d' <> gs) rmdGuards ks
-                     in [r {guard = newGuards}] -- Substitute
-              Con k _ -> [r {guard = removeFromGuard [k] d guards}] -- Weakening
-       in filter (not . tautology) (trans ++ weak) -- Remove redundant constriants
+                     in Just newGuards -- Substitute
+              Con k _ -> 
+                case nonDetEltsUniqSet <$> HM.lookup d (groups (guard r)) of
+                  Nothing -> Nothing 
+                  Just _ -> Just (removeFromGuard [k] d (guard r)) -- Weakening
+          new = 
+            -- Check what resolutions were able to occur and aggregate appropriately
+            case (leftr, guardsr) of
+              (Nothing, Nothing) -> []
+              (Nothing, Just gs) -> [r { guard = guard l <> gs }]
+              (Just l', Nothing)  -> [r { left = l', guard = guard l <> guard r}]
+              (Just l', Just gs)  -> [
+                  r { guard = guard l <> gs },
+                  r { left = l', guard = guard l <> guard r},
+                  r { left = l', guard = guard l <> gs}
+                ]
+       in filter (not . tautology) new -- Remove redundant constriants
     Set _ _ -> []
 
 {-

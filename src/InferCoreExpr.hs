@@ -209,7 +209,7 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
 infer (Core.Cast e g) = do
   _ <- infer e
   freshCoreScheme (pSnd $ coercionKind g)
-infer (Core.Tick SourceNote {sourceSpan = s} e) = setLoc s $ infer e -- Track location in source text
+infer (Core.Tick SourceNote {sourceSpan = s} e) = setLoc (RealSrcSpan s) $ infer e -- Track location in source text
 infer (Core.Tick _ e) = infer e -- Ignore other ticks
 infer (Core.Coercion g) = pprPanic "Unexpected coercion" (ppr g)
 infer (Core.Type t) = pprPanic "Unexpected type" (ppr t)

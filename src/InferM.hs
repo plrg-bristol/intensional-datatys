@@ -58,7 +58,7 @@ runInferM run mod_name init_env =
   fst $
     evalRWS
       run
-      (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Top level")))
+      (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Nowhere")))
       0
 
 -- Transitively remove local constraints
@@ -161,8 +161,8 @@ putVars :: Context -> InferM a -> InferM a
 putVars ctx = local (\env -> env {varEnv = M.union ctx (varEnv env)})
 
 -- Add source text location tick
-setLoc :: RealSrcSpan -> InferM a -> InferM a
-setLoc l = local (\env -> env {inferLoc = RealSrcSpan l})
+setLoc :: SrcSpan -> InferM a -> InferM a
+setLoc l = local (\env -> env {inferLoc = l})
 
 -- Prepare name for interface
 -- Should be used before all type variables

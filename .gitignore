@@ -5,3 +5,8 @@ dist-newstyle/
 interface/
 profile/*.prof
 benchmarks/
+*.log
+*.prof
+profile.*
+*.hi
+*.o

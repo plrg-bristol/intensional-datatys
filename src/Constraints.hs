@@ -13,6 +13,7 @@ module Constraints
     insert,
     guardWith,
     saturate,
+    size
   )
 where
 
@@ -61,8 +62,11 @@ instance Refined Guard where
       )
 
 -- A guard literal
+-- Ignorning possibly trivial guards (e.g. 1-constructor types has already
+-- happened in InferM.branch)
 singleton :: GHC.Name -> DataType GHC.Name -> Guard
-singleton k d = Guard (HM.singleton d (GHC.unitUniqSet k))
+singleton k d = 
+  Guard (HM.singleton d (GHC.unitUniqSet k))
 
 -- Remove a list of constraints from a guard
 removeFromGuard :: [GHC.Name] -> DataType GHC.Name -> Guard -> Guard
@@ -230,7 +234,7 @@ instance Binary ConstraintSet where
 
 instance Refined ConstraintSet where
   domain cs = foldMap (foldMap domain) (definite cs) <> foldMap domain (goal cs)
-  rename x y cs = fold (\a ds -> insert (rename x y a) ds) empty cs
+  rename x y cs = fold (\a ds -> unsafeInsert (rename x y a) ds) empty cs
 
 empty :: ConstraintSet
 empty = ConstraintSet { definite = IntMap.empty, goal = []}
@@ -241,8 +245,19 @@ fold f z0 cs = z2
     z1 = foldr (flip (foldr f)) z0 (definite cs)
     z2 = foldr f z1 (goal cs)
 
+-- | When `cs` is a constraint set, `size cs` is the number of constraints in it.
+size :: ConstraintSet -> Int
+size = fold (\_ sz -> 1 + sz) 0
+
 mapAction :: Monad m => (Atomic -> m ()) -> ConstraintSet -> m ()
 mapAction f cs = fold (\a b -> f a >> b) (return ()) cs
+
+unsafeInsert :: Atomic -> ConstraintSet -> ConstraintSet
+unsafeInsert a cs =
+  case right a of 
+    Dom (Base _) -> cs
+    Dom (Inj x _) -> cs { definite = IntMap.insertWith (++) x [a] (definite cs) }
+    Set _ _ -> cs { goal = a : goal cs }
 
 insert' :: Atomic -> ConstraintSet -> (ConstraintSet, Bool)
 insert' a cs =

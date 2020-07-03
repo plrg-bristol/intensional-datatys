@@ -13,6 +13,7 @@ module Constraints
     insert,
     guardWith,
     saturate,
+    size
   )
 where
 
@@ -240,6 +241,10 @@ fold f z0 cs = z2
   where
     z1 = foldr (flip (foldr f)) z0 (definite cs)
     z2 = foldr f z1 (goal cs)
+
+-- | When `cs` is a constraint set, `size cs` is the number of constraints in it.
+size :: ConstraintSet -> Int
+size = fold (\_ sz -> 1 + sz) 0
 
 mapAction :: Monad m => (Atomic -> m ()) -> ConstraintSet -> m ()
 mapAction f cs = fold (\a b -> f a >> b) (return ()) cs

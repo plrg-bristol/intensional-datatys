@@ -7,12 +7,12 @@ module Types
     Domain,
     Refined (..),
     DataType (..),
-    trivial,
     Type,
     TypeGen (..),
     -- inj,
     decompType,
     subTyVar,
+    tyconOf,
   )
 where
 
@@ -74,9 +74,12 @@ instance Refined (DataType d) where
 --     neg (TyVarTy _) = False
 --     neg _ = True
 
--- Check if a core datatype has only one constructor
-trivial :: TyCon -> Bool
-trivial = (<= 1) . length . tyConDataCons
+
+
+-- Get the tycon from a datatype
+tyconOf :: DataType d -> d
+tyconOf (Base d) = d
+tyconOf (Inj _ d) = d
 
 type Type = TypeGen TyCon
 

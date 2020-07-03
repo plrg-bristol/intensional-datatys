@@ -68,7 +68,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
   -- Infer constraints
   let gamma =
         runInferM
-          ( inferProg (dependancySort p) )
+          ( inferProg p )
           -- unrollDataTypes
           -- allowContra
           m
@@ -101,27 +101,3 @@ tcIfaceTyCon iftc = do
   e <- tcIfaceExpr (IfaceType (IfaceTyConApp iftc IA_Nil))
   case e of
     Type (TyConApp tc _) -> return tc
-
--- Sort a program in order of dependancies
-dependancySort :: CoreProgram -> CoreProgram
-dependancySort p = foldl go [] depGraph
-  where
-    -- Pair binder groups with their dependancies
-    depGraph :: [(CoreBind, [CoreBind])]
-    depGraph = [(b, [group | rhs <- rhssOfBind b, fv <- exprFreeVarsList rhs, group <- findGroup p fv, bindersOf group /= bindersOf b]) | b <- p]
-    go :: [CoreBind] -> (CoreBind, [CoreBind]) -> [CoreBind]
-    go [] (b, deps) = deps ++ [b]
-    go (b' : bs) (b, deps)
-      | bindersOf b == bindersOf b' = deps ++ [b] ++ foldl remove bs deps -- Insert dependencies just before binder
-      | otherwise = b' : go bs (b, remove deps b')
-    -- Remove duplicates
-    remove [] _ = []
-    remove (y : ys) x
-      | bindersOf x == bindersOf y = ys
-      | otherwise = y : remove ys x
-    -- Find the group in which the variable is contained
-    findGroup :: [CoreBind] -> Var -> [CoreBind]
-    findGroup [] _ = []
-    findGroup (b : bs) x
-      | x `elem` bindersOf b = [b]
-      | otherwise = findGroup bs x

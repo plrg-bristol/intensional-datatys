@@ -1,10 +1,12 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BangPatterns #-}
 
 module InferCoreExpr
   ( inferProg,
   )
 where
 
+import Ubiq
 import Constructors
 import Control.Monad.Extra
 import Control.Monad.RWS
@@ -21,9 +23,18 @@ import Pair
 import Scheme
 import Types
 
+import qualified Constraints
+
+import Debug.Trace
+
 -- Infer set constraints for a subtyping constraint
 inferSubType :: Type -> Type -> InferM ()
-inferSubType = inferSubTypeStep []
+inferSubType t1 t2 = 
+  do  (_, cs) <- listen (inferSubTypeStep [] t1 t2)
+      let sz = Constraints.size cs
+      when (debugging && sz > 100) $ 
+        do  src <- asks inferLoc 
+            traceM ("[TRACE] The subtype proof at " ++ traceSpan src ++ " contributed " ++ show sz ++ " constraints.")
   where
     inferSubTypeStep :: [DataType TyCon] -> Type -> Type -> InferM ()
     inferSubTypeStep ds (Data (Inj x d) as) (Data (Inj y d') as')
@@ -33,35 +44,49 @@ inferSubType = inferSubTypeStep []
         mapM_ -- Traverse the slice of a datatype
           ( \k ->
               branch k (Inj x d) $
-                zipWithM_ (inferSubTypeStep (Inj x d : ds)) (consInstArgs x as k) (consInstArgs y as' k)
+                do  xtys <- consInstArgs x as k
+                    ytys <- consInstArgs y as' k
+                    zipWithM_ (inferSubTypeStep (Inj x d : ds)) xtys ytys
           )
           (tyConDataCons d)
     inferSubTypeStep ds (t11 :=> t12) (t21 :=> t22) =
       inferSubTypeStep ds t21 t11 >> inferSubTypeStep ds t12 t22
+    inferSubTypeStep ds (Data (Base _) as) (Data (Base _) as') =
+      zipWithM_ (inferSubTypeStep ds) as as'
     inferSubTypeStep _ _ _ = return ()
 
 -- Infer constraints for a module
 inferProg :: CoreProgram -> InferM Context
 inferProg [] = return M.empty
-inferProg (r : rs) = do
-  ctx <- associate r
-  ctxs <- putVars ctx (inferProg rs)
-  return (ctxs <> ctx)
+inferProg (r : rs) =
+  do  let bs = map occName $ bindersOf r 
+      ctx <- if any isDerivedOccName bs then return mempty else associate r
+      ctxs <- putVars ctx (inferProg rs)
+      return (ctxs <> ctx)
 
 -- Infer a set of constraints and associate them to qualified type scheme
 associate :: CoreBind -> InferM Context
-associate r = do
-  env <- asks varEnv
-  (ctx, cs) <- listen $ saturate $ inferRec r
-  return
-    ( ( \s ->
-          s -- Add constraints to every type in the recursive group
-            { boundvs = domain cs I.\\ domain env,
-              Scheme.constraints = cs
-            }
-      )
-        <$> ctx
-    )
+associate r = 
+    setLoc (UnhelpfulSpan (mkFastString ("Top level " ++ bindingNames))) doAssoc
+  where 
+    bindingNames = 
+      show $ map (occNameString . occName) (bindersOf r)
+    doAssoc =
+      do  when debugging $ traceM ("[TRACE] Begin inferring: " ++ bindingNames)
+          env <- asks varEnv
+          -- The following ! ensures the constraints are processed immediately
+          -- which helps tracing make sense.
+          (ctx, !cs) <- listen $ saturate $ inferRec r
+          let x = ( ( \s ->
+                        s -- Add constraints to every type in the recursive group
+                          { boundvs = (domain cs <> domain ctx) I.\\ domain env,
+                            Scheme.constraints = cs
+                          }
+                    )
+                      <$> ctx
+                  )
+          when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)        
+          return x
 
 -- Infer constraints for a mutually recursive binders
 inferRec :: CoreBind -> InferM Context
@@ -140,7 +165,7 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
   -- Add the variable under scrutinee to scope
   putVar (getName bind_e) (Forall [] t0) $
     case t0 of
-      Data (Inj x d) as -> do
+      Data dt as -> do
         ks <-
           mapMaybeM
             ( \case
@@ -150,8 +175,12 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
                     if reach
                       then do
                         -- Add constructor arguments introduced by the pattern
-                        let ts = M.fromList $ zip (fmap getName xs) (Forall [] <$> consInstArgs x as k)
-                        branchWithExpr e k (Inj x d) $ do
+                        y <- fresh -- only used in Base case of ts
+                        ts <- 
+                          case dt of 
+                            Inj x _ -> M.fromList . zip (fmap getName xs) <$> (map (Forall []) <$> (consInstArgs x as k))
+                            Base _  -> M.fromList . zip (fmap getName xs) <$> (map (Forall []) <$> (consInstArgs y as k))
+                        branchWithExpr e k dt $ do
                           -- Ensure return type is valid
                           ret_i <- mono <$> putVars ts (infer rhs)
                           inferSubType ret_i ret
@@ -165,31 +194,30 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
         case findDefault alts of
           (_, Just rhs) | not (isBottoming rhs) ->
             -- Guard by unseen constructors
-            branchAny e (tyConDataCons d L.\\ ks) (Inj x d) $ do
+            branchAny e (tyConDataCons (tyconOf dt) L.\\ ks) dt $ do
               -- Ensure return type is valid
               ret_i <- mono <$> infer rhs
               inferSubType ret_i ret
-          _ -> do
+          _ | (Inj x d) <- dt -> do
             -- Ensure destructor is total if not nested
-            top <- topLevel e
             l <- asks inferLoc
-            when top $ emit (Dom (Inj x (getName d))) (Set (mkUniqSet (fmap getName ks)) l)
-      _ ->
-        -- Unrefinable patterns
+            emit (Dom (Inj x (getName d))) (Set (mkUniqSet (fmap getName ks)) l)
+          _ -> return ()
+      _ -> 
         mapM_
-          ( \(_, xs, rhs) -> do
-              -- Add constructor arguments introduced by the pattern
-              ts <- sequence $ M.fromList $ zip (fmap getName xs) (fmap (freshCoreScheme . varType) xs)
-              -- Ensure return type is valid
-              ret_i <- mono <$> putVars ts (infer rhs)
-              inferSubType ret_i ret
-          )
-          alts
+            ( \(_, xs, rhs) ->
+                  do -- Add constructor arguments introduced by the pattern
+                    ts <- sequence $ M.fromList $ zip (fmap getName xs) (fmap (freshCoreScheme . varType) xs)
+                    -- Ensure return type is valid
+                    ret_i <- mono <$> putVars ts (infer rhs)
+                    inferSubType ret_i ret
+            )
+            alts
   return (Forall [] ret)
 infer (Core.Cast e g) = do
   _ <- infer e
   freshCoreScheme (pSnd $ coercionKind g)
-infer (Core.Tick SourceNote {sourceSpan = s} e) = setLoc s $ infer e -- Track location in source text
+infer (Core.Tick SourceNote {sourceSpan = s} e) = setLoc (RealSrcSpan s) $ infer e -- Track location in source text
 infer (Core.Tick _ e) = infer e -- Ignore other ticks
 infer (Core.Coercion g) = pprPanic "Unexpected coercion" (ppr g)
 infer (Core.Type t) = pprPanic "Unexpected type" (ppr t)

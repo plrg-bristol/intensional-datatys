@@ -56,12 +56,12 @@ associate r = do
   return
     ( ( \s ->
           s -- Add constraints to every type in the recursive group
-            { boundvs = domain cs I.\\ domain env,
-              Scheme.constraints = cs
-            }
-      )
-        <$> ctx
-    )
+                          { boundvs = (domain cs <> domain ctx) I.\\ domain env,
+                            Scheme.constraints = cs
+                          }
+                    )
+                      <$> ctx
+                  )
 
 -- Infer constraints for a mutually recursive binders
 inferRec :: CoreBind -> InferM Context

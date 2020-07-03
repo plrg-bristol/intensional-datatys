@@ -44,11 +44,15 @@ inferSubType t1 t2 =
         mapM_ -- Traverse the slice of a datatype
           ( \k ->
               branch k (Inj x d) $
-                zipWithM_ (inferSubTypeStep (Inj x d : ds)) (consInstArgs x as k) (consInstArgs y as' k)
+                do  xtys <- consInstArgs x as k
+                    ytys <- consInstArgs y as' k
+                    zipWithM_ (inferSubTypeStep (Inj x d : ds)) xtys ytys
           )
           (tyConDataCons d)
     inferSubTypeStep ds (t11 :=> t12) (t21 :=> t22) =
       inferSubTypeStep ds t21 t11 >> inferSubTypeStep ds t12 t22
+    inferSubTypeStep ds (Data (Base _) as) (Data (Base _) as') =
+      zipWithM_ (inferSubTypeStep ds) as as'
     inferSubTypeStep _ _ _ = return ()
 
 -- Infer constraints for a module

@@ -62,8 +62,11 @@ instance Refined Guard where
       )
 
 -- A guard literal
+-- Ignorning possibly trivial guards (e.g. 1-constructor types has already
+-- happened in InferM.branch)
 singleton :: GHC.Name -> DataType GHC.Name -> Guard
-singleton k d = Guard (HM.singleton d (GHC.unitUniqSet k))
+singleton k d = 
+  Guard (HM.singleton d (GHC.unitUniqSet k))
 
 -- Remove a list of constraints from a guard
 removeFromGuard :: [GHC.Name] -> DataType GHC.Name -> Guard -> Guard

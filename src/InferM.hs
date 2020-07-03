@@ -17,6 +17,7 @@ module InferM
     putVars,
     setLoc,
     getExternalName,
+    trivial
   )
 where
 
@@ -85,6 +86,11 @@ saturate ma = pass $
           ds'  = trace ("[TRACE] BEGIN saturate at " ++ spn ++ ": " ++ tmsg) ds
       in ds' `seq` trace ("[TRACE] END saturate at " ++ spn ++ " saturated size: " ++ (show $ size ds)) ds
 
+-- Check if a core datatype has only one constructor or is otherwise ineligible
+trivial :: TyCon -> InferM Bool
+trivial tc = 
+  do  m <- asks modName 
+      return (not (nameIsHomePackage m (getName tc)) || (<= 1) (length (tyConDataCons tc)))
 
 -- Check if an expression has already been pattern matched
 topLevel :: CoreExpr -> InferM Bool
@@ -104,13 +110,13 @@ isBranchReachable e k =
 
 -- Locally guard constraints
 branch :: DataCon -> DataType TyCon -> InferM a -> InferM a
-branch k d =
-  local
-    ( \env ->
-        env
-          { branchGuard = singleton (getName k) (fmap getName d) <> branchGuard env
-          }
-    )
+branch k d ma =
+    do  b <- trivial (tyconOf d)
+        -- If the datatype has only 1 constructor, there is no point
+        if b then ma else local envUpdate ma
+  where
+    envUpdate env =
+      env { branchGuard = singleton (getName k) (fmap getName d) <> branchGuard env }
 
 -- Locally guard constraints and add expression to path
 branchWithExpr :: CoreExpr -> DataCon -> DataType TyCon -> InferM a -> InferM a

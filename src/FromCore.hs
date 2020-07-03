@@ -34,31 +34,34 @@ fromCoreCons :: DataCon -> InferM Scheme
 fromCoreCons k = do
   x <- fresh
   let d = dataConTyCon k
-  unless (trivial d) $ do
+  b <- trivial d
+  unless b $ do
     l <- asks inferLoc
     emit (Con (getName k) l) (Dom (Inj x (getName d)))
   fromCoreScheme (Just x) (dataConUserType k)
 
 -- The argument types of an instantiated constructor
-consInstArgs :: RVar -> [Type] -> DataCon -> [Type]
-consInstArgs x as k = fmap fromCoreInst (dataConRepArgTys k)
+consInstArgs :: RVar -> [Type] -> DataCon -> InferM [Type]
+consInstArgs x as k = mapM fromCoreInst (dataConRepArgTys k)
   where
-    fromCoreInst :: Tcr.Type -> Type
+    fromCoreInst :: Tcr.Type -> InferM Type
     fromCoreInst (Tcr.TyVarTy a) =
       case lookup a (zip (dataConUnivTyVars k) as) of
         Nothing -> pprPanic "Type arguments aren't fully instantiated!" (ppr a)
-        Just t -> t
-    fromCoreInst (Tcr.AppTy a b) = App (fromCoreInst a) (fromCoreInst b)
+        Just t -> return t
+    fromCoreInst (Tcr.AppTy a b) = App <$> (fromCoreInst a) <*> (fromCoreInst b)
     fromCoreInst (Tcr.TyConApp d as')
       | isTypeSynonymTyCon d,
         Just (as'', s) <- synTyConDefn_maybe d =
         fromCoreInst (substTy (extendTvSubstList emptySubst (zip as'' as')) s) -- Instantiate type synonym arguments
-      | isClassTyCon d = Ambiguous -- Disregard type class evidence
-      | trivial d = Data (Base d) (fmap fromCoreInst as') -- Datatypes with only one constructor
-      | otherwise = Data (Inj x d) (fmap fromCoreInst as')
-    fromCoreInst (Tcr.FunTy a b) = fromCoreInst a :=> fromCoreInst b
-    fromCoreInst (Tcr.LitTy l) = Lit $ toIfaceTyLit l
-    fromCoreInst _ = Ambiguous
+      | isClassTyCon d = return Ambiguous -- Disregard type class evidence
+      | otherwise =
+          do  b <- trivial d
+              if b then Data (Base d) <$> (mapM fromCoreInst as') 
+                   else Data (Inj x d) <$> (mapM fromCoreInst as')
+    fromCoreInst (Tcr.FunTy a b) = (:=>) <$> fromCoreInst a <*> fromCoreInst b
+    fromCoreInst (Tcr.LitTy l) = return (Lit $ toIfaceTyLit l)
+    fromCoreInst _ = return Ambiguous
 
 -- Convert a monomorphic core type
 fromCore :: Maybe RVar -> Tcr.Type -> InferM Type
@@ -69,11 +72,19 @@ fromCore f (Tcr.TyConApp d as)
     Just (as', s) <- synTyConDefn_maybe d =
     fromCore f (substTy (extendTvSubstList emptySubst (zip as' as)) s) -- Instantiate type synonyms
   | isClassTyCon d = return Ambiguous -- Disregard type class evidence
-  | trivial d = Data (Base d) <$> mapM (fromCore f) as -- Datatypes with only one constructor
 fromCore Nothing (Tcr.TyConApp d as) = do
   x <- fresh
-  Data (Inj x d) <$> mapM (fromCore Nothing) as
-fromCore (Just x) (Tcr.TyConApp d as) = Data (Inj x d) <$> mapM (fromCore (Just x)) as
+  b <- trivial d
+  if b then
+    Data (Base d) <$> mapM (fromCore Nothing) as
+  else
+    Data (Inj x d) <$> mapM (fromCore Nothing) as
+fromCore (Just x) (Tcr.TyConApp d as) = do
+  b <- trivial d
+  if b then
+    Data (Base d) <$> mapM (fromCore (Just x)) as
+  else
+    Data (Inj x d) <$> mapM (fromCore (Just x)) as
 fromCore f (Tcr.FunTy a b) = liftM2 (:=>) (fromCore f a) (fromCore f b)
 fromCore _ (Tcr.LitTy l) = return $ Lit $ toIfaceTyLit l
 fromCore _ _ = return Ambiguous -- Higher-ranked or impredicative types, casts and coercions

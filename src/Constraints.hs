@@ -231,7 +231,7 @@ instance Binary ConstraintSet where
 
 instance Refined ConstraintSet where
   domain cs = foldMap (foldMap domain) (definite cs) <> foldMap domain (goal cs)
-  rename x y cs = fold (\a ds -> insert (rename x y a) ds) empty cs
+  rename x y cs = fold (\a ds -> unsafeInsert (rename x y a) ds) empty cs
 
 empty :: ConstraintSet
 empty = ConstraintSet { definite = IntMap.empty, goal = []}
@@ -248,6 +248,13 @@ size = fold (\_ sz -> 1 + sz) 0
 
 mapAction :: Monad m => (Atomic -> m ()) -> ConstraintSet -> m ()
 mapAction f cs = fold (\a b -> f a >> b) (return ()) cs
+
+unsafeInsert :: Atomic -> ConstraintSet -> ConstraintSet
+unsafeInsert a cs =
+  case right a of 
+    Dom (Base _) -> cs
+    Dom (Inj x _) -> cs { definite = IntMap.insertWith (++) x [a] (definite cs) }
+    Set _ _ -> cs { goal = a : goal cs }
 
 insert' :: Atomic -> ConstraintSet -> (ConstraintSet, Bool)
 insert' a cs =

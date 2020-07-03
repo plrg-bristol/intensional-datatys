@@ -54,10 +54,11 @@ inferSubType t1 t2 =
 -- Infer constraints for a module
 inferProg :: CoreProgram -> InferM Context
 inferProg [] = return M.empty
-inferProg (r : rs) = do
-  ctx <- associate r
-  ctxs <- putVars ctx (inferProg rs)
-  return (ctxs <> ctx)
+inferProg (r : rs) =
+  do  let bs = map occName $ bindersOf r 
+      ctx <- if any isDerivedOccName bs then return mempty else associate r
+      ctxs <- putVars ctx (inferProg rs)
+      return (ctxs <> ctx)
 
 -- Infer a set of constraints and associate them to qualified type scheme
 associate :: CoreBind -> InferM Context

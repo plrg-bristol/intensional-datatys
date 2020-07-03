@@ -161,7 +161,7 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
   -- Add the variable under scrutinee to scope
   putVar (getName bind_e) (Forall [] t0) $
     case t0 of
-      Data (Inj x d) as -> do
+      Data dt as -> do
         ks <-
           mapMaybeM
             ( \case
@@ -171,8 +171,12 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
                     if reach
                       then do
                         -- Add constructor arguments introduced by the pattern
-                        let ts = M.fromList $ zip (fmap getName xs) (Forall [] <$> consInstArgs x as k)
-                        branchWithExpr e k (Inj x d) $ do
+                        y <- fresh -- only used in Base case of ts
+                        ts <- 
+                          case dt of 
+                            Inj x _ -> M.fromList . zip (fmap getName xs) <$> (map (Forall []) <$> (consInstArgs x as k))
+                            Base _  -> M.fromList . zip (fmap getName xs) <$> (map (Forall []) <$> (consInstArgs y as k))
+                        branchWithExpr e k dt $ do
                           -- Ensure return type is valid
                           ret_i <- mono <$> putVars ts (infer rhs)
                           inferSubType ret_i ret
@@ -186,26 +190,25 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
         case findDefault alts of
           (_, Just rhs) | not (isBottoming rhs) ->
             -- Guard by unseen constructors
-            branchAny e (tyConDataCons d L.\\ ks) (Inj x d) $ do
+            branchAny e (tyConDataCons (tyconOf dt) L.\\ ks) dt $ do
               -- Ensure return type is valid
               ret_i <- mono <$> infer rhs
               inferSubType ret_i ret
-          _ -> do
+          _ | (Inj x d) <- dt -> do
             -- Ensure destructor is total if not nested
-            top <- topLevel e
             l <- asks inferLoc
-            when top $ emit (Dom (Inj x (getName d))) (Set (mkUniqSet (fmap getName ks)) l)
-      _ ->
-        -- Unrefinable patterns
+            emit (Dom (Inj x (getName d))) (Set (mkUniqSet (fmap getName ks)) l)
+          _ -> return ()
+      _ -> 
         mapM_
-          ( \(_, xs, rhs) -> do
-              -- Add constructor arguments introduced by the pattern
-              ts <- sequence $ M.fromList $ zip (fmap getName xs) (fmap (freshCoreScheme . varType) xs)
-              -- Ensure return type is valid
-              ret_i <- mono <$> putVars ts (infer rhs)
-              inferSubType ret_i ret
-          )
-          alts
+            ( \(_, xs, rhs) ->
+                  do -- Add constructor arguments introduced by the pattern
+                    ts <- sequence $ M.fromList $ zip (fmap getName xs) (fmap (freshCoreScheme . varType) xs)
+                    -- Ensure return type is valid
+                    ret_i <- mono <$> putVars ts (infer rhs)
+                    inferSubType ret_i ret
+            )
+            alts
   return (Forall [] ret)
 infer (Core.Cast e g) = do
   _ <- infer e

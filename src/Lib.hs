@@ -1,4 +1,4 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Lib
   ( plugin,
@@ -9,98 +9,86 @@ import BinIface
 import Binary
 import Control.Monad
 import qualified Data.Map as M
-import Data.Time
 import GhcPlugins
 import IfaceEnv
 import IfaceSyn
-import IfaceType
 import InferCoreExpr
 import InferM
-import Scheme
 import System.Directory
 import TcIface
 import TcRnMonad
 import ToIface
 import TyCoRep
-import Prelude hiding (mod)
 
 plugin :: Plugin
 plugin = defaultPlugin {pluginRecompile = \_ -> return NoForceRecompile, installCoreToDos = install}
   where
-    install cmd todo = return ([CoreDoStrictness, CoreDoPluginPass "Constraint Inference" (inferGuts cmd)] ++ todo)
+    install cmd todo =
+      return
+        ( [ CoreDoStrictness,
+            CoreDoPluginPass "Constraint Inference" (inferGuts cmd)
+          ]
+            ++ todo
+        )
 
 interfaceName :: ModuleName -> FilePath
 interfaceName = ("interface/" ++) . moduleNameString
 
 inferGuts :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
-inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
-  start <- liftIO getCurrentTime
-  when ("srcDump" `elem` cmd) $ pprTraceM "" (ppr p)
-  -- Read command line arguments
-  let allowContra = True
-  let unrollDataTypes = True
-  -- Reload saved typeschemes
-  deps <- liftIO $ filterM (doesFileExist . interfaceName) (fst <$> dep_mods d)
+inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = dependancySort -> p} = do
+  when ("debug-core" `elem` cmd) $ pprTraceM "Core Source:" $ ppr p
   hask <- getHscEnv
-  let gbl =
-        IfGblEnv
-          { if_doc = text "initIfaceLoad",
-            if_rec_types = Nothing
-          }
-  env <-
-    liftIO $ initTcRnIf 'i' hask gbl (mkIfLclEnv m empty False) $
+  -- Reload saved typeschemes
+  env <- liftIO $ do
+    let gbl =
+          IfGblEnv
+            { if_doc = text "initIfaceLoad",
+              if_rec_types = Nothing
+            }
+    initTcRnIf 'i' hask gbl (mkIfLclEnv m empty False) $ do
+      cache <- mkNameCacheUpdater
       foldM
-        ( \env m_name -> do
-            bh <- liftIO $ readBinMem $ interfaceName m_name
-            cache <- mkNameCacheUpdater
-            ictx <- M.fromList <$> liftIO (getWithUserData cache bh)
-            ctx <-
-              mapM
-                ( \(Scheme tyvs dvs ift g) -> do
-                    t <- mapM tcIfaceTyCon ift
-                    return (Scheme tyvs dvs t g)
-                )
-                ictx
-            return (M.union ctx env)
+        ( \env (interfaceName -> m_name, _) -> do
+            exists <- liftIO $ doesFileExist m_name
+            if exists
+              then do
+                bh <- liftIO $ readBinMem m_name
+                ictx <- liftIO $ M.fromList <$> getWithUserData cache bh
+                ctx <- mapM (mapM tcIfaceTyCon) ictx
+                return (M.union ctx env)
+              else return env
         )
         M.empty
-        deps
+        (dep_mods d)
   -- Infer constraints
-  let gamma =
-        runInferM
-          ( inferProg (dependancySort p) )
-          -- unrollDataTypes
-          -- allowContra
-          m
-          env
+  let gamma = runInferM (inferProg p) m env
   -- Display typeschemes
-  liftIO
-    $ mapM_
-      ( \(v, ts) -> do
-          putStrLn ""
-          putStrLn $ showSDocUnsafe $ ppr (v, ts)
-          putStrLn ""
-      )
-    $ M.toList gamma
-  -- Display errors
-  -- liftIO $ mapM_ (putStrLn . showSDocUnsafe . ppr) errs
-  -- Save typescheme to temporary file
-  exist <- liftIO $ doesDirectoryExist "interface"
-  liftIO $ unless exist (createDirectory "interface")
-  bh <- liftIO $ openBinMem 1000
-  liftIO $ putWithUserData (const $ return ()) bh (M.toList $ M.filterWithKey (\k _ -> isExternalName k) $ fmap (fmap toIfaceTyCon) $ gamma)
-  liftIO $ writeBinMem bh $ interfaceName $ moduleName m
-  stop <- liftIO getCurrentTime
-  when ("time" `elem` cmd) $ do
-    liftIO $ print $ diffUTCTime stop start
-    liftIO $ print (M.size gamma)
-  return guts
+  liftIO $ do
+    unless ("suppress-output" `elem` cmd)
+      $ mapM_
+        ( \(v, ts) -> do
+            putStrLn ""
+            putStrLn $ showSDocUnsafe $ ppr (v, ts)
+            putStrLn ""
+        )
+      $ M.toList gamma
+    -- Save typescheme to temporary file
+    exist <- doesDirectoryExist "interface"
+    unless exist (createDirectory "interface")
+    bh <- openBinMem 1000
+    putWithUserData
+      (const $ return ())
+      bh
+      (M.toList $ M.filterWithKey (\k _ -> isExternalName k) (fmap toIfaceTyCon <$> gamma))
+    writeBinMem bh $ interfaceName $ moduleName m
+    return guts
 
 tcIfaceTyCon :: IfaceTyCon -> IfL TyCon
 tcIfaceTyCon iftc = do
   e <- tcIfaceExpr (IfaceType (IfaceTyConApp iftc IA_Nil))
   case e of
     Type (TyConApp tc _) -> return tc
+    _ -> pprPanic "TyCon has been corrupted!" (ppr e)
 
 -- Sort a program in order of dependancies
 dependancySort :: CoreProgram -> CoreProgram

@@ -1,25 +1,59 @@
 module Main where
 
 import Control.Monad
+import Criterion.Main
+import Criterion.Main.Options
 import GHC
 import Lib
 import Plugins
+import System.Directory
 import System.Environment
+import System.FilePath.Posix
 
--- cabal new-run profile -- +RTS -pj -l-au
--- https://www.speedscope.app/
+compileWithPlugin :: [FilePath] -> IO ()
+compileWithPlugin files =
+  runGhc (Just "/opt/ghc/8.8.3/lib/ghc-8.8.3") $ do
+    df1 <- getSessionDynFlags
+    let cmdOpts = ["-fforce-recomp", "-O0", "-prof", "-fprof-auto", "-g"]
+    (df2, _, _) <-
+      parseDynamicFlags
+        (df1 {staticPlugins = [StaticPlugin (PluginWithArgs plugin ["suppress-output"])]})
+        (map noLoc cmdOpts)
+    setSessionDynFlags df2
+    ts <- mapM (`guessTarget` Nothing) files
+    setTargets ts
+    void $ load LoadAllTargets
+
+defaults = ["test/SimpleTest.hs", "test/DNF.hs"]
 
 main :: IO ()
 main = do
-  files <- getArgs
-  runGhc (Just "/opt/ghc/8.8.3/lib/ghc-8.8.3") $ do
-    df1 <- getSessionDynFlags
-    let cmdOpts = ["-fforce-recomp", "-O0", "-prof", "-fprof-auto", "-g"] ++ files
-    (df2, leftovers, warns) <-
-      parseDynamicFlags
-        (df1 {staticPlugins = [StaticPlugin (PluginWithArgs plugin [])]})
-        (map noLoc cmdOpts)
-    setSessionDynFlags df2
-    ts <- mapM (flip guessTarget Nothing . unLoc) leftovers
-    setTargets ts
-    void $ load LoadAllTargets
+  args <- getArgs
+  case args of
+    ("-p" : files) -> do
+      -- requires +RTS -pj -l-au
+      when (length files > 1) $
+        putStrLn "Warning: multiple files cannot be profiled separately."
+      compileWithPlugin files
+      renameFile "profile.prof" ("profile/" ++ takeBaseName (head files) ++ ".prof")
+      removeFile "profile.eventlog"
+    ["-b"] -> benchmark defaults -- Run default benchmarks
+    ("-b" : files) -> benchmark files -- Run benchmarks on particular files
+    _ -> putStrLn "Invalid command line argument!"
+  where
+    benchmark :: [FilePath] -> IO ()
+    benchmark files =
+      runMode
+        ( Run
+            defaultConfig
+            Glob
+            ( fmap takeBaseName files
+            )
+        )
+        [ bench
+            (takeBaseName f)
+            ( nfIO
+                (compileWithPlugin [f])
+            )
+          | f <- files
+        ]

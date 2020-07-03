@@ -3,6 +3,5 @@ hie.yaml
 dist/
 dist-newstyle/
 interface/
-*.log
-*.prof
-profile.*
+profile/*.prof
+benchmarks/

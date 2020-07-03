@@ -20,6 +20,7 @@ module InferM
   )
 where
 
+import Ubiq
 import Constraints
 import Constructors
 import Control.Monad.RWS hiding (guard)
@@ -27,6 +28,7 @@ import qualified Data.Map as M
 import GhcPlugins hiding ((<>), singleton)
 import Scheme
 import Types
+import qualified Data.IntSet as IntSet
 
 type InferM = RWS InferEnv ConstraintSet RVar
 
@@ -61,12 +63,28 @@ runInferM run mod_name init_env =
 
 -- Transitively remove local constraints
 saturate :: Refined a => InferM a -> InferM a
-saturate ma = pass $ do
-  a <- ma
-  env <- asks varEnv
-  g <- asks branchGuard
-  let interface = domain a <> domain env <> domain g
-  return (a, Constraints.saturate interface)
+saturate ma = pass $ 
+  do  a <- ma
+      env <- asks varEnv
+      g <- asks branchGuard
+      src <- asks inferLoc -- this is actually only for debugging
+      let interface = domain a <> domain env <> domain g
+      let fn cs = 
+            let csSize = size cs
+                ds = Constraints.saturate interface cs
+            in if debugging && csSize > 100 then debugBracket a env g src cs ds else ds
+      return (a, fn)
+  where
+    debugBracket a env g src cs ds = 
+      let asz = "type: " ++ show (IntSet.size $ domain a)
+          esz = "env: " ++ show (IntSet.size $ domain env)
+          gsz = "guard: " ++ show (IntSet.size $ domain g)
+          csz = show (size cs)
+          spn = traceSpan src
+          tmsg = "#interface = (" ++ asz ++ " + " ++ esz ++ " + " ++ gsz ++ "), #constraints = " ++ csz
+          ds'  = trace ("[TRACE] BEGIN saturate at " ++ spn ++ ": " ++ tmsg) ds
+      in ds' `seq` trace ("[TRACE] END saturate at " ++ spn ++ " saturated size: " ++ (show $ size ds)) ds
+
 
 -- Check if an expression has already been pattern matched
 topLevel :: CoreExpr -> InferM Bool

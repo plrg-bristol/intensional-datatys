@@ -1,10 +1,12 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BangPatterns #-}
 
 module InferCoreExpr
   ( inferProg,
   )
 where
 
+import Ubiq
 import Constructors
 import Control.Monad.Extra
 import Control.Monad.RWS
@@ -21,9 +23,18 @@ import Pair
 import Scheme
 import Types
 
+import qualified Constraints
+
+import Debug.Trace
+
 -- Infer set constraints for a subtyping constraint
 inferSubType :: Type -> Type -> InferM ()
-inferSubType = inferSubTypeStep []
+inferSubType t1 t2 = 
+  do  (_, cs) <- listen (inferSubTypeStep [] t1 t2)
+      let sz = Constraints.size cs
+      when (debugging && sz > 100) $ 
+        do  src <- asks inferLoc 
+            traceM ("[TRACE] The subtype proof at " ++ traceSpan src ++ " contributed " ++ show sz ++ " constraints.")
   where
     inferSubTypeStep :: [DataType TyCon] -> Type -> Type -> InferM ()
     inferSubTypeStep ds (Data (Inj x d) as) (Data (Inj y d') as')
@@ -50,18 +61,27 @@ inferProg (r : rs) = do
 
 -- Infer a set of constraints and associate them to qualified type scheme
 associate :: CoreBind -> InferM Context
-associate r = do
-  env <- asks varEnv
-  (ctx, cs) <- listen $ saturate $ inferRec r
-  return
-    ( ( \s ->
-          s -- Add constraints to every type in the recursive group
+associate r = 
+    setLoc (UnhelpfulSpan (mkFastString ("Top level " ++ bindingNames))) doAssoc
+  where 
+    bindingNames = 
+      show $ map (occNameString . occName) (bindersOf r)
+    doAssoc =
+      do  when debugging $ traceM ("[TRACE] Begin inferring: " ++ bindingNames)
+          env <- asks varEnv
+          -- The following ! ensures the constraints are processed immediately
+          -- which helps tracing make sense.
+          (ctx, !cs) <- listen $ saturate $ inferRec r
+          let x = ( ( \s ->
+                        s -- Add constraints to every type in the recursive group
                           { boundvs = (domain cs <> domain ctx) I.\\ domain env,
                             Scheme.constraints = cs
                           }
                     )
                       <$> ctx
                   )
+          when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)        
+          return x
 
 -- Infer constraints for a mutually recursive binders
 inferRec :: CoreBind -> InferM Context

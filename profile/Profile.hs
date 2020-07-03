@@ -10,11 +10,14 @@ import System.Directory
 import System.Environment
 import System.FilePath.Posix
 
-compileWithPlugin :: [FilePath] -> IO ()
-compileWithPlugin files =
+compileWithPlugin :: Bool -> [FilePath] -> IO ()
+compileWithPlugin prof files =
   runGhc (Just "/opt/ghc/8.8.3/lib/ghc-8.8.3") $ do
     df1 <- getSessionDynFlags
-    let cmdOpts = ["-fforce-recomp", "-O0", "-prof", "-fprof-auto", "-g"]
+    let cmdOpts =
+          if prof
+            then ["-fforce-recomp", "-O0", "-prof", "-fprof-auto", "-g"]
+            else ["-fforce-recomp", "-O0"]
     (df2, _, _) <-
       parseDynamicFlags
         (df1 {staticPlugins = [StaticPlugin (PluginWithArgs plugin ["suppress-output"])]})
@@ -34,7 +37,7 @@ main = do
       -- requires +RTS -pj -l-au
       when (length files > 1) $
         putStrLn "Warning: multiple files cannot be profiled separately."
-      compileWithPlugin files
+      compileWithPlugin True files
       renameFile "profile.prof" ("profile/" ++ takeBaseName (head files) ++ ".prof")
       removeFile "profile.eventlog"
     ["-b"] -> benchmark defaults -- Run default benchmarks
@@ -53,7 +56,7 @@ main = do
         [ bench
             (takeBaseName f)
             ( nfIO
-                (compileWithPlugin [f])
+                (compileWithPlugin False [f])
             )
           | f <- files
         ]

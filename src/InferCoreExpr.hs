@@ -76,17 +76,17 @@ associate r =
           env <- asks varEnv
           -- The following ! ensures the constraints are processed immediately
           -- which helps tracing make sense.
-          (ctx, !cs) <- listen $ saturate $ inferRec r
-          let x = ( ( \s ->
-                        s -- Add constraints to every type in the recursive group
-                          { boundvs = (domain cs <> domain ctx) I.\\ domain env,
-                            Scheme.constraints = cs
-                          }
-                    )
-                      <$> ctx
-                  )
+          (ctx, cs) <- listen $ inferRec r
+          let satAction s = 
+                do  cs' <- snd <$> (listen $ saturate (do { tell cs; return s }))
+                    -- Add constraints to every type in the recursive group
+                    return $ s { 
+                        boundvs = (domain cs' <> domain s) I.\\ domain env,
+                        Scheme.constraints = cs'
+                      }
+          ctx' <- mapM satAction ctx
           when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)        
-          return x
+          return ctx'
 
 -- Infer constraints for a mutually recursive binders
 inferRec :: CoreBind -> InferM Context

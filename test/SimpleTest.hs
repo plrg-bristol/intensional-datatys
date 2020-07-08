@@ -1,8 +1,12 @@
 module SimpleTest where
 
-import Prelude hiding (odd, even, head, tail)
+import Prelude ()
 
 data Nat = Zero | Succ Nat
+
+data Bool = True | False
+
+data List a = Nil | Cons a (List a)
 
 odd :: Nat -> Bool
 odd Zero = False
@@ -12,23 +16,17 @@ even :: Nat -> Bool
 even Zero = True
 even (Succ n) = odd n
 
-singleton :: Int -> [Int]
-singleton x = [x]
+singleton :: a -> List a
+singleton a = Cons a Nil
 
-head :: [a] -> a
-head (a:_) = a
+head :: List a -> a
+head (Cons a _) = a
 
-tail :: [a] -> [a]
-tail (_:xs) = xs
+tail :: List a -> List a
+tail (Cons _ as) = as
 
-hhead :: [a] -> a
-hhead (_:a:_) = a
+second :: List a -> a
+second (Cons a (Cons b _)) = b
 
-test1 :: Int
-test1 = head (singleton 5)
-
-test2 :: Int
-test2 = hhead (singleton 5)
-
-test3 :: Int
-test3 = head (tail (singleton 5))
+skipTwo :: List a -> List a
+skipTwo (Cons a (Cons b as)) = as

@@ -2,5 +2,7 @@ packages:.
 profiling:true
 profiling-detail:all-functions
 
+tests: True
+
 package test
   optimization: False

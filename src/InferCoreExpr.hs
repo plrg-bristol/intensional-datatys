@@ -1,5 +1,4 @@
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE BangPatterns #-}
 
 module InferCoreExpr
   ( inferProg,
@@ -37,17 +36,17 @@ inferSubType t1 t2 =
             traceM ("[TRACE] The subtype proof at " ++ traceSpan src ++ " contributed " ++ show sz ++ " constraints.")
             pprTraceM "[TRACE] Subtyping constraints: " (ppr cs)
   where
-    inferSubTypeStep :: [DataType TyCon] -> Type -> Type -> InferM ()
+    inferSubTypeStep :: [(DataType TyCon, DataType TyCon)] -> Type -> Type -> InferM ()
     inferSubTypeStep ds (Data (Inj x d) as) (Data (Inj y d') as')
       -- Escape from loop if constraints have already been discovered
-      | Inj x d `notElem` ds = do
+      | (Inj x d, Inj y d') `notElem` ds = do
         emit (Dom (Inj x (getName d))) (Dom (Inj y (getName d')))
         mapM_ -- Traverse the slice of a datatype
           ( \k ->
               branch k (Inj x d) $
                 do  xtys <- consInstArgs x as k
                     ytys <- consInstArgs y as' k
-                    zipWithM_ (inferSubTypeStep (Inj x d : ds)) xtys ytys
+                    zipWithM_ (inferSubTypeStep ((Inj x d, Inj y d') : ds)) xtys ytys
           )
           (tyConDataCons d)
     inferSubTypeStep ds (t11 :=> t12) (t21 :=> t22) =
@@ -188,7 +187,13 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
                         -- Record constructors
                         return (Just k)
                       else return Nothing
-                (Core.LitAlt l, _, _) -> pprPanic "Unexpected literal in datatype pattern!" (ppr l)
+                (Core.LitAlt _, _, rhs) 
+                  | not (isBottoming rhs) -> do
+                        -- Ensure return type is valid
+                        ret_i <- mono <$> infer rhs
+                        inferSubType ret_i ret
+                      -- Record constructors
+                        return Nothing
                 _ -> return Nothing -- Skip defaults until all constructors have been seen
             )
             alts
@@ -220,7 +225,7 @@ infer (Core.Cast e g) = do
   freshCoreScheme (pSnd $ coercionKind g)
 infer (Core.Tick SourceNote {sourceSpan = s} e) = setLoc (RealSrcSpan s) $ infer e -- Track location in source text
 infer (Core.Tick _ e) = infer e -- Ignore other ticks
-infer (Core.Coercion g) = pprPanic "Unexpected coercion" (ppr g)
+infer (Core.Coercion g) = freshCoreScheme (pSnd $ coercionKind g)
 infer (Core.Type t) = pprPanic "Unexpected type" (ppr t)
 
 isBottoming :: CoreExpr -> Bool

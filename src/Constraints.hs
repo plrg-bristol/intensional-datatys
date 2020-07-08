@@ -21,6 +21,7 @@ where
 
 import Binary
 import Constructors
+import Data.Monoid 
 import Control.Monad.RWS (RWS)
 import qualified Control.Monad.RWS as RWS
 import Control.Monad.State (State)
@@ -38,6 +39,7 @@ import Debug.Trace
 import qualified GhcPlugins as GHC
 import Types
 import Ubiq
+import qualified Control.Monad as Monad
 
 data Named a = Named {toPair :: (GHC.Name, a)}
   deriving (Eq, Functor)
@@ -382,53 +384,69 @@ guardWith g cs =
     go a = a {guard = g <> guard a}
 
 saturate :: IS.IntSet -> ConstraintSet -> ConstraintSet
-saturate iface cs =
-  if size ds <= size cs then ds else cs
+saturate iface cs = 
+    if size es <= size cs then es else cs
   where
-    dom = domain cs IS.\\ iface
-    ds = State.execState (mapM_ saturateI $ IS.toList dom) cs
+    allExt xs = xs `IS.isSubsetOf` iface
+    ls = fold (\ls c -> if allExt (domain (left c) <> domain (guard c)) then unsafeInsert c ls else ls) mempty cs
+    frontier = (IntMap.keysSet (definite ls) <> IntMap.keysSet (indefinite ls)) IS.\\ iface
+    ds = snd . fst $ RWS.execRWS fixI (iface, cs) (frontier, ls)
+    es = ds { 
+      definite = IntMap.filterWithKey (\i _ -> IS.member i iface) (definite ds),
+      indefinite = IntMap.filterWithKey (\i _ -> IS.member i iface) (indefinite ds)
+    }
 
-saturateI :: Int -> State ConstraintSet ()
-saturateI i =
-  do
-    cs <- State.get -- dom is the domain of ds
-    let df = IntMap.lookup i $ definite cs
-    let nf = IntMap.lookup i $ indefinite cs
-    let rs = cs {definite = IntMap.delete i (definite cs), indefinite = IntMap.delete i (indefinite cs)}
-    let is = empty {definite = maybe mempty (IntMap.singleton i) df, indefinite = maybe mempty (IntMap.singleton i) nf}
-    let filterRec1 =
-          GHC.filterUFM (not . null) . fmap (HashMap.filter (not . null)) . fmap (fmap $ List.filter (\a -> not $ IS.member i $ domain (left a) <> domain (guard a)))
-    let filterRec2 =
-          GHC.filterUFM (not . null) . fmap (HashMap.filter (not . null)) . fmap (fmap $ List.filter (\a -> not $ IS.member i $ domain (left a) <> domain (guard a)))
-    let ss = fixI (IS.singleton i) is is
-    -- Remove any recursive clauses since saturation completed
-    let ls = ss {definite = IntMap.adjust filterRec1 i (definite ss), indefinite = IntMap.adjust filterRec2 i (indefinite ss)}
-    let ds = fst $ RWS.execRWS (saturateF (IS.singleton i) ls rs) mempty mempty
-    let ds' = if debugging then trace ("[TRACE] SaturateI (#lhs: " ++ show (size ls) ++ ") (#rhs: " ++ show (size rs) ++ ") (#resolvants:" ++ show (size ds) ++ ")") ds else ds
-    State.put ds'
+-- saturateI :: Int -> State ConstraintSet ()
+-- saturateI i =
+--   do  cs <- State.get -- dom is the domain of ds
+--       let df = IntMap.lookup i $ definite cs
+--       let nf = IntMap.lookup i $ indefinite cs
+--       let rs = cs { definite = IntMap.delete i (definite cs), indefinite = IntMap.delete i (indefinite cs) }
+--       let is = empty { definite = maybe mempty (IntMap.singleton i) df, indefinite = maybe mempty (IntMap.singleton i) nf }
+--       let filterRec1 = 
+--             GHC.filterUFM (not . null) . fmap (HashMap.filter (not . null)) . fmap (fmap $ List.filter (\a -> not $ IS.member i $ domain (left a) <> domain (guard a)))
+--       let filterRec2 =
+--             GHC.filterUFM (not . null) . fmap (HashMap.filter (not . null)) . fmap (fmap $ List.filter (\a -> not $ IS.member i $ domain (left a) <> domain (guard a)))
+--       let ss = fixI (IS.singleton i) is is
+--       -- Remove any recursive clauses since saturation completed
+--       let ls = ss { definite = IntMap.adjust filterRec1 i (definite ss), indefinite = IntMap.adjust filterRec2 i (indefinite ss) }
+--       let ds = fst $ RWS.execRWS (saturateF (IS.singleton i) ls rs) mempty mempty
+--       let ds' = if debugging then trace ("[TRACE] SaturateI (#lhs: " ++ show (size ls) ++ ") (#rhs: " ++ show (size rs) ++ ") (#resolvants:" ++ show (size ds) ++ ")") ds else ds
+--       State.put ds'
 
-fixI :: IS.IntSet -> ConstraintSet -> ConstraintSet -> ConstraintSet
-fixI dom ls rs =
-  case RWS.execRWS (saturateF dom ls rs) rs mempty of
-    (!cs', Any True) -> fixI dom ls cs' -- New constraint have been found, i.e. not a fixedpoint
-    (!cs', Any False) -> cs'
+fixI :: RWS (IS.IntSet, ConstraintSet) () (IS.IntSet, ConstraintSet) ()
+fixI =
+  do  (frontier, _) <- State.get
+      Monad.unless (IS.null frontier) $ saturateF >> fixI
 
 -- One step consequence operator for saturation rules concerning a particular refinement variable
-saturateF :: IS.IntSet -> ConstraintSet -> ConstraintSet -> RWS ConstraintSet Any ConstraintSet ()
-saturateF dom ls rs =
-  mapAction resolveWith rs
-  where
-    addResolvant r = do
-      es <- RWS.ask
-      ds <- RWS.get
-      case insert' r ds of
-        Just ds' ->
-          do
-            RWS.put ds'
-            case insert' r es of
-              Nothing -> return ()
-              Just _ -> RWS.tell (Any True)
-        Nothing -> return ()
-    resolveWith c = do
-      let rss = resolve' dom ls c
-      mapM_ addResolvant rss
+saturateF :: RWS (IS.IntSet, ConstraintSet) () (IS.IntSet, ConstraintSet) ()
+saturateF =
+    do  (exts, rs) <- RWS.ask
+        (frontier, ls) <- RWS.get
+        RWS.put (mempty, ls)
+       
+        let addResolvant r =
+              do  let bodyVars = domain (left r) <> domain (guard r)
+                  let varsAllExts = bodyVars `IS.isSubsetOf` exts
+                  Monad.when varsAllExts $
+                    do  (_, ls) <- RWS.get
+                        case insert' r ls of
+                          Nothing -> return ()
+                          Just ls' -> 
+                            do  let headVar = domain (right r)
+                                RWS.modify (second (const ls'))
+                                Monad.unless (headVar `IS.isSubsetOf` exts) $ RWS.modify (first (<> headVar))
+
+        let close xs = 
+              let ys = xs IS.\\ exts 
+                  zs = (IntMap.keysSet (definite ls) <> IntMap.keysSet (indefinite ls)) IS.\\ exts
+              in not (IS.null ys) && not (IS.null $ ys `IS.intersection` frontier) && ys `IS.isSubsetOf` zs
+        let eligible =
+              fold (\ls c -> if close (domain (left c) <> domain (guard c)) then unsafeInsert c ls else ls) mempty rs
+
+        let resolveWith c = 
+              do  --traceM ("Resolve: (ls: " ++ show (size ls) ++ ") (rs: " ++ show (size eligible) ++ ")\n  frontier: " ++ show (IS.toList frontier))
+                  mapM_ addResolvant (resolve' frontier ls c) -- heads relevantLs \subseteq frontier
+
+        mapAction resolveWith eligible

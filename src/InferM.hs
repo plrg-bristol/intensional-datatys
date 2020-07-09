@@ -4,6 +4,7 @@ module InferM
   ( InferM,
     Context,
     InferEnv (..),
+    Stats (..),
     runInferM,
     InferM.saturate,
     topLevel,
@@ -18,6 +19,9 @@ module InferM
     setLoc,
     getExternalName,
     trivial,
+    noteD,
+    noteK,
+    incrN
   )
 where
 
@@ -32,7 +36,7 @@ import Scheme
 import Types
 import Ubiq
 
-type InferM = RWS InferEnv ConstraintSet RVar
+type InferM = RWS InferEnv ConstraintSet InferState
 
 type Path = [(CoreExpr, DataCon)]
 
@@ -51,17 +55,50 @@ data InferEnv
         inferLoc :: SrcSpan -- The current location in the source text
       }
 
+data InferState = 
+        InferState {
+          maxK :: Int,
+          maxD :: Int,
+          maxI :: Int,
+          cntN :: Int,
+          rVar :: Int
+        }
+
+initState :: InferState
+initState = InferState 0 0 0 0 0
+
+noteK :: Int -> InferM ()
+noteK x = modify (\s -> s { maxK = max x (maxK s) })
+
+noteD :: Int -> InferM ()
+noteD x = modify (\s -> s { maxD = max x (maxD s) })
+
+noteI :: Int -> InferM ()
+noteI x = modify (\s -> s { maxI = max x (maxI s) })
+
+incrV :: InferM ()
+incrV = modify (\s -> s { rVar = rVar s + 1 })
+
+incrN :: InferM ()
+incrN = modify (\s -> s { cntN = cntN s + 1 })
+
+data Stats = 
+        Stats {
+          getK :: Int,
+          getD :: Int,
+          getV :: Int,
+          getI :: Int,
+          getN :: Int
+        }
+
 runInferM ::
   InferM a ->
   Module ->
   Context ->
-  a
+  (a, Stats)
 runInferM run mod_name init_env =
-  fst $
-    evalRWS
-      run
-      (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Nowhere")))
-      0
+  let (a, s, _) = runRWS run (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Nowhere"))) initState
+  in (a, Stats (maxK s) (maxD s) (rVar s) (maxI s) (cntN s))
 
 -- Transitively remove local constraints
 saturate :: Refined a => InferM a -> InferM a
@@ -72,6 +109,7 @@ saturate ma = pass $
     g <- asks branchGuard
     src <- asks inferLoc -- this is actually only for debugging
     let interface = domain a <> domain env <> domain g
+    noteI (IntSet.size interface)
     let fn cs =
           let csSize = size cs
               ds = Constraints.saturate interface cs
@@ -169,8 +207,8 @@ emit k1 k2 = do
 -- A fresh refinement variable
 fresh :: InferM RVar
 fresh = do
-  i <- get
-  put (i + 1)
+  i <- gets rVar
+  incrV
   return i
 
 -- Insert variables into environment

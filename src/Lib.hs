@@ -33,9 +33,11 @@ import TyCoRep
 data Benchmark = Benchmark
   { times :: [Integer],
     avg :: Integer,
-    defns :: Int,
-    maxIface :: Int,
-    maxCons :: Int
+    bigN :: Int,
+    bigK :: Int,
+    bigD :: Int,
+    bigV :: Int,
+    bigI :: Int
   }
   deriving (Gen.Generic)
 
@@ -46,8 +48,8 @@ instance ToJSON Benchmark
 
 instance FromJSON Benchmark
 
-recordBenchmarks :: String -> Int -> (Integer, Integer) -> Context -> IO ()
-recordBenchmarks name d (t0, t1) gamma = do
+recordBenchmarks :: String -> (Integer, Integer) -> Stats -> IO ()
+recordBenchmarks name (t0, t1) stats = do
   exist <- doesFileExist "benchmark.json"
   if exist
     then
@@ -65,9 +67,12 @@ recordBenchmarks name d (t0, t1) gamma = do
   where
     new =
       Benchmark
-        { defns = d,
-          maxIface = max 0 $ getMax $ foldMap (Max . I.size . boundvs) gamma,
-          maxCons = max 0 $ getMax $ foldMap (Max . size . constraints) gamma,
+        { 
+          bigN = getN stats,
+          bigD = getD stats,
+          bigV = getV stats,
+          bigK = getK stats,
+          bigI = getI stats,
           times = [t1 - t0],
           avg = t1 - t0
         }
@@ -114,11 +119,11 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
           (dep_mods d)
     t0 <- getCPUTime
     -- Infer constraints
-    let !gamma = runInferM (inferProg p) m env
+    let (!gamma, !stats) = runInferM (inferProg p) m env
     t1 <- getCPUTime
     if "time" `elem` cmd
       then do
-        recordBenchmarks (moduleNameString (moduleName m)) (length p) (t0, t1) gamma
+        recordBenchmarks (moduleNameString (moduleName m)) (t0, t1) stats
       else -- Display typeschemes
 
         mapM_

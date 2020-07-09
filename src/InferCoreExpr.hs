@@ -29,31 +29,50 @@ import Debug.Trace
 -- Infer set constraints for a subtyping constraint
 inferSubType :: Type -> Type -> InferM ()
 inferSubType t1 t2 = 
-  do  (_, cs) <- listen (inferSubTypeStep [] t1 t2)
+  do  (_, cs) <- listen (inferSubTypeStep' t1 t2)
       let sz = Constraints.size cs
       when (debugging && sz > 100) $ 
         do  src <- asks inferLoc 
             traceM ("[TRACE] The subtype proof at " ++ traceSpan src ++ " contributed " ++ show sz ++ " constraints.")
             pprTraceM "[TRACE] Subtyping constraints: " (ppr cs)
   where
-    inferSubTypeStep :: [(DataType TyCon, DataType TyCon)] -> Type -> Type -> InferM ()
+    inferSubTypeStep' d1@(Data (Inj _ _) _) d2@(Data (Inj _ _) _) =
+      do  -- Entering a slice
+          ds <- inferSubTypeStep [] d1 d2
+          -- See how big it was
+          noteD $ length (L.nub $ map (\(Inj _ d,_) -> d) ds)
+    inferSubTypeStep' (t11 :=> t12) (t21 :=> t22) =
+      inferSubTypeStep' t21 t11 >> inferSubTypeStep' t12 t22
+    inferSubTypeStep' (Data (Base _) as) (Data (Base _) as') =
+      zipWithM_ inferSubTypeStep' as as'
+    inferSubTypeStep' _ _ = return ()
+
+    inferSubTypeStep :: [(DataType TyCon, DataType TyCon)] -> Type -> Type -> InferM [(DataType TyCon, DataType TyCon)]
     inferSubTypeStep ds (Data (Inj x d) as) (Data (Inj y d') as')
       -- Escape from loop if constraints have already been discovered
       | (Inj x d, Inj y d') `notElem` ds = do
         emit (Dom (Inj x (getName d))) (Dom (Inj y (getName d')))
-        mapM_ -- Traverse the slice of a datatype
-          ( \k ->
-              branch k (Inj x d) $
-                do  xtys <- consInstArgs x as k
-                    ytys <- consInstArgs y as' k
-                    zipWithM_ (inferSubTypeStep ((Inj x d, Inj y d') : ds)) xtys ytys
-          )
-          (tyConDataCons d)
+        noteK (length $ tyConDataCons d)
+        dss <- mapM -- Traverse the slice of a datatype
+                ( \k ->
+                    branch k (Inj x d) $
+                      do  xtys <- consInstArgs x as k
+                          ytys <- consInstArgs y as' k
+                          rs <- zipWithM (inferSubTypeStep ((Inj x d, Inj y d') : ds)) xtys ytys
+                          return (concat rs)
+                )
+                (tyConDataCons d)
+        let cds = concat dss
+        return (if null cds then (Inj x d, Inj y d') : ds else cds)
     inferSubTypeStep ds (t11 :=> t12) (t21 :=> t22) =
-      inferSubTypeStep ds t21 t11 >> inferSubTypeStep ds t12 t22
+      do  ds1 <- inferSubTypeStep ds t21 t11 
+          ds2 <- inferSubTypeStep ds t12 t22
+          return (ds1 ++ ds2)
     inferSubTypeStep ds (Data (Base _) as) (Data (Base _) as') =
-      zipWithM_ (inferSubTypeStep ds) as as'
-    inferSubTypeStep _ _ _ = return ()
+      do  dss <- zipWithM (inferSubTypeStep ds) as as'
+          let cds = concat dss
+          return (if null cds then ds else cds)
+    inferSubTypeStep ds _ _ = return ds
 
 -- Infer constraints for a module
 inferProg :: CoreProgram -> InferM Context
@@ -85,7 +104,8 @@ associate r =
                         Scheme.constraints = cs'
                       }
           ctx' <- mapM satAction ctx
-          when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)        
+          when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)  
+          incrN      
           return ctx'
 
 -- Infer constraints for a mutually recursive binders

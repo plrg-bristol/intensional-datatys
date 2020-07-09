@@ -1,4 +1,4 @@
-module DNF where
+module PaperExamples where
 
 import qualified Data.List as List
 
@@ -34,5 +34,21 @@ nnf2dnf (Or p q) = List.union (nnf2dnf p) (nnf2dnf q)
 nnf2dnf (Lit a) = [[a]]
 
 dnf = nnf2dnf . nnf  
+
+k x y = x
+
+data Arith = L Int | Plus | Mult
+data Lam = Cst Arith | App Lam Lam | Abs (Lam -> Lam) | FVr String | BVr Int
+
+lkup :: [(String,a)] -> String -> a
+lkup ((s,x):ps) t = if s == t then x else lkup ps t
+
+cloSub :: [(String, Lam)] -> Lam -> Lam
+cloSub m (FVr s) = lkup m s
+cloSub m (Cst c) = Cst c
+cloSub m (App u v) = App (cloSub m u) (cloSub m v)
+
+f :: Lam -> Lam
+f x = k x (f (f x))
 
 

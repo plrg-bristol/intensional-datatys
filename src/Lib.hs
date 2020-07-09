@@ -45,30 +45,27 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
   when ("debug-core" `elem` cmd) $ pprTraceM "Core Source:" $ ppr p
   hask <- getHscEnv
   liftIO $ do
-    env <-
-      if "time" `elem` cmd
-        then return M.empty
-        else-- Reload saved typeschemes
-          let gbl =
-                IfGblEnv
-                  { if_doc = text "initIfaceLoad",
-                    if_rec_types = Nothing
-                  }
-           in initTcRnIf 'i' hask gbl (mkIfLclEnv m empty False) $ do
-                cache <- mkNameCacheUpdater
-                foldM
-                  ( \env (interfaceName -> m_name, _) -> do
-                      exists <- liftIO $ doesFileExist m_name
-                      if exists
-                        then do
-                          bh <- liftIO $ readBinMem m_name
-                          ictx <- liftIO $ M.fromList <$> getWithUserData cache bh
-                          ctx <- mapM (mapM tcIfaceTyCon) ictx
-                          return (M.union ctx env)
-                        else return env
-                  )
-                  M.empty
-                  (dep_mods d)
+    let gbl =
+          IfGblEnv
+            { if_doc = text "initIfaceLoad",
+              if_rec_types = Nothing
+            }
+    env <- -- Reload saved typeschemes
+      initTcRnIf 'i' hask gbl (mkIfLclEnv m empty False) $ do
+        cache <- mkNameCacheUpdater
+        foldM
+          ( \env (interfaceName -> m_name, _) -> do
+              exists <- liftIO $ doesFileExist m_name
+              if exists
+                then do
+                  bh <- liftIO $ readBinMem m_name
+                  ictx <- liftIO $ M.fromList <$> getWithUserData cache bh
+                  ctx <- mapM (mapM tcIfaceTyCon) ictx
+                  return (M.union ctx env)
+                else return env
+          )
+          M.empty
+          (dep_mods d)
     t0 <- getCPUTime
     -- Infer constraints
     let !gamma = runInferM (inferProg p) m env
@@ -79,7 +76,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
         putStrLn ("max-interface: " ++ show (foldMap (Max . I.size . boundvs) gamma))
         putStrLn ("max-constraints: " ++ show (foldMap (Max . size . constraints) gamma))
         putStrLn ("time: " ++ show (t1 - t0))
-      else do
+      else
         -- Display typeschemes
         mapM_
           ( \(v, ts) -> do
@@ -88,15 +85,15 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
               putStrLn ""
           )
           $ M.toList gamma
-        -- Save typescheme to temporary file
-        exist <- doesDirectoryExist "interface"
-        unless exist (createDirectory "interface")
-        bh <- openBinMem (1024 * 1024)
-        putWithUserData
-          (const $ return ())
-          bh
-          (M.toList $ M.filterWithKey (\k _ -> isExternalName k) (fmap toIfaceTyCon <$> gamma))
-        writeBinMem bh (interfaceName (moduleName m))
+    -- Save typescheme to temporary file
+    exist <- doesDirectoryExist "interface"
+    unless exist (createDirectory "interface")
+    bh <- openBinMem (1024 * 1024)
+    putWithUserData
+      (const $ return ())
+      bh
+      (M.toList $ M.filterWithKey (\k _ -> isExternalName k) (fmap toIfaceTyCon <$> gamma))
+    writeBinMem bh (interfaceName (moduleName m))
     return guts
 
 tcIfaceTyCon :: IfaceTyCon -> IfL TyCon

@@ -35,6 +35,7 @@ inferSubType t1 t2 =
       when (debugging && sz > 100) $ 
         do  src <- asks inferLoc 
             traceM ("[TRACE] The subtype proof at " ++ traceSpan src ++ " contributed " ++ show sz ++ " constraints.")
+            pprTraceM "[TRACE] Subtyping constraints: " (ppr cs)
   where
     inferSubTypeStep :: [DataType TyCon] -> Type -> Type -> InferM ()
     inferSubTypeStep ds (Data (Inj x d) as) (Data (Inj y d') as')

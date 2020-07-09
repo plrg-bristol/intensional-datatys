@@ -20,7 +20,8 @@ module InferM
     getExternalName,
     trivial,
     noteD,
-    noteK
+    noteK,
+    incrN
   )
 where
 
@@ -59,11 +60,12 @@ data InferState =
           maxK :: Int,
           maxD :: Int,
           maxI :: Int,
+          cntN :: Int,
           rVar :: Int
         }
 
 initState :: InferState
-initState = InferState 0 0 0 0 
+initState = InferState 0 0 0 0 0
 
 noteK :: Int -> InferM ()
 noteK x = modify (\s -> s { maxK = max x (maxK s) })
@@ -77,12 +79,16 @@ noteI x = modify (\s -> s { maxI = max x (maxI s) })
 incrV :: InferM ()
 incrV = modify (\s -> s { rVar = rVar s + 1 })
 
+incrN :: InferM ()
+incrN = modify (\s -> s { cntN = cntN s + 1 })
+
 data Stats = 
         Stats {
           getK :: Int,
           getD :: Int,
           getV :: Int,
-          getI :: Int
+          getI :: Int,
+          getN :: Int
         }
 
 runInferM ::
@@ -92,7 +98,7 @@ runInferM ::
   (a, Stats)
 runInferM run mod_name init_env =
   let (a, s, _) = runRWS run (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Nowhere"))) initState
-  in (a, Stats (maxK s) (maxD s) (rVar s) (maxI s))
+  in (a, Stats (maxK s) (maxD s) (rVar s) (maxI s) (cntN s))
 
 -- Transitively remove local constraints
 saturate :: Refined a => InferM a -> InferM a

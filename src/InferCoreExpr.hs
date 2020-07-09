@@ -104,7 +104,8 @@ associate r =
                         Scheme.constraints = cs'
                       }
           ctx' <- mapM satAction ctx
-          when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)        
+          when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)  
+          incrN      
           return ctx'
 
 -- Infer constraints for a mutually recursive binders

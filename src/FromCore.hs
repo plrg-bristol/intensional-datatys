@@ -42,7 +42,7 @@ fromCoreCons k = do
 
 -- The argument types of an instantiated constructor
 consInstArgs :: RVar -> [Type] -> DataCon -> InferM [Type]
-consInstArgs x as k = mapM fromCoreInst (dataConRepArgTys k)
+consInstArgs x as k = fst . decompType <$> fromCoreInst (varType (dataConWorkId k))
   where
     fromCoreInst :: Tcr.Type -> InferM Type
     fromCoreInst (Tcr.TyVarTy a) =

@@ -1,4 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module Lib
@@ -10,9 +12,11 @@ import BinIface
 import Binary
 import Constraints
 import Control.Monad
+import Data.Aeson
 import qualified Data.IntSet as I
 import qualified Data.Map as M
 import Data.Semigroup
+import qualified GHC.Generics as Gen
 import GhcPlugins
 import IfaceEnv
 import IfaceSyn
@@ -25,6 +29,48 @@ import TcIface
 import TcRnMonad
 import ToIface
 import TyCoRep
+
+data Benchmark = Benchmark
+  { times :: [Integer],
+    avg :: Integer,
+    defns :: Int,
+    maxIface :: Int,
+    maxCons :: Int
+  }
+  deriving (Gen.Generic)
+
+updateAverage :: Benchmark -> Benchmark
+updateAverage b = b {avg = sum (times b) `div` toInteger (length (times b))}
+
+instance ToJSON Benchmark
+
+instance FromJSON Benchmark
+
+recordBenchmarks :: String -> Int -> (Integer, Integer) -> Context -> IO ()
+recordBenchmarks name d (t0, t1) gamma = do
+  exist <- doesFileExist "benchmark.json"
+  if exist
+    then
+      decodeFileStrict "benchmark.json" >>= \case
+        Nothing ->
+          encodeFile "benchmark.json" (M.singleton name new)
+        Just bs ->
+          case M.lookup name bs of
+            Nothing ->
+              encodeFile "benchmark.json" (M.insert name new bs)
+            Just bench -> do
+              let bench' = updateAverage $ bench {times = (t1 - t0) : times bench}
+              encodeFile "benchmark.json" (M.insert name bench' bs)
+    else encodeFile "benchmark.json" (M.singleton name new)
+  where
+    new =
+      Benchmark
+        { defns = d,
+          maxIface = max 0 $ getMax $ foldMap (Max . I.size . boundvs) gamma,
+          maxCons = max 0 $ getMax $ foldMap (Max . size . constraints) gamma,
+          times = [t1 - t0],
+          avg = t1 - t0
+        }
 
 plugin :: Plugin
 plugin = defaultPlugin {pluginRecompile = \_ -> return NoForceRecompile, installCoreToDos = install}
@@ -72,12 +118,9 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
     t1 <- getCPUTime
     if "time" `elem` cmd
       then do
-        putStrLn ("top-level defns: " ++ show (length p))
-        putStrLn ("max-interface: " ++ show (foldMap (Max . I.size . boundvs) gamma))
-        putStrLn ("max-constraints: " ++ show (foldMap (Max . size . constraints) gamma))
-        putStrLn ("time: " ++ show (t1 - t0))
-      else
-        -- Display typeschemes
+        recordBenchmarks (moduleNameString (moduleName m)) (length p) (t0, t1) gamma
+      else -- Display typeschemes
+
         mapM_
           ( \(v, ts) -> do
               putStrLn ""

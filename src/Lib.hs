@@ -49,7 +49,6 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
       if "time" `elem` cmd
         then return M.empty
         else-- Reload saved typeschemes
-
           let gbl =
                 IfGblEnv
                   { if_doc = text "initIfaceLoad",
@@ -92,12 +91,12 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
         -- Save typescheme to temporary file
         exist <- doesDirectoryExist "interface"
         unless exist (createDirectory "interface")
-        bh <- openBinMem 1000
+        bh <- openBinMem (1024 * 1024)
         putWithUserData
           (const $ return ())
           bh
           (M.toList $ M.filterWithKey (\k _ -> isExternalName k) (fmap toIfaceTyCon <$> gamma))
-        writeBinMem bh $ interfaceName $ moduleName m
+        writeBinMem bh (interfaceName (moduleName m))
     return guts
 
 tcIfaceTyCon :: IfaceTyCon -> IfL TyCon

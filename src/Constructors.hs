@@ -64,7 +64,10 @@ instance Binary (K 'R) where
   get bh =
     get bh >>= \case
       False -> Dom <$> get bh
-      True -> Set . mkUniqSet <$> get bh <*> get bh
+      True -> do
+        s <- mkUniqSet <$> get bh
+        l <- get bh
+        return (Set s l)
 
 instance Refined (K l) where
   domain (Dom d) = domain d

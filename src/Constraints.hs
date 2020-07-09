@@ -1,10 +1,10 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE BangPatterns #-}
 
 module Constraints
   ( Guard,
@@ -15,40 +15,38 @@ module Constraints
     insert,
     guardWith,
     saturate,
-    size
+    size,
   )
 where
 
-import Ubiq
 import Binary
 import Constructors
 import Control.Monad.RWS (RWS)
 import qualified Control.Monad.RWS as RWS
-import Data.Monoid 
 import Control.Monad.State (State)
 import qualified Control.Monad.State as State
 import Data.Bifunctor
-import qualified Data.Maybe as Maybe
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HashMap
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 import qualified Data.IntSet as IS
-import qualified GhcPlugins as GHC
 import qualified Data.List as List
-import Types
-
-import Data.HashMap.Strict (HashMap)
-import qualified Data.HashMap.Strict as HashMap
-
+import qualified Data.Maybe as Maybe
+import Data.Monoid
 import Debug.Trace
+import qualified GhcPlugins as GHC
+import Types
+import Ubiq
 
 data Named a = Named {toPair :: (GHC.Name, a)}
-  deriving (Eq,Functor)
+  deriving (Eq, Functor)
 
 instance Semigroup a => Semigroup (Named a) where
   Named (n, ks1) <> Named (_, ks2) = Named (n, ks1 <> ks2)
 
 instance GHC.Uniquable (Named a) where
-  getUnique (Named (n,_)) = GHC.getUnique n
+  getUnique (Named (n, _)) = GHC.getUnique n
 
 instance Binary a => Binary (Named a) where
   put_ bh = put_ bh . toPair
@@ -70,13 +68,25 @@ instance Monoid Guard where
 instance GHC.Outputable Guard where
   ppr (Guard g) =
     let processInner xs =
-          foldr (\(x,ml) acc -> map ((,) x) ml ++ acc) [] xs
-    in GHC.pprWithCommas (\(x, (d, ks)) -> GHC.hsep [GHC.ppr ks, GHC.text "in", GHC.ppr (Inj x d)]) $
-      fmap (second (second GHC.nonDetEltsUniqSet)) . processInner $ second (fmap toPair . GHC.nameEnvElts) <$> IntMap.toList g
+          foldr (\(x, ml) acc -> map ((,) x) ml ++ acc) [] xs
+     in GHC.pprWithCommas (\(x, (d, ks)) -> GHC.hsep [GHC.ppr ks, GHC.text "in", GHC.ppr (Inj x d)])
+          $ fmap (second (second GHC.nonDetEltsUniqSet)) . processInner
+          $ second (fmap toPair . GHC.nameEnvElts) <$> IntMap.toList g
+
+toList :: Guard -> [(Int, GHC.Name, GHC.Name)]
+toList (Guard g) =
+  [ (x, d, k)
+    | (x, kds) <- IntMap.toList g,
+      (d, ks) <- toPair <$> GHC.nameEnvElts kds,
+      k <- GHC.nonDetEltsUniqSet ks
+  ]
+
+fromList :: [(Int, GHC.Name, GHC.Name)] -> Guard
+fromList = foldMap (\(x, d, k) -> singleton k (Inj x d))
 
 instance Binary Guard where
-  put_ bh (Guard g) = put_ bh (IntMap.toList $ fmap (fmap snd . GHC.nonDetUFMToList . fmap (fmap GHC.nonDetEltsUniqSet)) g)
-  get bh = Guard . IntMap.fromList . fmap (second (GHC.mkNameEnv . fmap (\(n,ks) -> (n, Named (n, GHC.mkUniqSet ks))))) <$> Binary.get bh
+  put_ bh = put_ bh . toList
+  get bh = fromList <$> get bh
 
 instance Refined Guard where
   domain (Guard g) = IntMap.keysSet g
@@ -95,7 +105,7 @@ guardLookup (Inj x d) (Guard g) =
 -- Ignorning possibly trivial guards (e.g. 1-constructor types has already
 -- happened in InferM.branch)
 singleton :: GHC.Name -> DataType GHC.Name -> Guard
-singleton k (Inj x d) = 
+singleton k (Inj x d) =
   Guard (IntMap.singleton x (GHC.unitNameEnv d (Named (d, GHC.unitUniqSet k))))
 
 guardsFromList :: [GHC.Name] -> DataType GHC.Name -> Guard
@@ -123,7 +133,7 @@ instance GHC.Outputable (Constraint l r) where
   ppr a = GHC.ppr (guard a) GHC.<+> GHC.char '?' GHC.<+> GHC.ppr (left a) GHC.<+> GHC.arrowt GHC.<+> GHC.ppr (right a)
 
 instance (Binary (K l), Binary (K r)) => Binary (Constraint l r) where
-  put_ bh c = put_ bh (left c) >> put_ bh (right c) >> put_ bh (guard c) >> put_ bh (Constraints.srcSpan c)
+  put_ bh (Constraint l r g ss) = put_ bh l >> put_ bh r >> put_ bh g >> put_ bh ss
   get bh = Constraint <$> Binary.get bh <*> Binary.get bh <*> Binary.get bh <*> Binary.get bh
 
 instance Refined (Constraint l r) where
@@ -143,20 +153,21 @@ impliedBy a a' =
 
 gimpliedBy :: Guard -> Guard -> Bool
 gimpliedBy a a' =
-    let Guard g = a
-        Guard g' = a'
-        keyInclusion (Named (_,u1)) (Named (_,u2)) = 
-          {-# SCC keyInclusion #-}
-            IntMap.isSubmapOfBy (\_ _ -> True) (GHC.ufmToIntMap $ GHC.getUniqSet u1) (GHC.ufmToIntMap $ GHC.getUniqSet u2)
-    in {-# SCC "OuterLoop" #-} IntMap.isSubmapOfBy (\u1 u2 -> {-# SCC "InnerLoop" #-} IntMap.isSubmapOfBy keyInclusion (GHC.ufmToIntMap u1) (GHC.ufmToIntMap u2)) g' g
-    --  in getAll $
-    --       HM.foldMapWithKey
-    --         ( \d ks ->
-    --             case HM.lookup d g of
-    --               Nothing -> All (GHC.isEmptyUniqSet ks)
-    --               Just ks' -> All (GHC.uniqSetAll (`GHC.elementOfUniqSet` ks') ks)
-    --         )
-    --         g'
+  let Guard g = a
+      Guard g' = a'
+      keyInclusion (Named (_, u1)) (Named (_, u2)) =
+        {-# SCC keyInclusion #-}
+        IntMap.isSubmapOfBy (\_ _ -> True) (GHC.ufmToIntMap $ GHC.getUniqSet u1) (GHC.ufmToIntMap $ GHC.getUniqSet u2)
+   in {-# SCC "OuterLoop" #-} IntMap.isSubmapOfBy (\u1 u2 -> {-# SCC "InnerLoop" #-} IntMap.isSubmapOfBy keyInclusion (GHC.ufmToIntMap u1) (GHC.ufmToIntMap u2)) g' g
+
+--  in getAll $
+--       HM.foldMapWithKey
+--         ( \d ks ->
+--             case HM.lookup d g of
+--               Nothing -> All (GHC.isEmptyUniqSet ks)
+--               Just ks' -> All (GHC.uniqSetAll (`GHC.elementOfUniqSet` ks') ks)
+--         )
+--         g'
 
 -- A constraint is trivially satisfied
 tautology :: Atomic -> Bool
@@ -190,67 +201,68 @@ recursive a =
 resolve' :: IS.IntSet -> ConstraintSet -> Atomic -> [Atomic]
 resolve' dom cs a = new --trace ("Totalling:" ++ show (length new)) new
   where
-      -- Turn the guard into a list of shape [(x,[(d1,[k1,...]),...]),...]
-      guardAsList = fmap (second (fmap toPair . GHC.nameEnvElts)) $ IntMap.toList (groups $ guard a)
-      -- We need to unpack it into atomic propositions [(x,d1,k1),...]
-      easierGuardList1 = concatMap (\(x,ds) -> [ (x, d, GHC.nonDetEltsUniqSet ks) | (d,ks) <- ds]) guardAsList
-      -- easierGuardList2 = concatMap (\(x,ds) -> [ (x,d,k) | (d,k) <- concatMap (\(d,ks) -> [(d,k) | k <- GHC.nonDetEltsUniqSet ks ]) ds]) guardAsList
-      -- Map each entry `k in x(d)` to a list of possible resolvants
-      guardAlternatives = map getAlts easierGuardList1
-        where getAlts (x,d,ks) = 
-                let -- Substitutions
-                    ne = IntMap.findWithDefault mempty x (definite cs) 
-                    hm = GHC.lookupWithDefaultUFM ne mempty d 
-                    as = HashMap.toList hm
-                    -- Weakenings
-                    ne' = IntMap.findWithDefault mempty x (indefinite cs) 
-                    hm' = GHC.lookupWithDefaultUFM ne' mempty d 
-                in if not (x `IS.member` dom)
-                   then [guardsFromList ks (Inj x d)] -- x is not in the domain of resolution
-                   else concatMap (\((y,_), bs) -> [guardsFromList ks (Inj y d) <> guard b | b <- bs]) as
-                          ++ (map mconcat $ sequence (map (\k -> map guard (HashMap.findWithDefault [] k hm')) ks))
-      -- Note: if one of the guards involves x(d) and x is in the domain but there are no
-      -- resolvers with x(d) in the head, then prodOfAlts will be empty and so we will return []
-      -- This corresponds to setting x(d) to empty, which falisfies the guard and renders the
-      -- constraint trivial.
-      impSequenceW :: (a -> Guard -> Guard) -> [[a]] -> [Guard]
-      impSequenceW _ [] = [mempty]
-      impSequenceW f (ma:mas) = 
-          foldl addToResult [] [ (a, as) | a <- ma, as <- allMas]
-        where
-          allMas = impSequenceW f mas
-          addToResult gs (a,as) = 
-            let g = f a as in if any (g `gimpliedBy`) gs then gs else g : filter (not . (`gimpliedBy` g)) gs
-      prodOfAlts = impSequenceW (<>) guardAlternatives
-      -- Resolve `left a` with all possibilities
-      addOrNot (b, g) rs = 
-        let c = a { left = left b, guard = guard b <> g }
-        in if any (c `impliedBy`) rs then rs else c:filter (not . (`impliedBy` c)) rs
-      new = foldr addOrNot [] $ [ (x,y) | x <- bs, y <- prodOfAlts]
-        where
-          bs = 
-            case left a of
-              Con _ _       -> [a]
-              Dom (Inj x d) -> 
-                let -- Transitivity
-                    ne  = IntMap.findWithDefault mempty x (definite cs)
-                    hm  = GHC.lookupWithDefaultUFM ne mempty d
-                    ne' = IntMap.findWithDefault mempty x (indefinite cs)
-                    hm'  = GHC.lookupWithDefaultUFM ne' mempty d
-                in if not (x `IS.member` dom) then [a] else concat $ HashMap.elems hm ++ HashMap.elems hm'
-              _ -> GHC.pprPanic "Not possible to have any other kind of constructor here" GHC.empty 
+    -- Turn the guard into a list of shape [(x,[(d1,[k1,...]),...]),...]
+    guardAsList = fmap (second (fmap toPair . GHC.nameEnvElts)) $ IntMap.toList (groups $ guard a)
+    -- We need to unpack it into atomic propositions [(x,d1,k1),...]
+    easierGuardList1 = concatMap (\(x, ds) -> [(x, d, GHC.nonDetEltsUniqSet ks) | (d, ks) <- ds]) guardAsList
+    -- easierGuardList2 = concatMap (\(x,ds) -> [ (x,d,k) | (d,k) <- concatMap (\(d,ks) -> [(d,k) | k <- GHC.nonDetEltsUniqSet ks ]) ds]) guardAsList
+    -- Map each entry `k in x(d)` to a list of possible resolvants
+    guardAlternatives = map getAlts easierGuardList1
+      where
+        getAlts (x, d, ks) =
+          let -- Substitutions
+              ne = IntMap.findWithDefault mempty x (definite cs)
+              hm = GHC.lookupWithDefaultUFM ne mempty d
+              as = HashMap.toList hm
+              -- Weakenings
+              ne' = IntMap.findWithDefault mempty x (indefinite cs)
+              hm' = GHC.lookupWithDefaultUFM ne' mempty d
+           in if not (x `IS.member` dom)
+                then [guardsFromList ks (Inj x d)] -- x is not in the domain of resolution
+                else
+                  concatMap (\((y, _), bs) -> [guardsFromList ks (Inj y d) <> guard b | b <- bs]) as
+                    ++ (map mconcat $ sequence (map (\k -> map guard (HashMap.findWithDefault [] k hm')) ks))
+    -- Note: if one of the guards involves x(d) and x is in the domain but there are no
+    -- resolvers with x(d) in the head, then prodOfAlts will be empty and so we will return []
+    -- This corresponds to setting x(d) to empty, which falisfies the guard and renders the
+    -- constraint trivial.
+    impSequenceW :: (a -> Guard -> Guard) -> [[a]] -> [Guard]
+    impSequenceW _ [] = [mempty]
+    impSequenceW f (ma : mas) =
+      foldl addToResult [] [(a, as) | a <- ma, as <- allMas]
+      where
+        allMas = impSequenceW f mas
+        addToResult gs (a, as) =
+          let g = f a as in if any (g `gimpliedBy`) gs then gs else g : filter (not . (`gimpliedBy` g)) gs
+    prodOfAlts = impSequenceW (<>) guardAlternatives
+    -- Resolve `left a` with all possibilities
+    addOrNot (b, g) rs =
+      let c = a {left = left b, guard = guard b <> g}
+       in if any (c `impliedBy`) rs then rs else c : filter (not . (`impliedBy` c)) rs
+    new = foldr addOrNot [] $ [(x, y) | x <- bs, y <- prodOfAlts]
+      where
+        bs =
+          case left a of
+            Con _ _ -> [a]
+            Dom (Inj x d) ->
+              let -- Transitivity
+                  ne = IntMap.findWithDefault mempty x (definite cs)
+                  hm = GHC.lookupWithDefaultUFM ne mempty d
+                  ne' = IntMap.findWithDefault mempty x (indefinite cs)
+                  hm' = GHC.lookupWithDefaultUFM ne' mempty d
+               in if not (x `IS.member` dom) then [a] else concat $ HashMap.elems hm ++ HashMap.elems hm'
+            _ -> GHC.pprPanic "Not possible to have any other kind of constructor here" GHC.empty
 
 data ConstraintSet
   = ConstraintSet
-      { 
-        definite :: IntMap (GHC.NameEnv (HashMap (Int,GHC.Name) [Atomic])),
+      { definite :: IntMap (GHC.NameEnv (HashMap (Int, GHC.Name) [Atomic])),
         indefinite :: IntMap (GHC.NameEnv (HashMap GHC.Name [Atomic])),
         goal :: [Atomic]
       }
   deriving (Eq)
 
 instance Semigroup ConstraintSet where
-  cs <> ds = fold (flip insert) ds cs            
+  cs <> ds = fold (flip insert) ds cs
 
 instance Monoid ConstraintSet where
   mempty = empty
@@ -259,41 +271,43 @@ instance GHC.Outputable ConstraintSet where
   ppr = fold (flip $ (GHC.$$) . GHC.ppr) GHC.empty
 
 instance Binary ConstraintSet where
-  put_ bh cs = 
-    do  put_ bh (IntMap.toList $ fmap GHC.nameEnvElts $ fmap (fmap HashMap.toList) (definite cs)) 
-        put_ bh (IntMap.toList $ fmap GHC.nameEnvElts $ fmap (fmap HashMap.toList) (indefinite cs)) 
-        put_ bh (goal cs) 
+  put_ bh cs =
+    do
+      put_ bh (IntMap.toList $ fmap GHC.nameEnvElts $ fmap (fmap HashMap.toList) (definite cs))
+      put_ bh (IntMap.toList $ fmap GHC.nameEnvElts $ fmap (fmap HashMap.toList) (indefinite cs))
+      put_ bh (goal cs)
 
-  get bh = 
-    do  df <- fmap (fmap HashMap.fromList) <$> (fmap GHC.mkNameEnv <$> (IntMap.fromList <$> Binary.get bh))
-        nf <- fmap (fmap HashMap.fromList) <$> (fmap GHC.mkNameEnv <$> (IntMap.fromList <$> Binary.get bh))
-        gl <- Binary.get bh
-        return (ConstraintSet df nf gl)
+  get bh =
+    do
+      df <- fmap (fmap HashMap.fromList) <$> (fmap GHC.mkNameEnv <$> (IntMap.fromList <$> Binary.get bh))
+      nf <- fmap (fmap HashMap.fromList) <$> (fmap GHC.mkNameEnv <$> (IntMap.fromList <$> Binary.get bh))
+      gl <- Binary.get bh
+      return (ConstraintSet df nf gl)
 
 instance Refined ConstraintSet where
-  domain cs = 
-    foldMap (foldMapUFM (foldMap (foldMap domain))) (definite cs) 
-      <>  foldMap (foldMapUFM (foldMap (foldMap domain))) (indefinite cs)
-      <>  foldMap domain (goal cs)
+  domain cs =
+    foldMap (foldMapUFM (foldMap (foldMap domain))) (definite cs)
+      <> foldMap (foldMapUFM (foldMap (foldMap domain))) (indefinite cs)
+      <> foldMap domain (goal cs)
     where
       foldMapUFM f u =
         GHC.foldUFM (\a b -> f a <> b) mempty u
 
-  rename x y cs = 
+  rename x y cs =
     fold (\ds a -> unsafeInsert (rename x y a) ds) empty cs
 
 empty :: ConstraintSet
-empty = 
-  ConstraintSet { 
-    definite = mempty, 
-    indefinite = mempty, 
-    goal = []
-  }
+empty =
+  ConstraintSet
+    { definite = mempty,
+      indefinite = mempty,
+      goal = []
+    }
 
 fold :: (b -> Atomic -> b) -> b -> ConstraintSet -> b
 fold f z0 cs = z3
   where
-    foldlUFM f b = IntMap.foldl' f b . GHC.ufmToIntMap 
+    foldlUFM f b = IntMap.foldl' f b . GHC.ufmToIntMap
     !z1 = IntMap.foldl' (foldlUFM (HashMap.foldl' (List.foldl' f))) z0 (definite cs)
     !z2 = IntMap.foldl' (foldlUFM (HashMap.foldl' (List.foldl' f))) z1 (indefinite cs)
     !z3 = List.foldl' f z2 (goal cs)
@@ -307,38 +321,38 @@ mapAction f cs = fold (\b a -> b >> f a) (return ()) cs
 
 unsafeInsert :: Atomic -> ConstraintSet -> ConstraintSet
 unsafeInsert a cs =
-  case (left a, right a) of 
-    (Dom (Inj x xd), Dom (Inj y yd)) -> 
+  case (left a, right a) of
+    (Dom (Inj x xd), Dom (Inj y yd)) ->
       let ne = IntMap.findWithDefault mempty y (definite cs)
-          hm = GHC.lookupWithDefaultUFM ne mempty yd 
-          as = HashMap.findWithDefault [] (x,xd) hm
-      in cs { definite = IntMap.insert y (GHC.addToUFM ne yd (HashMap.insert (x,xd) (a:as) hm)) (definite cs) }
-    (Con k _, Dom (Inj y yd)) -> 
+          hm = GHC.lookupWithDefaultUFM ne mempty yd
+          as = HashMap.findWithDefault [] (x, xd) hm
+       in cs {definite = IntMap.insert y (GHC.addToUFM ne yd (HashMap.insert (x, xd) (a : as) hm)) (definite cs)}
+    (Con k _, Dom (Inj y yd)) ->
       let ne = IntMap.findWithDefault mempty y (indefinite cs)
-          hm = GHC.lookupWithDefaultUFM ne mempty yd 
+          hm = GHC.lookupWithDefaultUFM ne mempty yd
           as = HashMap.findWithDefault [] k hm
-      in cs { indefinite = IntMap.insert y (GHC.addToUFM ne yd (HashMap.insert k (a:as) hm)) (indefinite cs) }
-    (_, Set _ _) -> cs { goal = a : goal cs }
+       in cs {indefinite = IntMap.insert y (GHC.addToUFM ne yd (HashMap.insert k (a : as) hm)) (indefinite cs)}
+    (_, Set _ _) -> cs {goal = a : goal cs}
     (_, _) -> cs
 
 insert' :: Atomic -> ConstraintSet -> Maybe ConstraintSet
 insert' a cs | not (tautology a) =
   case (left a, right a) of
-    (Dom (Inj x xd), Dom (Inj y yd)) -> 
+    (Dom (Inj x xd), Dom (Inj y yd)) ->
       let ne = IntMap.findWithDefault mempty y (definite cs)
-          hm = GHC.lookupWithDefaultUFM ne mempty yd 
-          as = HashMap.findWithDefault [] (x,xd) hm
-      in fmap (\as' -> cs { definite = IntMap.insert y (GHC.addToUFM ne yd (HashMap.insert (x,xd) as' hm)) (definite cs) }) (maintain as)
+          hm = GHC.lookupWithDefaultUFM ne mempty yd
+          as = HashMap.findWithDefault [] (x, xd) hm
+       in fmap (\as' -> cs {definite = IntMap.insert y (GHC.addToUFM ne yd (HashMap.insert (x, xd) as' hm)) (definite cs)}) (maintain as)
     (Con k _, Dom (Inj y yd)) ->
       let ne = IntMap.findWithDefault mempty y (indefinite cs)
-          hm = GHC.lookupWithDefaultUFM ne mempty yd 
+          hm = GHC.lookupWithDefaultUFM ne mempty yd
           as = HashMap.findWithDefault [] k hm
-      in fmap (\as' -> cs { indefinite = IntMap.insert y (GHC.addToUFM ne yd (HashMap.insert k as' hm)) (indefinite cs) }) (maintain as)
-    (_, Set _ _) -> 
-      fmap (\as' -> cs { goal = as' }) (maintain (goal cs))
+       in fmap (\as' -> cs {indefinite = IntMap.insert y (GHC.addToUFM ne yd (HashMap.insert k as' hm)) (indefinite cs)}) (maintain as)
+    (_, Set _ _) ->
+      fmap (\as' -> cs {goal = as'}) (maintain (goal cs))
     (_, _) -> Nothing -- Ignore constraints concerning base types
   where
-    maintain ds = 
+    maintain ds =
       if any (a `impliedBy`) ds then Nothing else Just (a : filter (not . (`impliedBy` a)) ds)
 insert' _ _ = Nothing
 
@@ -351,8 +365,7 @@ insert a cs = Maybe.fromMaybe cs (insert' a cs)
 guardWith :: Guard -> ConstraintSet -> ConstraintSet
 guardWith g cs =
   cs
-    { 
-      definite = IntMap.map (GHC.mapUFM (HashMap.map (List.map go))) (definite cs),
+    { definite = IntMap.map (GHC.mapUFM (HashMap.map (List.map go))) (definite cs),
       indefinite = IntMap.map (GHC.mapUFM (HashMap.map (List.map go))) (indefinite cs),
       goal = map go (goal cs)
     }
@@ -360,51 +373,53 @@ guardWith g cs =
     go a = a {guard = g <> guard a}
 
 saturate :: IS.IntSet -> ConstraintSet -> ConstraintSet
-saturate iface cs = 
-    if size ds <= size cs then ds else cs
+saturate iface cs =
+  if size ds <= size cs then ds else cs
   where
     dom = domain cs IS.\\ iface
     ds = State.execState (mapM_ saturateI $ IS.toList dom) cs
 
 saturateI :: Int -> State ConstraintSet ()
 saturateI i =
-  do  cs <- State.get -- dom is the domain of ds
-      let df = IntMap.lookup i $ definite cs
-      let nf = IntMap.lookup i $ indefinite cs
-      let rs = cs { definite = IntMap.delete i (definite cs), indefinite = IntMap.delete i (indefinite cs) }
-      let is = empty { definite = maybe mempty (IntMap.singleton i) df, indefinite = maybe mempty (IntMap.singleton i) nf }
-      let filterRec1 = 
-            GHC.filterUFM (not . null) . fmap (HashMap.filter (not . null)) . fmap (fmap $ List.filter (\a -> not $ IS.member i $ domain (left a) <> domain (guard a)))
-      let filterRec2 =
-            GHC.filterUFM (not . null) . fmap (HashMap.filter (not . null)) . fmap (fmap $ List.filter (\a -> not $ IS.member i $ domain (left a) <> domain (guard a)))
-      let ss = fixI (IS.singleton i) is is
-      -- Remove any recursive clauses since saturation completed
-      let ls = ss { definite = IntMap.adjust filterRec1 i (definite ss), indefinite = IntMap.adjust filterRec2 i (indefinite ss) }
-      let ds = fst $ RWS.execRWS (saturateF (IS.singleton i) ls rs) mempty mempty
-      let ds' = if debugging then trace ("[TRACE] SaturateI (#lhs: " ++ show (size ls) ++ ") (#rhs: " ++ show (size rs) ++ ") (#resolvants:" ++ show (size ds) ++ ")") ds else ds
-      State.put ds'
+  do
+    cs <- State.get -- dom is the domain of ds
+    let df = IntMap.lookup i $ definite cs
+    let nf = IntMap.lookup i $ indefinite cs
+    let rs = cs {definite = IntMap.delete i (definite cs), indefinite = IntMap.delete i (indefinite cs)}
+    let is = empty {definite = maybe mempty (IntMap.singleton i) df, indefinite = maybe mempty (IntMap.singleton i) nf}
+    let filterRec1 =
+          GHC.filterUFM (not . null) . fmap (HashMap.filter (not . null)) . fmap (fmap $ List.filter (\a -> not $ IS.member i $ domain (left a) <> domain (guard a)))
+    let filterRec2 =
+          GHC.filterUFM (not . null) . fmap (HashMap.filter (not . null)) . fmap (fmap $ List.filter (\a -> not $ IS.member i $ domain (left a) <> domain (guard a)))
+    let ss = fixI (IS.singleton i) is is
+    -- Remove any recursive clauses since saturation completed
+    let ls = ss {definite = IntMap.adjust filterRec1 i (definite ss), indefinite = IntMap.adjust filterRec2 i (indefinite ss)}
+    let ds = fst $ RWS.execRWS (saturateF (IS.singleton i) ls rs) mempty mempty
+    let ds' = if debugging then trace ("[TRACE] SaturateI (#lhs: " ++ show (size ls) ++ ") (#rhs: " ++ show (size rs) ++ ") (#resolvants:" ++ show (size ds) ++ ")") ds else ds
+    State.put ds'
 
 fixI :: IS.IntSet -> ConstraintSet -> ConstraintSet -> ConstraintSet
 fixI dom ls rs =
   case RWS.execRWS (saturateF dom ls rs) rs mempty of
-    (!cs', Any True)  -> fixI dom ls cs' -- New constraint have been found, i.e. not a fixedpoint
+    (!cs', Any True) -> fixI dom ls cs' -- New constraint have been found, i.e. not a fixedpoint
     (!cs', Any False) -> cs'
 
 -- One step consequence operator for saturation rules concerning a particular refinement variable
 saturateF :: IS.IntSet -> ConstraintSet -> ConstraintSet -> RWS ConstraintSet Any ConstraintSet ()
 saturateF dom ls rs =
-    mapAction resolveWith rs
+  mapAction resolveWith rs
   where
     addResolvant r = do
       es <- RWS.ask
       ds <- RWS.get
       case insert' r ds of
-        Just ds' -> 
-          do  RWS.put ds'
-              case insert' r es of
-                Nothing -> return ()
-                Just _  -> RWS.tell (Any True)
-        Nothing  -> return ()
+        Just ds' ->
+          do
+            RWS.put ds'
+            case insert' r es of
+              Nothing -> return ()
+              Just _ -> RWS.tell (Any True)
+        Nothing -> return ()
     resolveWith c = do
       let rss = resolve' dom ls c
       mapM_ addResolvant rss

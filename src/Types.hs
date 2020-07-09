@@ -48,7 +48,7 @@ instance Outputable d => Outputable (DataType d) where
 
 instance Binary d => Binary (DataType d) where
   put_ bh (Base d) = put_ bh False >> put_ bh d
-  put_ bh (Inj x d) = put_ bh True >> put_ bh x >> put_ bh d
+  put_ bh (Inj x d) =  put_ bh True >> put_ bh x >> put_ bh d
   get bh =
     get bh >>= \case
       False -> Base <$> get bh

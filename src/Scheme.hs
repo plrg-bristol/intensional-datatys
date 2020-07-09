@@ -52,11 +52,7 @@ instance Outputable d => Outputable (SchemeGen d) where
         | otherwise = hcat [forAllLit <+> fsep (ppr <$> I.toList (boundvs scheme)), dot]
 
 instance Binary d => Binary (SchemeGen d) where
-  put_ bh scheme =
-    put_ bh (tyvars scheme)
-      >> put_ bh (I.toList $ boundvs scheme)
-      >> put_ bh (body scheme)
-      >> put_ bh (constraints scheme)
+  put_ bh (Scheme as bs t cs) = put_ bh as >> put_ bh (I.toList bs) >> put_ bh t >> put_ bh cs
 
   get bh = Scheme <$> get bh <*> (I.fromList <$> get bh) <*> get bh <*> get bh
 

@@ -63,7 +63,7 @@ inferSubType t1 t2 =
                 )
                 (tyConDataCons d)
         let cds = concat dss
-        return (if null cds then ds else cds)
+        return (if null cds then (Inj x d, Inj y d') : ds else cds)
     inferSubTypeStep ds (t11 :=> t12) (t21 :=> t22) =
       do  ds1 <- inferSubTypeStep ds t21 t11 
           ds2 <- inferSubTypeStep ds t12 t22

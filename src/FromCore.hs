@@ -42,12 +42,12 @@ fromCoreCons k = do
 
 -- The argument types of an instantiated constructor
 consInstArgs :: RVar -> [Type] -> DataCon -> InferM [Type]
-consInstArgs x as k = fst . decompType <$> fromCoreInst (varType (dataConWorkId k))
+consInstArgs x as k = mapM fromCoreInst (dataConRepArgTys k)
   where
     fromCoreInst :: Tcr.Type -> InferM Type
     fromCoreInst (Tcr.TyVarTy a) =
       case lookup a (zip (dataConUnivTyVars k) as) of
-        Nothing -> pprPanic "Type arguments aren't fully instantiated!" (ppr a)
+        Nothing -> return (Var (getName a))
         Just t -> return t
     fromCoreInst (Tcr.AppTy a b) = App <$> (fromCoreInst a) <*> (fromCoreInst b)
     fromCoreInst (Tcr.TyConApp d as')

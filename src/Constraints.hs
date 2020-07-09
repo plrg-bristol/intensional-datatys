@@ -261,6 +261,15 @@ data ConstraintSet
       }
   deriving (Eq)
 
+setToList :: ConstraintSet -> [Atomic]
+setToList (ConstraintSet ds is g) =
+  concat (concatMap HashMap.elems (concatMap GHC.nameEnvElts (IntMap.elems ds)))
+    ++ concat (concatMap HashMap.elems (concatMap GHC.nameEnvElts (IntMap.elems is)))
+    ++ g
+
+listToSet :: [Atomic] -> ConstraintSet
+listToSet = foldr insert empty
+
 instance Semigroup ConstraintSet where
   cs <> ds = fold (flip insert) ds cs
 
@@ -271,18 +280,18 @@ instance GHC.Outputable ConstraintSet where
   ppr = fold (flip $ (GHC.$$) . GHC.ppr) GHC.empty
 
 instance Binary ConstraintSet where
-  put_ bh cs =
-    do
-      put_ bh (IntMap.toList $ fmap GHC.nameEnvElts $ fmap (fmap HashMap.toList) (definite cs))
-      put_ bh (IntMap.toList $ fmap GHC.nameEnvElts $ fmap (fmap HashMap.toList) (indefinite cs))
-      put_ bh (goal cs)
+  put_ bh = put_ bh . setToList
+    -- do
+    --   put_ bh (IntMap.toList $ fmap GHC.nameEnvElts $ fmap (fmap HashMap.toList) (definite cs))
+    --   put_ bh (IntMap.toList $ fmap GHC.nameEnvElts $ fmap (fmap HashMap.toList) (indefinite cs))
+    --   put_ bh (goal cs)
 
-  get bh =
-    do
-      df <- fmap (fmap HashMap.fromList) <$> (fmap GHC.mkNameEnv <$> (IntMap.fromList <$> Binary.get bh))
-      nf <- fmap (fmap HashMap.fromList) <$> (fmap GHC.mkNameEnv <$> (IntMap.fromList <$> Binary.get bh))
-      gl <- Binary.get bh
-      return (ConstraintSet df nf gl)
+  get bh = listToSet <$> get bh
+    -- do
+    --   df <- fmap (fmap HashMap.fromList) <$> (fmap GHC.mkNameEnv <$> (IntMap.fromList <$> Binary.get bh))
+    --   nf <- fmap (fmap HashMap.fromList) <$> (fmap GHC.mkNameEnv <$> (IntMap.fromList <$> Binary.get bh))
+    --   gl <- Binary.get bh
+    --   return (ConstraintSet df nf gl)
 
 instance Refined ConstraintSet where
   domain cs =

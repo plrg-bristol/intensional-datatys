@@ -114,7 +114,7 @@ inferGuts cmd guts@ModGuts {mg_deps = d, mg_module = m, mg_binds = p} = do
           (dep_mods d)
     t0 <- getCPUTime
     -- Infer constraints
-    let !gamma = runInferM (inferProg p) m env
+    let (!gamma, !stats) = runInferM (inferProg p) m env
     t1 <- getCPUTime
     if "time" `elem` cmd
       then do

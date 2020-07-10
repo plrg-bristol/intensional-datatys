@@ -52,6 +52,7 @@ library
       , hashable
       , aeson
       , directory
+      , filepath
   default-language: Haskell2010
 
 test-suite test

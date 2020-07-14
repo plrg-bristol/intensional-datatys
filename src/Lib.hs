@@ -30,6 +30,7 @@ import TcIface
 import TcRnMonad
 import ToIface
 import TyCoRep
+import Numeric
 import qualified System.FilePath as Path
 
 data Benchmark = Benchmark
@@ -174,9 +175,9 @@ showMark :: M.Map String Benchmark -> String
 showMark bm =
     unlines $ pre ++ titles : M.foldrWithKey (\k v ss -> entry k v : ss) post bm
   where
-    pre = ["\\begin{tabular}{|l|l|l|l|l|l|}", "\\hline"]
-    titles = concat $ List.intersperse " & " ["Name", "N", "K", "V", "D", "I"] ++ ["\\\\\\hline"]
-    entry n b = concat $ List.intersperse " & " [n, show $ bigN b, show $ bigK b, show $ bigV b, show $ bigD b, show $ bigI b] ++ ["\\\\\\hline"]
+    pre = ["\\begin{tabular}{|l|l|l|l|l|l|l|}", "\\hline"]
+    titles = concat $ List.intersperse " & " ["Name", "N", "K", "V", "D", "I", "Time (ms)"] ++ ["\\\\\\hline"]
+    entry n b = concat $ List.intersperse " & " [n, show $ bigN b, show $ bigK b, show $ bigV b, show $ bigD b, show $ bigI b, showFFloat (Just 2) (fromIntegral (avg b) / fromIntegral 1000000) ""] ++ ["\\\\\\hline"]
     post = ["\\end{tabular}"]
 
 putMark :: FilePath -> M.Map String Benchmark -> IO ()

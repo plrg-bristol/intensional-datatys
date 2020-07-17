@@ -35,6 +35,7 @@ import GhcPlugins hiding ((<>), singleton)
 import Scheme
 import Types
 import Ubiq
+import Guard
 
 type InferM = RWS InferEnv ConstraintSet InferState
 
@@ -161,14 +162,15 @@ isBranchReachable e k =
 
 -- Locally guard constraints
 branch :: DataCon -> DataType TyCon -> InferM a -> InferM a
-branch k d ma =
+branch _ (Base _)  ma = ma
+branch k (Inj x d) ma =
   do
-    b <- trivial (tyconOf d)
+    b <- trivial d
     -- If the datatype has only 1 constructor, there is no point
     if b then ma else local envUpdate ma
   where
     envUpdate env =
-      env {branchGuard = singleton (getName k) (fmap getName d) <> branchGuard env}
+      env {branchGuard = singleton [getName k] x (getName d) <> branchGuard env}
 
 -- Locally guard constraints and add expression to path
 branchWithExpr :: CoreExpr -> DataCon -> DataType TyCon -> InferM a -> InferM a

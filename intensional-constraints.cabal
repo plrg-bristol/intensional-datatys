@@ -28,6 +28,7 @@ library
       Types
       Constructors
       Constraints
+      Guard
       Scheme
       InferM
       FromCore

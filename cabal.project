@@ -4,5 +4,8 @@ profiling-detail:all-functions
 
 tests: True
 
+documentation: True
+haddock-internal: True
+
 package test
   optimization: False

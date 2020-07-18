@@ -12,13 +12,16 @@ module InferM
     branch,
     branchWithExpr,
     branchAny,
-    emit,
+    emitDD,
+    emitDK,
+    emitKD,
     fresh,
     putVar,
     putVars,
     setLoc,
     getExternalName,
-    trivial,
+    isTrivial,
+    isIneligible,
     noteD,
     noteK,
     incrN
@@ -127,12 +130,11 @@ saturate ma = pass $
           ds' = trace ("[TRACE] BEGIN saturate at " ++ spn ++ ": " ++ tmsg) ds
        in ds' `seq` trace ("[TRACE] END saturate at " ++ spn ++ " saturated size: " ++ (show $ size ds)) ds
 
--- Check if a core datatype has only one constructor or is otherwise ineligible
-trivial :: TyCon -> InferM Bool
-trivial tc =
-  do
-    m <- asks modName
-    return (not (homeOrBase m (getName tc)) || (<= 1) (length (tyConDataCons tc)))
+-- Check if a core datatype is ineligible for refinement
+isIneligible :: TyCon -> InferM Bool
+isIneligible tc =  
+  do  m <- asks modName
+      return (not (homeOrBase m (getName tc)) || null (tyConDataCons tc))
   where
     homeOrBase m n =
       nameIsHomePackage m n
@@ -143,6 +145,10 @@ trivial tc =
                    List.isPrefixOf "Prelude" (moduleNameString m)
                      || List.isPrefixOf "Data" (moduleNameString m)
            )
+
+isTrivial :: TyCon -> Bool
+isTrivial tc = (== 1) (length (tyConDataCons tc))
+
 
 -- Check if an expression has already been pattern matched
 topLevel :: CoreExpr -> InferM Bool
@@ -164,13 +170,13 @@ isBranchReachable e k =
 branch :: DataCon -> DataType TyCon -> InferM a -> InferM a
 branch _ (Base _)  ma = ma
 branch k (Inj x d) ma =
-  do
-    b <- trivial d
     -- If the datatype has only 1 constructor, there is no point
-    if b then ma else local envUpdate ma
+    if isTrivial d then ma else local envUpdate ma
   where
+    dn = getName d
+    kn = getName k
     envUpdate env =
-      env {branchGuard = singleton [getName k] x (getName d) <> branchGuard env}
+      env {branchGuard = singleton kn x dn <> branchGuard env}
 
 -- Locally guard constraints and add expression to path
 branchWithExpr :: CoreExpr -> DataCon -> DataType TyCon -> InferM a -> InferM a
@@ -205,6 +211,39 @@ emit k1 k2 = do
         )
         (toAtomic k1 k2)
     )
+
+emitDD :: DataType TyCon -> DataType TyCon -> InferM ()
+emitDD (Inj x d) (Inj y _) = 
+  do  unless (isTrivial d) $ 
+        do  l <- asks inferLoc
+            g <- asks branchGuard
+            tell (Constraints.fromList [Constraint (Dom (Inj x dn)) (Dom (Inj y dn)) g l])
+  where
+    dn = getName d
+emitDD _ _ = return ()
+
+emitKD :: DataCon -> SrcSpan -> DataType TyCon -> InferM ()
+emitKD k s (Inj x d) =
+  unless (isTrivial d) $ 
+    do  l <- asks inferLoc
+        g <- asks branchGuard
+        tell (Constraints.fromList [Constraint (Con kn s) (Dom (Inj x dn)) g l])
+  where
+    dn  = getName d
+    kn = getName k
+emitKD _ _ _ = return ()
+
+emitDK :: DataType TyCon -> [DataCon] -> SrcSpan -> InferM ()
+emitDK (Inj x d) ks s =
+  do  unless (isTrivial d) $ 
+        do  l <- asks inferLoc
+            g <- asks branchGuard
+            tell (Constraints.fromList [Constraint (Dom (Inj x dn)) (Set ksn s) g l])
+  where
+    dn  = getName d
+    ksn = mkUniqSet (map getName ks)
+emitDK _ _ _ = return ()
+
 
 -- A fresh refinement variable
 fresh :: InferM RVar

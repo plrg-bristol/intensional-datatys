@@ -51,7 +51,7 @@ inferSubType t1 t2 =
     inferSubTypeStep ds (Data (Inj x d) as) (Data (Inj y d') as')
       -- Escape from loop if constraints have already been discovered
       | (Inj x d, Inj y d') `notElem` ds = do
-        emit (Dom (Inj x (getName d))) (Dom (Inj y (getName d')))
+        emitDD (Inj x d) (Inj y d')
         noteK (length $ tyConDataCons d)
         dss <- mapM -- Traverse the slice of a datatype
                 ( \k ->
@@ -227,7 +227,7 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
           _ | (Inj x d) <- dt -> do
             -- Ensure destructor is total if not nested
             l <- asks inferLoc
-            emit (Dom (Inj x (getName d))) (Set (mkUniqSet (fmap getName ks)) l)
+            emitDK (Inj x d) ks l
           _ -> return ()
       _ -> 
         mapM_

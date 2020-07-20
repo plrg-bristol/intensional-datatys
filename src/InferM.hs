@@ -24,7 +24,8 @@ module InferM
     isIneligible,
     noteD,
     noteK,
-    incrN
+    incrN,
+    noteErrs,
   )
 where
 
@@ -32,7 +33,6 @@ import Constraints
 import Constructors
 import Control.Monad.RWS hiding (guard)
 import qualified Data.IntSet as IntSet
-import qualified Data.List as List
 import qualified Data.Map as M
 import GhcPlugins hiding ((<>), singleton)
 import Scheme
@@ -49,6 +49,7 @@ type Context = M.Map Name Scheme
 instance Refined Context where
   domain = foldMap domain
   rename x y = fmap (rename x y)
+  prpr m = foldr (($$) . prpr m) empty
 
 data InferEnv
   = InferEnv
@@ -65,11 +66,12 @@ data InferState =
           maxD :: Int,
           maxI :: Int,
           cntN :: Int,
-          rVar :: Int
+          rVar :: Int,
+          errs :: ConstraintSet
         }
 
 initState :: InferState
-initState = InferState 0 0 0 0 0
+initState = InferState 0 0 0 0 0 mempty
 
 noteK :: Int -> InferM ()
 noteK x = modify (\s -> s { maxK = max x (maxK s) })
@@ -86,6 +88,14 @@ incrV = modify (\s -> s { rVar = rVar s + 1 })
 incrN :: InferM ()
 incrN = modify (\s -> s { cntN = cntN s + 1 })
 
+{-|
+  Given a set of trivially unsatisfiable constraints @es@,
+  @noteErrs es@ is the action that records them
+  in the accumulating set in the inference state.
+-}
+noteErrs :: ConstraintSet -> InferM ()
+noteErrs es = modify (\s -> s { errs = es <> errs s })
+
 data Stats = 
         Stats {
           getK :: Int,
@@ -99,10 +109,10 @@ runInferM ::
   InferM a ->
   Module ->
   Context ->
-  (a, Stats)
+  (a, [Atomic], Stats)
 runInferM run mod_name init_env =
   let (a, s, _) = runRWS run (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Nowhere"))) initState
-  in (a, Stats (maxK s) (maxD s) (rVar s) (maxI s) (cntN s))
+  in (a, Constraints.toList (errs s), Stats (maxK s) (maxD s) (rVar s) (maxI s) (cntN s))
 
 -- Transitively remove local constraints
 saturate :: Refined a => InferM a -> InferM a
@@ -110,13 +120,14 @@ saturate ma = pass $
   do
     a <- ma
     env <- asks varEnv
+    m <- asks modName
     g <- asks branchGuard
-    src <- asks inferLoc -- this is actually only for debugging
+    src <- asks inferLoc
     let interface = domain a <> domain env <> domain g
     noteI (IntSet.size interface)
     let fn cs =
           let csSize = size cs
-              ds = Constraints.saturate interface cs
+              ds = Constraints.saturate (CInfo m src) interface cs
            in if debugging && csSize > 100 then debugBracket a env g src cs ds else ds
     return (a, fn)
   where
@@ -184,7 +195,7 @@ branch k (Inj x d) ma =
     dn = getName d
     kn = getName k
     envUpdate env =
-      env {branchGuard = singleton kn x dn <> branchGuard env}
+      env {branchGuard = singleton [kn] x dn <> branchGuard env}
 
 -- Locally guard constraints and add expression to path
 branchWithExpr :: CoreExpr -> DataCon -> DataType TyCon -> InferM a -> InferM a
@@ -199,33 +210,18 @@ branchWithExpr e k d =
 branchAny :: CoreExpr -> [DataCon] -> DataType TyCon -> InferM a -> InferM ()
 branchAny e ks d m = mapM_ (\k -> branchWithExpr e k d m) ks
 
--- Emit a (non-)atomic constriant with the current branch guard
-emit :: K l -> K r -> InferM ()
-emit k1 k2 = do
-  l <- asks inferLoc
-  g <- asks branchGuard
-  tell
-    ( foldMap
-        ( \(k1', k2') ->
-            insert
-              ( Constraint
-                  { left = k1',
-                    right = k2',
-                    guard = g,
-                    Constraints.srcSpan = l
-                  }
-              )
-              mempty
-        )
-        (toAtomic k1 k2)
-    )
+mkConFromCtx :: ConL -> ConR -> InferM Atomic
+mkConFromCtx l r =
+  do  m <- asks modName
+      s <- asks inferLoc
+      g <- asks branchGuard
+      return (Constraint l r g (CInfo m s))
 
 emitDD :: DataType TyCon -> DataType TyCon -> InferM ()
 emitDD (Inj x d) (Inj y _) = 
-  do  unless (isTrivial d) $ 
-        do  l <- asks inferLoc
-            g <- asks branchGuard
-            tell (Constraints.fromList [Constraint (Dom (Inj x dn)) (Dom (Inj y dn)) g l])
+  unless (isTrivial d) $ 
+    do  a <- mkConFromCtx (Dom (Inj x dn)) (Dom (Inj y dn))
+        tell (Constraints.fromList [a])
   where
     dn = getName d
 emitDD _ _ = return ()
@@ -233,9 +229,8 @@ emitDD _ _ = return ()
 emitKD :: DataCon -> SrcSpan -> DataType TyCon -> InferM ()
 emitKD k s (Inj x d) =
   unless (isTrivial d) $ 
-    do  l <- asks inferLoc
-        g <- asks branchGuard
-        tell (Constraints.fromList [Constraint (Con kn s) (Dom (Inj x dn)) g l])
+    do  a <- mkConFromCtx (Con kn s) (Dom (Inj x dn))
+        tell (Constraints.fromList [a])
   where
     dn  = getName d
     kn = getName k
@@ -243,10 +238,9 @@ emitKD _ _ _ = return ()
 
 emitDK :: DataType TyCon -> [DataCon] -> SrcSpan -> InferM ()
 emitDK (Inj x d) ks s =
-  do  unless (isTrivial d) $ 
-        do  l <- asks inferLoc
-            g <- asks branchGuard
-            tell (Constraints.fromList [Constraint (Dom (Inj x dn)) (Set ksn s) g l])
+  unless (isTrivial d) $ 
+    do  a <- mkConFromCtx (Dom (Inj x dn)) (Set ksn s)
+        tell (Constraints.fromList [a])
   where
     dn  = getName d
     ksn = mkUniqSet (map getName ks)

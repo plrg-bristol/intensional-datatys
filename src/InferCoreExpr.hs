@@ -6,7 +6,6 @@ module InferCoreExpr
 where
 
 import Ubiq
-import Constructors
 import Control.Monad.Extra
 import Control.Monad.RWS
 import CoreArity
@@ -93,8 +92,6 @@ associate r =
     doAssoc =
       do  when debugging $ traceM ("[TRACE] Begin inferring: " ++ bindingNames)
           env <- asks varEnv
-          -- The following ! ensures the constraints are processed immediately
-          -- which helps tracing make sense.
           (ctx, cs) <- listen $ inferRec r
           let satAction s = 
                 do  cs' <- snd <$> (listen $ saturate (do { tell cs; return s }))
@@ -104,6 +101,8 @@ associate r =
                         Scheme.constraints = cs'
                       }
           ctx' <- mapM satAction ctx
+          let es = M.foldl' (\ss sch -> Scheme.unsats sch <> ss) mempty ctx'
+          noteErrs es
           when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)  
           incrN      
           return ctx'

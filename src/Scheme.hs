@@ -6,13 +6,15 @@ module Scheme
     SchemeGen (..),
     pattern Forall,
     mono,
+    Scheme.unsats
   )
 where
 
 import Binary
 import Constraints
 import qualified Data.IntSet as I
-import GhcPlugins hiding ((<>))
+import qualified Data.IntMap as IntMap
+import GhcPlugins 
 import Types
 
 type Scheme = SchemeGen TyCon
@@ -36,28 +38,15 @@ pattern Forall as t <-
     Forall as t = Scheme as mempty t mempty
 
 instance Outputable d => Outputable (SchemeGen d) where
-  ppr scheme
-    | constraints scheme /= mempty =
-      hang
-        (hcat [pprTyQuant, pprConQuant, ppr (body scheme)])
-        2
-        (hang (text "where") 2 (ppr (constraints scheme)))
-    | otherwise = hcat [pprTyQuant, pprConQuant, ppr (body scheme)]
-    where
-      pprTyQuant
-        | null (tyvars scheme) = empty
-        | otherwise = hcat [forAllLit <+> fsep (map ppr $ tyvars scheme), dot]
-      pprConQuant
-        | I.null (boundvs scheme) = empty
-        | otherwise = hcat [forAllLit <+> fsep (ppr <$> I.toList (boundvs scheme)), dot]
+  ppr = prpr ppr
 
 instance Binary d => Binary (SchemeGen d) where
   put_ bh (Scheme as bs t cs) = put_ bh as >> put_ bh (I.toList bs) >> put_ bh t >> put_ bh cs
 
   get bh = Scheme <$> get bh <*> (I.fromList <$> get bh) <*> get bh <*> get bh
 
-instance Refined (SchemeGen d) where
-  domain s = (domain (body s) <> domain (constraints s)) I.\\ boundvs s
+instance Outputable d => Refined (SchemeGen d) where
+  domain s = (domain (body s) Prelude.<> domain (constraints s)) I.\\ boundvs s
 
   rename x y s
     | I.member x (boundvs s) = s
@@ -69,8 +58,35 @@ instance Refined (SchemeGen d) where
           body = rename x y (body s),
           constraints = rename x y (constraints s)
         }
+  
+  prpr _ scheme 
+    | constraints scheme /= mempty =
+      hang
+        (hcat [pprTyQuant, pprConQuant, prpr varMap (body scheme)])
+        2
+        (hang (text "where") 2 (prpr varMap (constraints scheme)))
+    | otherwise = hcat [pprTyQuant, pprConQuant, prpr varMap (body scheme)]
+    where
+      numVars = I.size (domain scheme)
+      varNames =
+        if numVars > 3 then [ char 'X' GhcPlugins.<> int n | n <- [1..numVars] ] else [ char c | c <- ['X', 'Y', 'Z'] ]
+      varMap = \x -> m IntMap.! x
+        where m = IntMap.fromList $ zip (I.toAscList (boundvs scheme)) varNames
+      pprTyQuant
+        | null (tyvars scheme) = empty
+        | otherwise = hcat [forAllLit <+> fsep (map ppr $ tyvars scheme), dot]
+      pprConQuant
+        | I.null (boundvs scheme) = empty
+        | otherwise = hcat [forAllLit <+> fsep (map varMap $ I.toList (boundvs scheme)), dot]
 
 -- Demand a monomorphic type
 mono :: SchemeGen d -> TypeGen d
 mono (Forall [] t) = t
 mono _ = Ambiguous
+
+{-|
+    Given a scheme @s@, @unsats s@ is the constraint set containing
+    just the trivially unsatisfiable constraints associated with @s@.
+-}
+unsats :: Scheme -> ConstraintSet
+unsats s = Constraints.unsats (constraints s)

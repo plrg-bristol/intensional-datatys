@@ -1,12 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
 
-module InferCoreExpr
+module Intensional.InferCoreExpr
   ( inferProg,
   )
 where
 
-import Ubiq
-import Constructors
+import Intensional.Ubiq
 import Control.Monad.Extra
 import Control.Monad.RWS
 import CoreArity
@@ -15,14 +14,14 @@ import Data.Bifunctor
 import qualified Data.IntSet as I
 import qualified Data.List as L
 import qualified Data.Map as M
-import FromCore
+import Intensional.FromCore
 import GhcPlugins hiding ((<>), Type)
-import InferM
+import Intensional.InferM
 import Pair
-import Scheme
-import Types
+import Intensional.Scheme as Scheme
+import Intensional.Types
 
-import qualified Constraints
+import qualified Intensional.Constraints as Constraints
 
 import Debug.Trace
 
@@ -40,7 +39,7 @@ inferSubType t1 t2 =
       do  -- Entering a slice
           ds <- inferSubTypeStep [] d1 d2
           -- See how big it was
-          noteD $ length (L.nub $ map (\(Inj _ d,_) -> d) ds)
+          noteD $ length (L.nub $ map (first tyconOf) ds)
     inferSubTypeStep' (t11 :=> t12) (t21 :=> t22) =
       inferSubTypeStep' t21 t11 >> inferSubTypeStep' t12 t22
     inferSubTypeStep' (Data (Base _) as) (Data (Base _) as') =
@@ -93,8 +92,6 @@ associate r =
     doAssoc =
       do  when debugging $ traceM ("[TRACE] Begin inferring: " ++ bindingNames)
           env <- asks varEnv
-          -- The following ! ensures the constraints are processed immediately
-          -- which helps tracing make sense.
           (ctx, cs) <- listen $ inferRec r
           let satAction s = 
                 do  cs' <- snd <$> (listen $ saturate (do { tell cs; return s }))
@@ -104,6 +101,8 @@ associate r =
                         Scheme.constraints = cs'
                       }
           ctx' <- mapM satAction ctx
+          let es = M.foldl' (\ss sch -> Scheme.unsats sch <> ss) mempty ctx'
+          noteErrs es
           when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)  
           incrN      
           return ctx'

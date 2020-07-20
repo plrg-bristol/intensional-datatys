@@ -1,4 +1,4 @@
-module Guard where
+module Intensional.Guard where
 
 import qualified GhcPlugins as GHC
 import Binary 
@@ -8,7 +8,8 @@ import qualified Data.Set as Set
 import qualified Data.IntSet as IntSet
 import qualified Data.IntMap as IntMap
 
-import Types
+import Intensional.Types
+import Intensional.Constructors
 
 -- data Named a = Named {toPair :: (GHC.Name, a)}
 --   deriving (Eq, Functor)
@@ -39,10 +40,10 @@ instance Monoid Guard where
   mempty = Guard mempty
 
 instance GHC.Outputable Guard where
-  ppr (Guard g) = GHC.pprWithCommas pprGuardAtom guardList
-    where
-    pprGuardAtom ((x,d), ks) = GHC.hsep [GHC.ppr ks, GHC.text "in", GHC.ppr (Inj x d)]
-    guardList = fmap (\(x,y) -> (x, GHC.nonDetEltsUniqSet y)) (Map.toList g)
+  ppr = prpr GHC.ppr
+
+isEmpty :: Guard -> Bool
+isEmpty (Guard g) = Map.null g
 
 toList :: Guard -> [(Int, GHC.Name, GHC.Name)]
 toList (Guard g) =
@@ -61,6 +62,11 @@ instance Refined Guard where
 
   rename x y (Guard g) =
     Guard (Map.foldrWithKey (\(z,d) ks m -> Map.insertWith GHC.unionUniqSets (if z == x then y else z, d) ks m) mempty g)
+
+  prpr m (Guard g) = GHC.pprWithCommas pprGuardAtom guardList
+    where
+    pprGuardAtom ((x,d), ks) = GHC.hsep [GHC.ppr ks, GHC.text "in", prpr m (Dom (Inj x d))]
+    guardList = fmap (\(x,y) -> (x, GHC.nonDetEltsUniqSet y)) (Map.toList g)
 
 lookup :: RVar -> GHC.Name -> Guard -> Maybe (GHC.UniqSet GHC.Name)
 lookup x d (Guard g) = Map.lookup (x,d) g

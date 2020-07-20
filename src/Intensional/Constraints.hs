@@ -10,13 +10,20 @@
 {-|
     Atomic constraints and sets of atomic constraints, represented as antichains.  Saturation and restriction. 
 -}
-module Constraints
+module Intensional.Constraints
   ( 
+    CInfo(..),
+    modInfo,
+    spanInfo,
     Atomic,
     Constraint (..),
     ConstraintSet,
     insert,
     guardWith,
+    toList,
+    fromList,
+    isTriviallyUnsat,
+    unsats,
     saturate,
     size,
   )
@@ -37,10 +44,34 @@ import qualified Data.Maybe as Maybe
 import qualified GhcPlugins as GHC
 import qualified Control.Monad as Monad
 
-import Types
-import Constructors
-import Guard (Guard)
-import qualified Guard
+import Intensional.Types
+import Intensional.Constructors
+import Intensional.Guard (Guard)
+import qualified Intensional.Guard as Guard
+
+{-| 
+    Type type of auxilliary information attached to 
+    constraints @c@:
+
+      * @prov c@ is the module in which the constraint was created
+      * @span c@ is the originating location of the rhs of the constraint
+    
+    INV: CInfo does not determine equality of constraints.
+-}
+data CInfo =
+  CInfo {
+    prov :: GHC.Module,
+    sspn :: GHC.SrcSpan
+  }
+  deriving (Eq, Ord)
+
+instance GHC.Outputable CInfo where
+  ppr (CInfo _ sp) = GHC.ppr sp
+
+instance Binary CInfo where
+  put_ bh (CInfo m sp) = put_ bh m >> put_ bh sp 
+  get bh = Monad.liftM2 CInfo (get bh) (get bh)
+    
 
 {-|
     The type of constraints @c@ of shape @guard c@ ? @left c@ ⊆ @right c@ that originated from the 
@@ -53,15 +84,15 @@ data Constraint l r
       { left :: K l,
         right :: K r,
         guard :: Guard,
-        srcSpan :: GHC.SrcSpan
+        cinfo :: CInfo
       }
 
 instance Eq (Constraint l r) where
-  -- Disregard location in comparison
+  -- Disregard info in comparison
   Constraint l r g _ == Constraint l' r' g' _ = l == l' && r == r' && g == g'
 
 instance GHC.Outputable (Constraint l r) where
-  ppr a = GHC.ppr (guard a) GHC.<+> GHC.char '?' GHC.<+> GHC.ppr (left a) GHC.<+> GHC.arrowt GHC.<+> GHC.ppr (right a)
+  ppr = prpr GHC.ppr
 
 instance (Binary (K l), Binary (K r)) => Binary (Constraint l r) where
   put_ bh (Constraint l r g ss) = put_ bh l >> put_ bh r >> put_ bh g >> put_ bh ss
@@ -75,6 +106,23 @@ instance Refined (Constraint l r) where
         right = rename x y (right c),
         guard = rename x y (guard c)
       }
+  prpr m a = prpr m (guard a) GHC.<+> GHC.char '?' GHC.<+> prpr m (left a) GHC.<+> GHC.text "<=" GHC.<+> prpr m (right a)
+
+modInfo :: Atomic -> GHC.Module
+modInfo = prov . cinfo
+
+spanInfo :: Atomic -> GHC.SrcSpan
+spanInfo = sspn . cinfo
+
+{-|
+    Given an atomic constraint @a@, @isTriviallyUnsat a@ just if @a@ is of the form G ? k in {}.
+-}
+isTriviallyUnsat :: Atomic -> Bool
+isTriviallyUnsat a =
+    case (Guard.isEmpty (guard a), left a, right a) of
+      (True, Con _ _, Set ks _) | GHC.isEmptyUniqSet ks -> True
+      (_,    _,       _       )                         -> False
+  
 
 {-|
     Given two atomic constraints @a@ and @b@, @a `impliedBy` b@ just
@@ -107,13 +155,14 @@ tautology a =
 
 
 {-|
-    Given atomic constraints @a@ and @b@, @resolve a b@ is:
+    When @m@ is the current module:
+    Given atomic constraints @a@ and @b@, @resolve m a b@ is:
 
       * @Nothing@ if the resolvant of @a@ and @b@ is a tautology
       * @Just r@ otherwise, where @r@ is the resolvant as an atomic constraint
 -}
-resolve :: Atomic -> Atomic -> Maybe Atomic
-resolve l r =
+resolve :: CInfo -> Atomic -> Atomic -> Maybe Atomic
+resolve ci l r =
     -- simplify the the new constraint if it's body contains two literals
     case (left newR, right newR) of
       (Con k _, Set ks _) | GHC.elementOfUniqSet k ks -> Nothing
@@ -146,9 +195,9 @@ resolve l r =
     newR = 
       -- determine whether or not to attach a single copy of l's guards
       case (mbNewGuard, mbNewLeft) of
-      (Just grd, Just lft) -> r { left = lft, guard = guard l <> grd }
-      (Just grd, Nothing ) -> r { guard = guard l <> grd }
-      (Nothing,  Just lft) -> r { left = lft, guard = guard l <> guard r }
+      (Just grd, Just lft) -> r { left = lft, guard = guard l <> grd, cinfo = ci }
+      (Just grd, Nothing ) -> r { guard = guard l <> grd, cinfo = ci }
+      (Nothing,  Just lft) -> r { left = lft, guard = guard l <> guard r, cinfo = ci }
       (Nothing,  Nothing ) -> r
       
 -- We only use ConstraintSetF with Atomic so far, but it is worth making
@@ -189,7 +238,7 @@ instance Monoid ConstraintSet where
   mempty = empty
 
 instance GHC.Outputable ConstraintSet where
-  ppr = foldr ((GHC.$$) . GHC.ppr) GHC.empty
+  ppr = prpr GHC.ppr
 
 instance Binary ConstraintSet where
   put_ bh = put_ bh . toList
@@ -199,6 +248,7 @@ instance Refined ConstraintSet where
   domain = foldMap domain
   rename x y = -- this may create non-normalised constraint sets
     foldl' (\ds a -> unsafeInsert (rename x y a) ds) empty
+  prpr m = foldr ((GHC.$$) . prpr m) GHC.empty
 
 
 {-|
@@ -212,6 +262,14 @@ empty =
       definiteKV = mempty,
       goal = []
     }
+
+{-|
+    Given a constraint set @cs@, @unsats cs@ is the constraint set 
+    consisting of just those trivially unsatisfiable constraints in @cs@.
+-}
+unsats :: ConstraintSet -> ConstraintSet
+unsats cs = 
+  mempty { goal = filter isTriviallyUnsat (goal cs) }
 
 {-| 
     When @cs@ is a constraint set, @size cs@ is its cardinality.
@@ -295,44 +353,45 @@ guardWith g cs =
     go a = a {guard = g <> guard a}
 
 {-|
-    When @iface@ is a set of interface variables and @cs@ is a constraint set, 
-    @saturate iface cs@ is the constraint set obtained from @cs@ by saturation
-    and restriction to @iface@.
+    When @iface@ is a set of interface variables and @ci@ is the current ctx 
+    and @cs@ is a constraint set, @saturate ci iface cs@ is the constraint set 
+    obtained from @cs@ by saturation and restriction to @iface@.
 -}
-saturate :: IntSet -> ConstraintSet -> ConstraintSet
-saturate iface cs  = 
+saturate :: CInfo -> IntSet -> ConstraintSet -> ConstraintSet
+saturate ci iface cs  = 
     es
   where
     allExt xs = xs `IntSet.isSubsetOf` iface
     ls = foldl' (\ms c -> if allExt (domain (left c) <> domain (guard c)) then unsafeInsert c ms else ms) mempty cs
-    ds = snd $ State.execState (fix iface) (ls, cs)
+    ds = snd $ State.execState (fix ci iface) (ls, cs)
     es = foldl' (\fs a -> if allExt $ domain a then unsafeInsert a fs else fs) mempty ds
 
 {-| 
-    When @exts@ is the set of interface variables @fix exts@ is the
-    stateful computation that transforms an initial state @(ls, rs)@
-    where @ls@ are all unit constraints modulo @exts@ and @ls@ is contained
-    in @rs@, into a final state @(ls', rs')@ in which @ls@ is empty and
-    @rs'@ is the saturation of @rs@.
+    When @exts@ is the set of interface variables and @ci@ is the current 
+    ctx @fix ci exts@ is the stateful computation that transforms an 
+    initial state @(ls, rs)@ where @ls@ are all unit constraints modulo 
+    @exts@ and @ls@ is contained in @rs@, into a final state @(ls', rs')@ 
+    in which @ls@ is empty and @rs'@ is the saturation of @rs@.
 -}
-fix :: IntSet -> State (ConstraintSet, ConstraintSet) ()
-fix exts =
+fix :: CInfo -> IntSet -> State (ConstraintSet, ConstraintSet) ()
+fix ci exts =
   do  (ls, _) <- State.get
-      Monad.unless (null ls) $ saturate1 exts >> fix exts
+      Monad.unless (null ls) $ saturate1 ci exts >> fix ci exts
 
 {-| 
-     When @exts@ is a set of interface variables @saturate1 exts@ is the 
-     stateful computation that takes an initial state @(ls, rs)@ consisting
-     of a pair of constraint sets with @ls@ being unit clauses modulo `exts`
-     and @ls@ being contained in @rs@ to a final state @(ls', rs')@ in which:
+     When @exts@ is a set of interface variables and @ci@ is the current ctx
+     @saturate1 ci exts@ is the stateful computation that takes an initial state 
+     @(ls, rs)@ consisting of a pair of constraint sets with @ls@ being unit 
+     clauses modulo `exts` and @ls@ being contained in @rs@ to a final state 
+     @(ls', rs')@ in which:
 
        *  @ls'@ is those constraints in @rs'@ that are not in @rs@ and which 
           are unit modulo @exts@.
        *  @rs'@ contains all the constraints obtained from @rs@ by resolving 
           on the left with each clauses from @ls@ once.
 -}
-saturate1 :: IntSet -> State (ConstraintSet, ConstraintSet) ()
-saturate1 exts =
+saturate1 :: CInfo -> IntSet -> State (ConstraintSet, ConstraintSet) ()
+saturate1 ci exts =
     do  (ls, rs) <- State.get
         State.put (mempty, rs)
         Monad.forM_ ls $ \l ->
@@ -341,7 +400,7 @@ saturate1 exts =
               -- same right constraint
               rs' <- State.gets snd
               Monad.forM_ rs' $ \r -> 
-                  addResolvant (resolve l r)
+                  addResolvant (resolve ci l r)
   where
     addResolvant Nothing  = return ()
     addResolvant (Just r) =

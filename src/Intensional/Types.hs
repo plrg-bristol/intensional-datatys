@@ -2,7 +2,7 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Types
+module Intensional.Types
   ( RVar,
     Domain,
     Refined (..),
@@ -32,6 +32,7 @@ type Domain = I.IntSet
 class Refined t where
   domain :: t -> Domain
   rename :: RVar -> RVar -> t -> t
+  prpr   :: (RVar -> SDoc) -> t -> SDoc
 
 -- A datatype identifier
 -- d is TyCon, IfaceTyCon or Name
@@ -43,8 +44,7 @@ data DataType d
 instance Hashable d => Hashable (DataType d)
 
 instance Outputable d => Outputable (DataType d) where
-  ppr (Base d) = ppr d
-  ppr (Inj x d) = hcat [text "inj_", ppr x] <+> ppr d
+  ppr = prpr ppr 
 
 instance Binary d => Binary (DataType d) where
   put_ bh (Base d) = put_ bh False >> put_ bh d
@@ -54,13 +54,16 @@ instance Binary d => Binary (DataType d) where
       False -> Base <$> get bh
       True -> Inj <$> get bh <*> get bh
 
-instance Refined (DataType d) where
+instance Outputable d => Refined (DataType d) where
   domain (Base _) = I.empty
   domain (Inj x _) = I.singleton x
 
   rename x y (Inj z d)
     | x == z = Inj y d
   rename _ _ d = d
+
+  prpr _ (Base d) = ppr d
+  prpr m (Inj x d) = hcat [text "inj_", m x] <+> ppr d
 
 -- Check if a core datatype contains covariant arguments
 -- covariant :: TyCon -> Bool
@@ -95,16 +98,8 @@ data TypeGen d
 
 -- Clone of a Outputable Core.Type
 instance Outputable d => Outputable (TypeGen d) where
-  ppr = pprTy topPrec
-    where
-      pprTy :: Outputable d => PprPrec -> TypeGen d -> SDoc
-      pprTy _ (Var a) = ppr a
-      pprTy prec (App t1 t2) = hang (pprTy prec t1) 2 (pprTy appPrec t2)
-      pprTy _ (Data d as) = hang (ppr d) 2 $ sep [hcat [text "@", pprTy appPrec a] | a <- as]
-      pprTy prec (t1 :=> t2) = maybeParen prec funPrec $ sep [pprTy funPrec t1, arrow, pprTy prec t2]
-      pprTy _ (Lit l) = ppr l
-      pprTy _ Ambiguous = text "<?>"
-
+  ppr = prpr ppr
+      
 instance Binary d => Binary (TypeGen d) where
   put_ bh (Var a) = put_ bh (0 :: Int) >> put_ bh a
   put_ bh (App a b) = put_ bh (1 :: Int) >> put_ bh a >> put_ bh b
@@ -124,7 +119,7 @@ instance Binary d => Binary (TypeGen d) where
       5 -> return Ambiguous
       _ -> pprPanic "Invalid binary file!" $ ppr n
 
-instance Refined (TypeGen d) where
+instance Outputable d => Refined (TypeGen d) where
   domain (App a b) = domain a <> domain b
   domain (Data d as) = domain d <> foldMap domain as
   domain (a :=> b) = domain a <> domain b
@@ -134,6 +129,16 @@ instance Refined (TypeGen d) where
   rename x y (Data d as) = Data (rename x y d) (rename x y <$> as)
   rename x y (a :=> b) = rename x y a :=> rename x y b
   rename _ _ t = t
+
+  prpr m = pprTy topPrec
+    where
+      pprTy :: Outputable d => PprPrec -> TypeGen d -> SDoc
+      pprTy _ (Var a) = ppr a
+      pprTy prec (App t1 t2) = hang (pprTy prec t1) 2 (pprTy appPrec t2)
+      pprTy _ (Data d as) = hang (prpr m d) 2 $ sep [hcat [text "@", pprTy appPrec a] | a <- as]
+      pprTy prec (t1 :=> t2) = maybeParen prec funPrec $ sep [pprTy funPrec t1, arrow, pprTy prec t2]
+      pprTy _ (Lit l) = ppr l
+      pprTy _ Ambiguous = text "<?>"
 
 -- Inject a sort into a refinement environment
 -- inj :: Int -> TypeGen d -> TypeGen d

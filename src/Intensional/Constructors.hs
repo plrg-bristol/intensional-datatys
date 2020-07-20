@@ -4,17 +4,25 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Constructors
+-- The Hashable instances for Unique and Name are orphans
+-- but should eventually be removed when hashtables are
+-- replaced in the ConstraintSet representation.
+{-# OPTIONS_GHC -Wno-orphans #-} 
+
+module Intensional.Constructors
   ( Side (..),
     K (..),
+    ConL,
+    ConR,
     toAtomic,
+    getLocation
   )
 where
 
 import Binary
 import Data.Hashable
 import GhcPlugins hiding (L)
-import Types
+import Intensional.Types
 import Unique
 
 instance Hashable Unique where
@@ -26,16 +34,25 @@ instance Hashable Name where
 data Side = L | R
 
 -- A constructor set with a location tag
+-- We include the srcSpan as part of the
+-- identity so that multiple errors with 
+-- the same constructor in different program
+-- locations are treated seperately.
 data K (s :: Side) where
   Dom :: DataType Name -> K s
   Con :: Name -> SrcSpan -> K 'L
   Set :: UniqSet Name -> SrcSpan -> K 'R
 
--- Disregard location in comparison
+type ConL = K 'L
+type ConR = K 'R
+
+-- Don't disregard location in comparison
+-- i.e. distinguish between different sources
+-- and sinks
 instance Eq (K s) where
   Dom d == Dom d' = d == d'
-  Con k _ == Con k' _ = k == k'
-  Set s _ == Set s' _ = s == s'
+  Con k l == Con k' l' = k == k' && l == l'
+  Set s l == Set s' l' = s == s' && l == l'
   _ == _ = False
 
 instance Hashable (K s) where
@@ -44,9 +61,7 @@ instance Hashable (K s) where
   hashWithSalt s (Set ks _) = hashWithSalt s (nonDetKeysUniqSet ks)
 
 instance Outputable (K s) where
-  ppr (Dom d) = ppr d
-  ppr (Con k _) = ppr k
-  ppr (Set ks _) = hcat [char '{', pprWithBars ppr (nonDetEltsUniqSet ks), char '}']
+  ppr = prpr ppr
 
 instance Binary (K 'L) where
   put_ bh (Dom d) = put_ bh False >> put_ bh d
@@ -75,6 +90,20 @@ instance Refined (K l) where
 
   rename x y (Dom d) = Dom (rename x y d)
   rename _ _ s = s
+
+  prpr m (Dom (Inj x d)) = m x GhcPlugins.<> parens (ppr d)
+  prpr _ (Dom (Base _))  = error "Base in constraint."
+  prpr _ (Con k _) = ppr k
+  prpr _ (Set ks _) = hcat [char '{', pprWithBars ppr (nonDetEltsUniqSet ks), char '}']
+
+{-|
+    Assuming @k@ is either a @Con@ or @Set@ atom, 
+    @getLocation k@ is the associated span.
+-}
+getLocation :: K a -> SrcSpan 
+getLocation (Con _ s) = s
+getLocation (Set _ s) = s
+getLocation _         = error "Dom constructors have no location."
 
 -- Convert constraint to atomic form
 toAtomic :: K l -> K r -> [(K 'L, K 'R)]

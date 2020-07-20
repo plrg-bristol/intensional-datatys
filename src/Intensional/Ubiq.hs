@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 
-module Ubiq where
+module Intensional.Ubiq where
 
 import qualified GhcPlugins as GHC
 

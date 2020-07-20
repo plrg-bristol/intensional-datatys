@@ -1,4 +1,4 @@
-module PaperExamples where
+module Main where
 
 import qualified Data.List as List
 
@@ -68,5 +68,8 @@ nnf' (Lit (NegAtom x)) = Lit (NegAtom x)
 
 dnf' = nnf2dnf . nnf'
 
-willCrash = dnf' (And (Lit (Atom 1)) (Lit (Atom 2)))
-willNotCrash = dnf' (Imp (Lit (Atom 1)) (Lit (Atom 2)))
+willNotCrash = dnf' (And (Lit (Atom 1)) (Lit (Atom 2)))
+willCrash = dnf' (Imp (Lit (Atom 1)) (Lit (Atom 2)))
+
+main :: IO ()
+main = return ()

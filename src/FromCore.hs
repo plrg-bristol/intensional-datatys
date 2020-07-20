@@ -34,10 +34,10 @@ fromCoreCons :: DataCon -> InferM Scheme
 fromCoreCons k = do
   x <- fresh
   let d = dataConTyCon k
-  b <- trivial d
+  b <- isIneligible d
   unless b $ do
     l <- asks inferLoc
-    emit (Con (getName k) l) (Dom (Inj x (getName d)))
+    emitKD k l (Inj x d)
   fromCoreScheme (Just x) (dataConUserType k)
 
 -- The argument types of an instantiated constructor
@@ -56,7 +56,7 @@ consInstArgs x as k = mapM fromCoreInst (dataConRepArgTys k)
         fromCoreInst (substTy (extendTvSubstList emptySubst (zip as'' as')) s) -- Instantiate type synonym arguments
       | isClassTyCon d = return Ambiguous -- Disregard type class evidence
       | otherwise =
-          do  b <- trivial d
+          do  b <- isIneligible d
               if b then Data (Base d) <$> (mapM fromCoreInst as') 
                    else Data (Inj x d) <$> (mapM fromCoreInst as')
     fromCoreInst (Tcr.FunTy a b) = (:=>) <$> fromCoreInst a <*> fromCoreInst b
@@ -74,13 +74,13 @@ fromCore f (Tcr.TyConApp d as)
   | isClassTyCon d = return Ambiguous -- Disregard type class evidence
 fromCore Nothing (Tcr.TyConApp d as) = do
   x <- fresh
-  b <- trivial d
+  b <- isIneligible d
   if b then
     Data (Base d) <$> mapM (fromCore Nothing) as
   else
     Data (Inj x d) <$> mapM (fromCore Nothing) as
 fromCore (Just x) (Tcr.TyConApp d as) = do
-  b <- trivial d
+  b <- isIneligible d
   if b then
     Data (Base d) <$> mapM (fromCore (Just x)) as
   else
@@ -128,6 +128,6 @@ getVar v =
 maximise :: Bool -> Type -> InferM ()
 maximise True (Data (Inj x d) _) = do
   l <- asks inferLoc
-  mapM_ (\k -> emit (Con (getName k) l) (Dom (Inj x (getName d)))) $ tyConDataCons d
+  mapM_ (\k -> emitKD k l (Inj x d)) $ tyConDataCons d
 maximise b (x :=> y) = maximise (not b) x >> maximise b y
 maximise _ _ = return ()

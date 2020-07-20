@@ -1,12 +1,12 @@
 {-# LANGUAGE FlexibleInstances #-}
 
-module InferM
+module Intensional.InferM
   ( InferM,
     Context,
     InferEnv (..),
     Stats (..),
     runInferM,
-    InferM.saturate,
+    Intensional.InferM.saturate,
     topLevel,
     isBranchReachable,
     branch,
@@ -29,16 +29,16 @@ module InferM
   )
 where
 
-import Constraints
-import Constructors
+import Intensional.Constraints as Constraints
+import Intensional.Constructors
 import Control.Monad.RWS hiding (guard)
 import qualified Data.IntSet as IntSet
 import qualified Data.Map as M
 import GhcPlugins hiding ((<>), singleton)
-import Scheme
-import Types
-import Ubiq
-import Guard
+import Intensional.Scheme
+import Intensional.Types
+import Intensional.Ubiq
+import Intensional.Guard
 
 type InferM = RWS InferEnv ConstraintSet InferState
 

@@ -1,21 +1,21 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module Scheme
+module Intensional.Scheme
   ( Scheme,
     SchemeGen (..),
     pattern Forall,
     mono,
-    Scheme.unsats
+    Intensional.Scheme.unsats
   )
 where
 
 import Binary
-import Constraints
+import Intensional.Constraints as Constraints
 import qualified Data.IntSet as I
 import qualified Data.IntMap as IntMap
 import GhcPlugins 
-import Types
+import Intensional.Types
 
 type Scheme = SchemeGen TyCon
 

@@ -2,7 +2,7 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Types
+module Intensional.Types
   ( RVar,
     Domain,
     Refined (..),

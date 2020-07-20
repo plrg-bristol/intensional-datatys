@@ -1,4 +1,4 @@
-module Guard where
+module Intensional.Guard where
 
 import qualified GhcPlugins as GHC
 import Binary 
@@ -8,8 +8,8 @@ import qualified Data.Set as Set
 import qualified Data.IntSet as IntSet
 import qualified Data.IntMap as IntMap
 
-import Types
-import Constructors
+import Intensional.Types
+import Intensional.Constructors
 
 -- data Named a = Named {toPair :: (GHC.Name, a)}
 --   deriving (Eq, Functor)

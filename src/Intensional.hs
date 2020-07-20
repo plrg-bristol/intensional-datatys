@@ -3,13 +3,13 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Lib (plugin, Benchmark(..)) where
+module Intensional (plugin, Benchmark(..)) where
 
 import BinIface
 import Binary
-import Constructors
-import Constraints
-import Types
+import Intensional.Constructors
+import Intensional.Constraints
+import Intensional.Types
 import Control.Monad
 import Data.Aeson
 import qualified Data.Map as Map
@@ -17,8 +17,8 @@ import qualified Data.List as List
 import GhcPlugins
 import IfaceEnv
 import IfaceSyn
-import InferCoreExpr
-import InferM
+import Intensional.InferCoreExpr
+import Intensional.InferM
 import System.CPUTime
 import System.Directory
 import TcIface
@@ -164,7 +164,7 @@ showTypeError a =
     topLine = 
       (ppr $ spanInfo a) GhcPlugins.<> colon 
       <+> coloured (sWarning defaultScheme) (text "warning:")
-      <+> lbrack GhcPlugins.<> coloured (sWarning defaultScheme) (text "Intensional Datatypes") GhcPlugins.<> rbrack
+      <+> lbrack GhcPlugins.<> coloured (sWarning defaultScheme) (text "Intensional") GhcPlugins.<> rbrack
     msgLine1 = 
       text "Could not verify that" <+> quotes (ppr $ left a) 
         <+> text "from" 

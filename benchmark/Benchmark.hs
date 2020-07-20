@@ -13,7 +13,7 @@ import GHC.Generics (Generic)
 import qualified GHC.Generics as Generics
 import Numeric (showFFloat)
 
-import Lib
+import Intensional
 
 emptyMark :: Benchmark
 emptyMark = Benchmark [] 0 0 0 0 0 0

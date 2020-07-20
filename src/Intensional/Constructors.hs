@@ -4,7 +4,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Constructors
+module Intensional.Constructors
   ( Side (..),
     K (..),
     ConL,
@@ -17,7 +17,7 @@ where
 import Binary
 import Data.Hashable
 import GhcPlugins hiding (L)
-import Types
+import Intensional.Types
 import Unique
 
 instance Hashable Unique where

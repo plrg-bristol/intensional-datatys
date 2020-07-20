@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 
-module FromCore
+module Intensional.FromCore
   ( freshCoreType,
     freshCoreScheme,
     fromCoreCons,
@@ -9,17 +9,17 @@ module FromCore
   )
 where
 
-import Constraints
-import Constructors
+import Intensional.Constraints
+import Intensional.Constructors
 import Control.Monad.RWS
 import qualified Data.IntSet as I
 import qualified Data.Map as M
 import GhcPlugins hiding ((<>), Expr (..), Type)
-import InferM
-import Scheme
+import Intensional.InferM
+import Intensional.Scheme as Scheme
 import ToIface
 import qualified TyCoRep as Tcr
-import Types
+import Intensional.Types
 
 -- A fresh monomorphic type
 freshCoreType :: Tcr.Type -> InferM Type

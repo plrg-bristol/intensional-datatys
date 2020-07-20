@@ -1,11 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
 
-module InferCoreExpr
+module Intensional.InferCoreExpr
   ( inferProg,
   )
 where
 
-import Ubiq
+import Intensional.Ubiq
 import Control.Monad.Extra
 import Control.Monad.RWS
 import CoreArity
@@ -14,14 +14,14 @@ import Data.Bifunctor
 import qualified Data.IntSet as I
 import qualified Data.List as L
 import qualified Data.Map as M
-import FromCore
+import Intensional.FromCore
 import GhcPlugins hiding ((<>), Type)
-import InferM
+import Intensional.InferM
 import Pair
-import Scheme
-import Types
+import Intensional.Scheme as Scheme
+import Intensional.Types
 
-import qualified Constraints
+import qualified Intensional.Constraints as Constraints
 
 import Debug.Trace
 

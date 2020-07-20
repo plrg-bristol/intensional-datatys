@@ -10,7 +10,7 @@
 {-|
     Atomic constraints and sets of atomic constraints, represented as antichains.  Saturation and restriction. 
 -}
-module Constraints
+module Intensional.Constraints
   ( 
     CInfo(..),
     modInfo,
@@ -44,10 +44,10 @@ import qualified Data.Maybe as Maybe
 import qualified GhcPlugins as GHC
 import qualified Control.Monad as Monad
 
-import Types
-import Constructors
-import Guard (Guard)
-import qualified Guard
+import Intensional.Types
+import Intensional.Constructors
+import Intensional.Guard (Guard)
+import qualified Intensional.Guard as Guard
 
 {-| 
     Type type of auxilliary information attached to 

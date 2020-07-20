@@ -10,7 +10,6 @@ module Intensional.FromCore
 where
 
 import Intensional.Constraints
-import Intensional.Constructors
 import Control.Monad.RWS
 import qualified Data.IntSet as I
 import qualified Data.Map as M

@@ -1,10 +1,9 @@
 packages:.
-profiling:true
-profiling-detail:all-functions
+profiling: False
+profiling-detail: all-functions
 
 tests: True
 
-documentation: True
 haddock-internal: True
 
 package test

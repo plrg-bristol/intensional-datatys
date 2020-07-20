@@ -4,6 +4,11 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 
+-- The Hashable instances for Unique and Name are orphans
+-- but should eventually be removed when hashtables are
+-- replaced in the ConstraintSet representation.
+{-# OPTIONS_GHC -Wno-orphans #-} 
+
 module Intensional.Constructors
   ( Side (..),
     K (..),

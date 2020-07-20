@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS_GHC -Wno-orphans #-} -- The Refined Instance for Context is an orphan
 
 module Intensional.InferM
   ( InferM,

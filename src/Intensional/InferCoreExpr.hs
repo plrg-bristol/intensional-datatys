@@ -39,7 +39,7 @@ inferSubType t1 t2 =
       do  -- Entering a slice
           ds <- inferSubTypeStep [] d1 d2
           -- See how big it was
-          noteD $ length (L.nub $ map (\(Inj _ d,_) -> d) ds)
+          noteD $ length (L.nub $ map (first tyconOf) ds)
     inferSubTypeStep' (t11 :=> t12) (t21 :=> t22) =
       inferSubTypeStep' t21 t11 >> inferSubTypeStep' t12 t22
     inferSubTypeStep' (Data (Base _) as) (Data (Base _) as') =

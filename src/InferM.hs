@@ -136,15 +136,23 @@ isIneligible tc =
   do  m <- asks modName
       return (not (homeOrBase m (getName tc)) || null (tyConDataCons tc))
   where
+    strName = occNameString (getOccName tc)
     homeOrBase m n =
-      nameIsHomePackage m n
-        || ( nameIsFromExternalPackage baseUnitId n
-               && case nameModule_maybe n of
-                 Nothing -> False
-                 Just (Module _ m) ->
-                   List.isPrefixOf "Prelude" (moduleNameString m)
-                     || List.isPrefixOf "Data" (moduleNameString m)
-           )
+      nameIsHomePackage m n 
+      || strName == "Bool"
+      || strName == "Maybe"
+        -- Previously we tried to include as much of base as possible by asking for specific modules
+        -- but this is a little too coarse grain (e.g. GHC.Types will include Bool, but also Int):
+        --
+        -- vc|| ( not (nameIsFromExternalPackage baseUnitId n && nameIsFromExternalPackage primUnitId n)
+        --        && case nameModule_maybe n of
+        --          Nothing -> False
+        --          Just (Module _ m) ->
+        --            List.isPrefixOf "Prelude" (moduleNameString m)
+        --              || List.isPrefixOf "Data" (moduleNameString m)
+        --              || List.isPrefixOf "GHC.Base" (moduleNameString m)
+        --              || List.isPrefixOf "GHC.Types" (moduleNameString m)
+        --    )
 
 isTrivial :: TyCon -> Bool
 isTrivial tc = (== 1) (length (tyConDataCons tc))

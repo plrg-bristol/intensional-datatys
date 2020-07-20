@@ -3,10 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Lib
-  ( plugin,
-  )
-where
+module Lib (plugin, Benchmark(..)) where
 
 import BinIface
 import Binary
@@ -33,16 +30,17 @@ import TyCoRep
 import Numeric
 import qualified System.FilePath as Path
 
-data Benchmark = Benchmark
-  { times :: [Integer],
-    avg :: Integer,
-    bigN :: Int,
-    bigK :: Int,
-    bigD :: Int,
-    bigV :: Int,
-    bigI :: Int
-  }
-  deriving (Gen.Generic)
+data Benchmark = 
+  Benchmark { 
+      times :: [Integer],
+      avg :: Integer,
+      bigN :: Int,
+      bigK :: Int,
+      bigD :: Int,
+      bigV :: Int,
+      bigI :: Int
+    }
+  deriving (Generic)
 
 updateAverage :: Benchmark -> Benchmark
 updateAverage b = b {avg = sum (times b) `div` toInteger (length (times b))}
@@ -154,52 +152,4 @@ tcIfaceTyCon iftc = do
     Type (TyConApp tc _) -> return tc
     _ -> pprPanic "TyCon has been corrupted!" (ppr e)
 
-emptyMark :: Benchmark
-emptyMark = Benchmark [] 0 0 0 0 0 0
-
-plusMark :: Benchmark -> Benchmark -> Benchmark
-b `plusMark` c =
-  b {
-    avg = avg b + avg c,
-    bigN = bigN b + bigN c,
-    bigK = max (bigK b) (bigK c),
-    bigD = max (bigD b) (bigD c),
-    bigV = bigV b + bigV c,
-    bigI = max (bigI b) (bigI c)
-  }
-
-summaryMark :: M.Map String Benchmark -> Benchmark
-summaryMark = M.foldr plusMark emptyMark 
-
-showMark :: M.Map String Benchmark -> String
-showMark bm =
-    unlines $ pre ++ titles : M.foldrWithKey (\k v ss -> entry k v : ss) post bm
-  where
-    pre = ["\\begin{tabular}{|l|l|l|l|l|l|l|}", "\\hline"]
-    titles = concat $ List.intersperse " & " ["Name", "N", "K", "V", "D", "I", "Time (ms)"] ++ ["\\\\\\hline"]
-    entry n b = concat $ List.intersperse " & " [n, show $ bigN b, show $ bigK b, show $ bigV b, show $ bigD b, show $ bigI b, showFFloat (Just 2) (fromIntegral (avg b) / fromIntegral 1000000) ""] ++ ["\\\\\\hline"]
-    post = ["\\end{tabular}"]
-
-putMark :: FilePath -> M.Map String Benchmark -> IO ()
-putMark fp bm = 
-    writeFile fp (showMark bm)
-
-convertMark :: FilePath -> IO ()
-convertMark fp =
-  do  mbm <- decodeFileStrict fp
-      case mbm of
-        Nothing -> return ()
-        Just bm -> putMark "test.tex" bm
-
-summariseMarks :: FilePath -> IO ()
-summariseMarks dir =
-    withCurrentDirectory dir $
-      do  curDir <- getCurrentDirectory
-          jsons <- filter ("json" `Path.isExtensionOf`) <$> listDirectory curDir
-          Just bms <- sequence <$> mapM decodeFileStrict jsons
-          -- associate the package names with summaries
-          let summaries = 
-                M.fromList $ zipWith (\j bm -> (Path.dropExtension j, summaryMark bm)) jsons bms
-          putMark "summary.tex" summaries
-          zipWithM_ (\j bm -> putMark (Path.replaceExtension j ".tex") bm) jsons bms
     

@@ -1,11 +1,11 @@
 cabal-version:  3.0
 
-name:           intensional-constraints
+name:           intensional-datatys
 version:        0.2.0.0
-synopsis:       A refinement type plugin
-description:    Please see the README on GitHub at <https://github.com/eddiejones2108/intensional-constraints#readme>
-homepage:       https://github.com/eddiejones2108/intensional-constraints#readme
-bug-reports:    https://github.com/eddiejones2108/intensional-constraints/issues
+synopsis:       A GHC Core plugin for intensional datatype refinement checking
+description:    Please see the README on GitHub at <https://github.com/bristolpl/intensional-datatys#readme>
+homepage:       https://github.com/bristolpl/intensional-datatys#readme
+bug-reports:    https://github.com/bristolpl/intensional-datatys/issues
 category:       Language
 author:         Eddie Jones, Steven Ramsay
 maintainer:     ej16147@bristol.ac.uk, steven.ramsay@bristol.ac.uk
@@ -19,7 +19,12 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/eddiejones2108/intensional-constraints
+  location: https://github.com/bristolpl/intensional-datatys
+
+flag bbenchmarks
+    description: Build the benchmark management script
+    default: False
+    manual: True
 
 library
   exposed-modules:
@@ -37,7 +42,7 @@ library
   hs-source-dirs:
       src
   cpp-options:
-     
+  -- -DDEBUG
   ghc-options:
       -Wall
       -Wcompat
@@ -81,31 +86,40 @@ test-suite test
     , mtl
     , hashable
     , directory
-    , intensional-constraints
+    , intensional-datatys
   default-language: Haskell2010
 
-executable benchmark
+-- A library intended to be used from GHCI
+-- to manage benchmarks for the associated paper
+library benchmark
+  if flag(bbenchmarks)
+    buildable:True
+  else
+    buildable:False
   build-depends:
       base >=4
     , aeson
     , containers
-    , intensional-constraints
+    , intensional-datatys
     , filepath
     , directory
   hs-source-dirs:
       benchmark
-  main-is: Benchmark.hs
   default-language: Haskell2010
 
 -- Requires ghc 8.8
+-- Needs manual tailoring to your
+-- particular system, so disabled by
+-- default.
 executable profile
   ghc-options:
+  buildable: False
   build-depends:
       base >=4 && <5
     , ghc  >= 8.8
     , filepath
     , directory
-    , intensional-constraints
+    , intensional-datatys
   hs-source-dirs:
       profile
   main-is: Profile.hs

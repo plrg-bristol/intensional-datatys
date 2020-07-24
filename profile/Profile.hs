@@ -5,7 +5,7 @@ import Control.Monad.IO.Class
 import DynFlags
 import EnumSet
 import GHC
-import Lib
+import Intensional
 import Plugins
 import System.Directory
 import System.Environment

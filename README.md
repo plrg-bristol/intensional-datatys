@@ -35,9 +35,9 @@ Consider the following definition of formulas and disjunctive normal form (DNF) 
   dnf' = nnf2dnf . nnf'
 
 ````
-The function ``nnf2dnf`` has only partial patterns, for example ``Imp p q`` is omitted, because it expects its argument to be in negation normal form and thus not contain any occurrences of ``Imp`` or ``Not``.  However, the definition of ``dnf`` ensures that any input to ``nnf2dnf`` is of the correct form (assuming the definition of ``nnf'`` is correct).  
+The function ``nnf2dnf`` has (effectively) only partial patterns, for example ``Imp p q`` is omitted, because it expects its argument to be in negation normal form and thus not contain any occurrences of ``Imp`` or ``Not``.  However, the definition of ``dnf`` ensures that any input to ``nnf2dnf`` is of the correct form (assuming the definition of ``nnf'`` is correct).  
 
-However, the definition of ``nnf'`` is not correct.  Can you spot the error?  Our tool can analyse how this program will behave at runtime and notices that ``nnf'`` can let a rogue ``Not`` through in some cases.  In particular, the following use of ``dnf`` will result in the program crashing with a pattern-match exception:
+However, the definition of ``nnf'`` is not correct.  Can you spot the error?  Our tool can analyse how this program will behave at runtime and notices that ``nnf'`` can let a rogue ``Not`` through in some cases.  In particular, the following use of ``dnf`` will result in the program crashing with an exception:
 ````
   willCrash = 
     dnf' (Imp (Lit (Atom 1)) 

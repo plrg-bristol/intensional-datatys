@@ -3,7 +3,7 @@
 The pattern-match safety problem is to verify that a given functional program will never crash due to nonexhaustive
 patterns in its function definitions. This tool is designed to verify pattern-match safety of Haskell programs.
 
-Consider the following definition of formulas and disjunctive normal form (DNF) from (PaperExamples.hs)[test/PaperExamples.hs]:
+Consider the following definition of formulas and disjunctive normal form (DNF) from [PaperExamples.hs](test/PaperExamples.hs):
 ````
   data Fm = 
       Lit L

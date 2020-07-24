@@ -52,16 +52,16 @@ library
       -Wnoncanonical-monad-instances
   build-depends:
         base >=4 && <5
-      , ghc >=8.6 && <8.10
-      , extra
-      , containers
-      , unordered-containers
-      , mtl
-      , hashable
-      , aeson
-      , directory
-      , filepath
-      , haskeline
+      , ghc >=8.6.0 && <=8.8.4
+      , extra ==1.7.4
+      , containers ==0.6.2.1
+      , unordered-containers ==0.2.11.0
+      , mtl ==2.2.2
+      , hashable ==1.3.0.0
+      , aeson ==1.5.2.0
+      , directory ==1.3.6.0
+      , filepath ==1.4.2.1
+      , haskeline ==0.7.5.0
   default-language: Haskell2010
 
 test-suite test
@@ -79,13 +79,6 @@ test-suite test
       -fplugin Intensional
   build-depends:
       base >=4 && <5
-    , ghc >=8.6 && <8.10
-    , extra
-    , containers
-    , unordered-containers
-    , mtl
-    , hashable
-    , directory
     , intensional-datatys
   default-language: Haskell2010
 
@@ -98,11 +91,11 @@ library benchmark
     buildable:False
   build-depends:
       base >=4
-    , aeson
-    , containers
+    , aeson ==1.5.2.0
+    , containers ==0.6.2.1
     , intensional-datatys
-    , filepath
-    , directory
+    , filepath ==1.4.2.1
+    , directory ==1.3.6.0
   hs-source-dirs:
       benchmark
   default-language: Haskell2010
@@ -117,8 +110,8 @@ executable profile
   build-depends:
       base >=4 && <5
     , ghc  >= 8.8
-    , filepath
-    , directory
+    , filepath ==1.4.2.1
+    , directory ==1.3.6.0
     , intensional-datatys
   hs-source-dirs:
       profile

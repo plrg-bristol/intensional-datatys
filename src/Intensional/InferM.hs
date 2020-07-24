@@ -1,5 +1,4 @@
 {-# LANGUAGE FlexibleInstances #-}
-{-# OPTIONS_GHC -Wno-orphans #-} -- The Refined Instance for Context is an orphan
 
 module Intensional.InferM
   ( InferM,
@@ -41,11 +40,6 @@ import Intensional.Guard
 type InferM = RWS InferEnv ConstraintSet InferState
 
 type Context = M.Map Name Scheme
-
-instance Refined Context where
-  domain = foldMap domain
-  rename x y = fmap (rename x y)
-  prpr m = foldr (($$) . prpr m) empty
 
 data InferEnv
   = InferEnv

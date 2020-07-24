@@ -20,6 +20,7 @@ import Binary
 import Data.Bifunctor
 import Data.Hashable
 import qualified Data.IntSet as I
+import Data.Map (Map)
 import GHC.Generics hiding (prec)
 import GhcPlugins hiding ((<>), Expr (..), Type)
 import IfaceType
@@ -33,6 +34,11 @@ class Refined t where
   domain :: t -> Domain
   rename :: RVar -> RVar -> t -> t
   prpr   :: (RVar -> SDoc) -> t -> SDoc
+
+instance Refined b => Refined (Map a b) where
+  domain = foldMap domain
+  rename x y = fmap (rename x y)
+  prpr m = foldr (($$) . prpr m) empty
 
 -- A datatype identifier
 -- d is TyCon, IfaceTyCon or Name

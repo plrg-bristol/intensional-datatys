@@ -30,8 +30,9 @@ nnf (Lit (NegAtom x)) = Lit (NegAtom x)
 distrib xss yss = List.nub [ List.union xs ys | xs <- xss, ys <- yss ]
 
 nnf2dnf (And p q) = distrib (nnf2dnf p) (nnf2dnf q)
-nnf2dnf (Or p q) = List.union (nnf2dnf p) (nnf2dnf q)
-nnf2dnf (Lit a) = [[a]]
+nnf2dnf (Or p q)  = List.union (nnf2dnf p) (nnf2dnf q)
+nnf2dnf (Lit a)   = [[a]]
+nnf2dnf _         = error "Impossible!"
 
 dnf = nnf2dnf . nnf
 
@@ -69,7 +70,10 @@ nnf' (Lit (NegAtom x)) = Lit (NegAtom x)
 dnf' = nnf2dnf . nnf'
 
 willNotCrash = dnf' (And (Lit (Atom 1)) (Lit (Atom 2)))
-willCrash = dnf' (Imp (Lit (Atom 1)) (And (Atom 2) (Or (Atom 3) (Atom 1))))
+willCrash = 
+  dnf' (Imp (Lit (Atom 1)) 
+            (And (Lit (Atom 2)) 
+                 (Or (Lit (NegAtom 3)) (Lit (Atom 1)))))
 
 main :: IO ()
 main = return ()

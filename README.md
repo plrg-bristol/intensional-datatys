@@ -15,8 +15,9 @@ Consider the following definition of formulas and disjunctive normal form (DNF) 
   distrib xss yss = List.nub [ List.union xs ys | xs <- xss, ys <- yss ]
 
   nnf2dnf (And p q) = distrib (nnf2dnf p) (nnf2dnf q)
-  nnf2dnf (Or p q) = List.union (nnf2dnf p) (nnf2dnf q)
-  nnf2dnf (Lit a) = [[a]]
+  nnf2dnf (Or p q)  = List.union (nnf2dnf p) (nnf2dnf q)
+  nnf2dnf (Lit a)   = [[a]]
+  nnf2dnf _         = error "Impossible!"
 
   nnf' :: Fm -> Fm
   nnf' (And p q) = And (nnf' p) (nnf' q)
@@ -38,14 +39,17 @@ The function ``nnf2dnf`` has only partial patterns, for example ``Imp p q`` is o
 
 However, the definition of ``nnf'`` is not correct.  Can you spot the error?  Our tool can analyse how this program will behave at runtime and notices that ``nnf'`` can let a rogue ``Not`` through in some cases.  In particular, the following use of ``dnf`` will result in the program crashing with a pattern-match exception:
 ````
-  willCrash = dnf' (Imp (Lit (Atom 1)) (And (Atom 2) (Or (Atom 3) (Atom 1))))
+  willCrash = 
+    dnf' (Imp (Lit (Atom 1)) 
+              (And (Lit (Atom 2)) 
+                  (Or (Lit (NegAtom 3)) (Lit (Atom 1)))))
 ````
 
 When we try to compile this file with our plugin enabled, after a few milliseconds we get:
 
 ![warning message](docs/intensional-warning.png)
 
-The warning tells us that it is the ``Not`` created on line 59 that leaks out of the function (this is the ``Imp`` case of ``nnf``) and that the call on line 72 (this is the definition of ``willCrash``) will cause that ``Not`` to reach the incomplete pattern match on lines 32--34 (this is the definition of ``nnf2dnf``).
+The warning tells us that it is the ``Not`` created on line 60 that leaks out of the function (this is the ``Imp`` case of ``nnf``) and that the call on lines 73--76 (this is the definition of ``willCrash``) will cause that ``Not`` to reach the incomplete pattern match on lines 32--35 (this is the definition of ``nnf2dnf``).
 
 On the other hand, the analysis also understands that the usage in the following definition will not exercise the faulty ``Imp`` case of ``nnf'`` and hence no warning is issued for this line of code:
 ````
@@ -89,9 +93,9 @@ and access to Hackage:
 In the terminal you will find notifications of any warnings produced by the tool, which can be identified by the ``Intensional`` label in square brackets.
 
 ````
-  test/PaperExamples.hs:72:1-52: warning: [Intensional]
-    Could not verify that ‘Not’ from test/PaperExamples.hs:59:21-34
-      cannot reach the incomplete match at test/PaperExamples.hs:(32,1)-(34,23)
+  test/PaperExamples.hs:(73,1)-(76,56): warning: [Intensional]
+    Could not verify that ‘Not’ from test/PaperExamples.hs:60:21-34
+      cannot reach the incomplete match at test/PaperExamples.hs:(32,1)-(35,39)
 ````
 
 The warnings record instances where the tool *believes* there will be a pattern-match violation at runtime.

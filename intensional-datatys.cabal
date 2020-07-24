@@ -15,7 +15,6 @@ license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
     README.md
-    ChangeLog.md
 
 source-repository head
   type: git
@@ -71,7 +70,6 @@ test-suite test
       test
   ghc-options: 
       -g 
-      -O0 
       -fno-pre-inlining 
       -funfolding-use-threshold=0 
       -fno-ignore-interface-pragmas 
@@ -89,6 +87,8 @@ library benchmark
     buildable:True
   else
     buildable:False
+  exposed-modules:
+      Benchmark
   build-depends:
       base >=4
     , aeson ==1.5.2.0

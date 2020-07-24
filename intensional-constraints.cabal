@@ -36,6 +36,8 @@ library
       Intensional.Ubiq
   hs-source-dirs:
       src
+  cpp-options:
+     
   ghc-options:
       -Wall
       -Wcompat
@@ -62,7 +64,14 @@ test-suite test
   main-is: PaperExamples.hs
   hs-source-dirs:
       test
-  ghc-options: -g -fplugin Intensional
+  ghc-options: 
+      -g 
+      -O0 
+      -fno-pre-inlining 
+      -funfolding-use-threshold=0 
+      -fno-ignore-interface-pragmas 
+      -fno-omit-interface-pragmas
+      -fplugin Intensional
   build-depends:
       base >=4 && <5
     , ghc >=8.6 && <8.10

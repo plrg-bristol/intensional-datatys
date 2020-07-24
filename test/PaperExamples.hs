@@ -69,7 +69,8 @@ nnf' (Lit (NegAtom x)) = Lit (NegAtom x)
 dnf' = nnf2dnf . nnf'
 
 willNotCrash = dnf' (And (Lit (Atom 1)) (Lit (Atom 2)))
-willCrash = dnf' (Imp (Lit (Atom 1)) (Lit (Atom 2)))
+willCrash = dnf' (Imp (Lit (Atom 1)) (And (Atom 2) (Or (Atom 3) (Atom 1))))
 
 main :: IO ()
 main = return ()
+ 

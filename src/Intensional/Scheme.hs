@@ -67,7 +67,7 @@ instance Outputable d => Refined (SchemeGen d) where
         (hang (text "where") 2 (prpr varMap (constraints scheme)))
     | otherwise = hcat [pprTyQuant, pprConQuant, prpr varMap (body scheme)]
     where
-      numVars = I.size (domain scheme)
+      numVars = I.size (boundvs scheme)
       varNames =
         if numVars > 3 then [ char 'X' GhcPlugins.<> int n | n <- [1..numVars] ] else [ char c | c <- ['X', 'Y', 'Z'] ]
       varMap = \x -> m IntMap.! x

@@ -1,6 +1,6 @@
 module SimpleTest where
 
-import Prelude ()
+import Prelude (Int)
 
 data Nat = Zero | Succ Nat
 
@@ -30,3 +30,10 @@ second (Cons a (Cons b _)) = b
 
 skipTwo :: List a -> List a
 skipTwo (Cons a (Cons b as)) = as
+
+data T = A | B
+
+-- type error only detected by 
+-- model building 
+modelTest :: T -> Int
+modelTest x = case (modelTest B, x) of (_, A) -> 0

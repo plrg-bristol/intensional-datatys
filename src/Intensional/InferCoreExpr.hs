@@ -7,7 +7,8 @@ where
 
 import Intensional.Ubiq
 import Control.Monad.Extra
-import Control.Monad.RWS
+import Control.Monad.RWS.Strict
+import Control.Monad.State.Strict as State
 import CoreArity
 import qualified CoreSyn as Core
 import Data.Bifunctor
@@ -19,59 +20,106 @@ import GhcPlugins hiding ((<>), Type)
 import Intensional.InferM
 import Pair
 import Intensional.Scheme as Scheme
+import Intensional.Guard as Guard
 import Intensional.Types
 
 import qualified Intensional.Constraints as Constraints
 
 import Debug.Trace
 
--- Infer set constraints for a subtyping constraint
+{-|
+    The type of subtype inference constraints that are accumulated
+    during the subtype inference fixpoint algorithm.
+
+    There is a 1-1 correspondence between this type and the type of
+    atomic constraints, but the former contain more information
+    (though this information could be determined by the context at
+    great expense).
+-}
+type SubTyAtom = (Guard, RVar, RVar, TyCon)
+
+{-|
+    The type of elements of the frontier in the subtype inference fixpoint
+    algorithm.  There is an injection from this type into the typ of atomic
+    constraints, but the inhabitants of this type additionally track the
+    types used to instantiate the constructors of the datatype involved in
+    the constraint.  This additional information is needed to unfold the 
+    frontier and look for successors.
+-}
+type SubTyFrontierAtom = (Guard, RVar, RVar, TyCon, [Type], [Type])
+
+{-|
+    The type of the subtype inference algorithm, i.e. a stateful fixed 
+    point computation that must additionally draw upon the services of 
+    the inference monad to deal with GHC types.
+-}
+type SubTyComputation = StateT ([SubTyFrontierAtom], [SubTyAtom]) InferM ()
+
+{-|
+    Given a pair of types @t1@ and @t2@, @inferSubType t1 t2@ is the action
+    that emits constraints characterising @t1 <= t2@.
+
+    Also emits statistics on the size of the input parameters to do with slices.
+-}
 inferSubType :: Type -> Type -> InferM ()
 inferSubType t1 t2 = 
-  do  (_, cs) <- listen (inferSubTypeStep' t1 t2)
-      let sz = Constraints.size cs
-      when (debugging && sz > 100) $ 
-        do  src <- asks inferLoc 
+  do  let ts = inferSubTypeStep t1 t2
+      (_,cs) <- listen $
+        forM_ ts $ \(x, y, d, as, as') ->
+          do  -- Entering a slice
+              ds <- snd <$> State.execStateT inferSubTypeFix ([(mempty, x, y, d, as, as')],[(mempty, x, y, d)])
+              -- Note how big it was for statistics
+              noteD $ length (L.nub $ map (\(_,_,_,d') -> getName d') ds)
+              -- Emit a constraint for each one
+              forM_ ds $ \(gs, x', y', d') -> 
+                censor (Constraints.guardWith gs) (emitDD (Inj x' d') (Inj y' d'))
+      when debugging $ 
+        do  src <- asks inferLoc
+            traceM ("[TRACE] Starting subtpe inference at " ++ traceSpan src)
+            let sz = Constraints.size cs
             traceM ("[TRACE] The subtype proof at " ++ traceSpan src ++ " contributed " ++ show sz ++ " constraints.")
-            pprTraceM "[TRACE] Subtyping constraints: " (ppr cs)
-  where
-    inferSubTypeStep' d1@(Data (Inj _ _) _) d2@(Data (Inj _ _) _) =
-      do  -- Entering a slice
-          ds <- inferSubTypeStep [] d1 d2
-          -- See how big it was
-          noteD $ length (L.nub $ map (first tyconOf) ds)
-    inferSubTypeStep' (t11 :=> t12) (t21 :=> t22) =
-      inferSubTypeStep' t21 t11 >> inferSubTypeStep' t12 t22
-    inferSubTypeStep' (Data (Base _) as) (Data (Base _) as') =
-      zipWithM_ inferSubTypeStep' as as'
-    inferSubTypeStep' _ _ = return ()
 
-    inferSubTypeStep :: [(DataType TyCon, DataType TyCon)] -> Type -> Type -> InferM [(DataType TyCon, DataType TyCon)]
-    inferSubTypeStep ds (Data (Inj x d) as) (Data (Inj y d') as')
-      -- Escape from loop if constraints have already been discovered
-      | (Inj x d, Inj y d') `notElem` ds = do
-        emitDD (Inj x d) (Inj y d')
-        noteK (length $ tyConDataCons d)
-        dss <- mapM -- Traverse the slice of a datatype
-                ( \k ->
-                    branch k (Inj x d) $
-                      do  xtys <- consInstArgs x as k
-                          ytys <- consInstArgs y as' k
-                          rs <- zipWithM (inferSubTypeStep ((Inj x d, Inj y d') : ds)) xtys ytys
-                          return (concat rs)
-                )
-                (tyConDataCons d)
-        let cds = concat dss
-        return (if null cds then (Inj x d, Inj y d') : ds else cds)
-    inferSubTypeStep ds (t11 :=> t12) (t21 :=> t22) =
-      do  ds1 <- inferSubTypeStep ds t21 t11 
-          ds2 <- inferSubTypeStep ds t12 t22
-          return (ds1 ++ ds2)
-    inferSubTypeStep ds (Data (Base _) as) (Data (Base _) as') =
-      do  dss <- zipWithM (inferSubTypeStep ds) as as'
-          let cds = concat dss
-          return (if null cds then ds else cds)
-    inferSubTypeStep ds _ _ = return ds
+  where
+
+    leq :: SubTyAtom -> SubTyAtom -> Bool
+    leq (gs, x, y, d) (gs', x', y', d') =
+      -- getName here is probably unnecessary, should look it up
+      x == x' && y == y' && getName d == getName d' && gs' `Guard.impliedBy` gs
+      
+    inferSubTypeFix :: SubTyComputation
+    inferSubTypeFix = 
+      do  (frontier, acc) <-get
+          unless (null frontier) $
+            do  put ([], acc)
+                forM_ frontier $ \(gs, x, y, d, as, as') -> 
+                  do  let dataCons = tyConDataCons d
+                      lift $ noteK (length dataCons)
+                      forM_ dataCons $ \k -> 
+                        do  xtys <- lift $ consInstArgs x as k
+                            ytys <- lift $ consInstArgs y as' k
+                            let gs' = 
+                                 if (isTrivial d) 
+                                   then gs 
+                                   else Guard.singleton [getName k] x (getName d) <> gs
+                            let ts  = concat $ zipWith inferSubTypeStep xtys ytys
+                            forM_ ts $ \(x', y', d', bs, bs') ->
+                              do  let new  = (gs', x', y', d')
+                                  let newF = (gs', x', y', d', bs, bs')
+                                  (fr, ac) <- get
+                                  unless (any (`leq` new) ac) $ put (newF:fr, new:ac)
+                inferSubTypeFix
+
+
+    inferSubTypeStep ::  Type -> Type -> [(RVar, RVar, TyCon, [Type], [Type])]
+    inferSubTypeStep (Data (Inj x d) as) (Data (Inj y _) as') =
+      [(x, y, d, as, as')]
+    inferSubTypeStep (t11 :=> t12) (t21 :=> t22) =
+      let ds1 = inferSubTypeStep t21 t11 
+          ds2 = inferSubTypeStep t12 t22
+      in ds1 ++ ds2
+    inferSubTypeStep (Data (Base _) as) (Data (Base _) as') =
+      concat $ zipWith inferSubTypeStep as as'
+    inferSubTypeStep _ _ = []
 
 -- Infer constraints for a module
 inferProg :: CoreProgram -> InferM Context
@@ -95,12 +143,15 @@ associate r =
           (ctx, cs) <- listen $ inferRec r
           let satAction s = 
                 do  cs' <- snd <$> (listen $ saturate (do { tell cs; return s }))
-                    -- Add constraints to every type in the recursive group
+                    -- Attempt to build a model and record counterexamples
+                    es <- cexs cs'
                     return $ s { 
                         boundvs = (domain cs' <> domain s) I.\\ domain env,
-                        Scheme.constraints = cs'
+                        Scheme.constraints = es <> cs'
                       }
+          -- add constraints to every type in the recursive group
           ctx' <- mapM satAction ctx
+          -- note down any counterexamples
           let es = M.foldl' (\ss sch -> Scheme.unsats sch <> ss) mempty ctx'
           noteErrs es
           when debugging $ traceM ("[TRACE] End inferring: " ++ bindingNames)  
@@ -190,22 +241,18 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
             ( \case
                 (Core.DataAlt k, xs, rhs)
                   | not (isBottoming rhs) -> do
-                    reach <- isBranchReachable e k
-                    if reach
-                      then do
-                        -- Add constructor arguments introduced by the pattern
-                        y <- fresh -- only used in Base case of ts
-                        ts <- 
-                          case dt of 
-                            Inj x _ -> M.fromList . zip (fmap getName xs) <$> (map (Forall []) <$> (consInstArgs x as k))
-                            Base _  -> M.fromList . zip (fmap getName xs) <$> (map (Forall []) <$> (consInstArgs y as k))
-                        branchWithExpr e k dt $ do
-                          -- Ensure return type is valid
-                          ret_i <- mono <$> putVars ts (infer rhs)
-                          inferSubType ret_i ret
-                        -- Record constructors
-                        return (Just k)
-                      else return Nothing
+                    -- Add constructor arguments introduced by the pattern
+                    y <- fresh -- only used in Base case of ts
+                    ts <- 
+                      case dt of 
+                        Inj x _ -> M.fromList . zip (fmap getName xs) <$> (map (Forall []) <$> (consInstArgs x as k))
+                        Base _  -> M.fromList . zip (fmap getName xs) <$> (map (Forall []) <$> (consInstArgs y as k))
+                    branchAny [k] dt $ do
+                      -- Ensure return type is valid
+                      ret_i <- mono <$> putVars ts (infer rhs)
+                      inferSubType ret_i ret
+                    -- Record constructorsc
+                    return (Just k)
                 (Core.LitAlt _, _, rhs) 
                   | not (isBottoming rhs) -> do
                         -- Ensure return type is valid
@@ -219,7 +266,7 @@ infer (Core.Case e bind_e core_ret alts) = saturate $ do
         case findDefault alts of
           (_, Just rhs) | not (isBottoming rhs) ->
             -- Guard by unseen constructors
-            branchAny e (tyConDataCons (tyconOf dt) L.\\ ks) dt $ do
+            branchAny (tyConDataCons (tyconOf dt) L.\\ ks) dt $ do
               -- Ensure return type is valid
               ret_i <- mono <$> infer rhs
               inferSubType ret_i ret

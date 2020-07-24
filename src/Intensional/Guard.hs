@@ -3,6 +3,7 @@ module Intensional.Guard where
 import qualified GhcPlugins as GHC
 import Binary 
 import Data.Map (Map)
+import Data.Set (Set)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.IntSet as IntSet
@@ -51,6 +52,9 @@ toList (Guard g) =
 
 fromList :: [(Int, GHC.Name, GHC.Name)] -> Guard
 fromList = foldMap (\(x, d, k) -> singleton [k] x d)
+
+typedVars :: Guard -> Set (RVar, GHC.Name)
+typedVars (Guard g) = Map.keysSet g
 
 instance Binary Guard where
   put_ bh = put_ bh . toList

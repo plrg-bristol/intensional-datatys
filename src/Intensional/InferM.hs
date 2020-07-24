@@ -8,10 +8,6 @@ module Intensional.InferM
     Stats (..),
     runInferM,
     Intensional.InferM.saturate,
-    topLevel,
-    isBranchReachable,
-    branch,
-    branchWithExpr,
     branchAny,
     emitDD,
     emitDK,
@@ -27,12 +23,13 @@ module Intensional.InferM
     noteK,
     incrN,
     noteErrs,
+    Intensional.InferM.cexs
   )
 where
 
 import Intensional.Constraints as Constraints
 import Intensional.Constructors
-import Control.Monad.RWS hiding (guard)
+import Control.Monad.RWS.Strict hiding (guard)
 import qualified Data.IntSet as IntSet
 import qualified Data.Map as M
 import GhcPlugins hiding ((<>), singleton)
@@ -42,8 +39,6 @@ import Intensional.Ubiq
 import Intensional.Guard
 
 type InferM = RWS InferEnv ConstraintSet InferState
-
-type Path = [(CoreExpr, DataCon)]
 
 type Context = M.Map Name Scheme
 
@@ -55,8 +50,6 @@ instance Refined Context where
 data InferEnv
   = InferEnv
       { modName :: Module, -- The current module
-        branchPath :: Path, -- Expressions which have been match upon
-        branchGuard :: Guard,
         varEnv :: Context,
         inferLoc :: SrcSpan -- The current location in the source text
       }
@@ -112,7 +105,7 @@ runInferM ::
   Context ->
   (a, [Atomic], Stats)
 runInferM run mod_name init_env =
-  let (a, s, _) = runRWS run (InferEnv mod_name [] mempty init_env (UnhelpfulSpan (mkFastString "Nowhere"))) initState
+  let (a, s, _) = runRWS run (InferEnv mod_name init_env (UnhelpfulSpan (mkFastString "Nowhere"))) initState
   in (a, Constraints.toList (errs s), Stats (maxK s) (maxD s) (rVar s) (maxI s) (cntN s))
 
 -- Transitively remove local constraints
@@ -122,25 +115,32 @@ saturate ma = pass $
     a <- ma
     env <- asks varEnv
     m <- asks modName
-    g <- asks branchGuard
     src <- asks inferLoc
-    let interface = domain a <> domain env <> domain g
+    let interface = domain a <> domain env
     noteI (IntSet.size interface)
     let fn cs =
-          let csSize = size cs
-              ds = Constraints.saturate (CInfo m src) interface cs
-           in if debugging && csSize > 100 then debugBracket a env g src cs ds else ds
+          let ds = Constraints.saturate (CInfo m src) interface cs
+           in if debugging then debugBracket a env src cs ds else ds
     return (a, fn)
   where
-    debugBracket a env g src cs ds =
+    debugBracket a env src cs ds =
       let asz = "type: " ++ show (IntSet.size $ domain a)
           esz = "env: " ++ show (IntSet.size $ domain env)
-          gsz = "guard: " ++ show (IntSet.size $ domain g)
           csz = show (size cs)
           spn = traceSpan src
-          tmsg = "#interface = (" ++ asz ++ " + " ++ esz ++ " + " ++ gsz ++ "), #constraints = " ++ csz
+          tmsg = "#interface = (" ++ asz ++ " + " ++ esz ++ "), #constraints = " ++ csz
           ds' = trace ("[TRACE] BEGIN saturate at " ++ spn ++ ": " ++ tmsg) ds
        in ds' `seq` trace ("[TRACE] END saturate at " ++ spn ++ " saturated size: " ++ (show $ size ds)) ds
+
+{-|
+    Given a constraint set @cs@, @cexs cs@ is the inference action that
+    attempts to build a model of @cs@ and returns the set of counterexamples.
+-}
+cexs :: ConstraintSet -> InferM ConstraintSet
+cexs cs = 
+  do  m <- asks modName 
+      src <- asks inferLoc 
+      return $ Constraints.cexs (CInfo m src) cs
 
 -- Check if a core datatype is ineligible for refinement
 isIneligible :: TyCon -> InferM Bool
@@ -148,11 +148,9 @@ isIneligible tc =
   do  m <- asks modName
       return (not (homeOrBase m (getName tc)) || null (tyConDataCons tc))
   where
-    strName = occNameString (getOccName tc)
     homeOrBase m n =
       nameIsHomePackage m n 
-      || strName == "Bool"
-      || strName == "Maybe"
+
         -- Previously we tried to include as much of base as possible by asking for specific modules
         -- but this is a little too coarse grain (e.g. GHC.Types will include Bool, but also Int):
         --
@@ -165,58 +163,38 @@ isIneligible tc =
         --              || List.isPrefixOf "GHC.Base" (moduleNameString m)
         --              || List.isPrefixOf "GHC.Types" (moduleNameString m)
         --    )
+        --
+        -- a better approach would be, simply:
+        --  strName = occNameString (getOccName tc)
+        --  ...
+        --  || strName == "Bool"
+        --  || strName == "Maybe"
 
 isTrivial :: TyCon -> Bool
 isTrivial tc = (== 1) (length (tyConDataCons tc))
 
 
--- Check if an expression has already been pattern matched
-topLevel :: CoreExpr -> InferM Bool
-topLevel e = asks (foldr (\(e', _) es -> not (cheapEqExpr e e') && es) True . branchPath)
 
--- Check that a branch doesn't contradict the current branch
-isBranchReachable :: CoreExpr -> DataCon -> InferM Bool
-isBranchReachable e k =
-  asks
-    ( foldr
-        ( \(e', k') es ->
-            (not (cheapEqExpr e e') || k == k') && es
-        )
-        True
-        . branchPath
-    )
-
--- Locally guard constraints
-branch :: DataCon -> DataType TyCon -> InferM a -> InferM a
-branch _ (Base _)  ma = ma
-branch k (Inj x d) ma =
-    -- If the datatype has only 1 constructor, there is no point
-    if isTrivial d then ma else local envUpdate ma
+{- 
+  Given a list of data constructors @ks@, a datatype @Inj x d@ and an 
+  inference action @m@, @branchAny ks (Inj x d) m@ is the inference action
+  that consists of doing @m@ then guarding all emitted constraints
+  by the requirement that @ks in x(d)@.
+-}
+branchAny :: [DataCon] -> DataType TyCon -> InferM a -> InferM a
+branchAny _ (Base _)  m = m
+branchAny ks (Inj x d) m = 
+    if (isTrivial d) then m else censor guardWithAll m
   where
     dn = getName d
-    kn = getName k
-    envUpdate env =
-      env {branchGuard = singleton [kn] x dn <> branchGuard env}
-
--- Locally guard constraints and add expression to path
-branchWithExpr :: CoreExpr -> DataCon -> DataType TyCon -> InferM a -> InferM a
-branchWithExpr e k d =
-  local
-    ( \env ->
-        env {branchPath = (e, k) : branchPath env}
-    )
-    . branch k d
-
--- Locally guard constraints and add expression to path
-branchAny :: CoreExpr -> [DataCon] -> DataType TyCon -> InferM a -> InferM ()
-branchAny e ks d m = mapM_ (\k -> branchWithExpr e k d m) ks
+    guardWithAll cs =
+      foldMap (\k -> Constraints.guardWith (singleton [getName k] x dn) cs) ks
 
 mkConFromCtx :: ConL -> ConR -> InferM Atomic
 mkConFromCtx l r =
   do  m <- asks modName
       s <- asks inferLoc
-      g <- asks branchGuard
-      return (Constraint l r g (CInfo m s))
+      return (Constraint l r mempty (CInfo m s))
 
 emitDD :: DataType TyCon -> DataType TyCon -> InferM ()
 emitDD (Inj x d) (Inj y _) = 
@@ -239,7 +217,7 @@ emitKD _ _ _ = return ()
 
 emitDK :: DataType TyCon -> [DataCon] -> SrcSpan -> InferM ()
 emitDK (Inj x d) ks s =
-  unless (isTrivial d) $ 
+  unless (isTrivial d || length (tyConDataCons d) == length ks) $ 
     do  a <- mkConFromCtx (Dom (Inj x dn)) (Set ksn s)
         tell (Constraints.fromList [a])
   where

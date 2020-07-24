@@ -9,7 +9,6 @@ module Intensional.FromCore
   )
 where
 
-import Intensional.Constraints
 import Control.Monad.RWS
 import qualified Data.IntSet as I
 import qualified Data.Map as M
@@ -115,8 +114,7 @@ getVar v =
           (scheme {boundvs = mempty})
           (I.toList (boundvs scheme))
       -- Emit constriants associated with a variable
-      g <- asks branchGuard
-      tell (guardWith g (constraints fre_scheme))
+      tell (constraints fre_scheme)
       return fre_scheme {Scheme.constraints = mempty}
     Nothing -> do
       var_scheme <- freshCoreScheme $ varType v

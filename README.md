@@ -74,10 +74,11 @@ To add the analysis to compilation using GHC directly from the command line, fir
   $ cabal install intensional-datatys
   Resolving dependencies...
 ````
-Then use the flags ``-package intensional-datatys`` and ``-fplugin Intensional`` when invoking GHC as usual, e.g:
+Then use the flags ``-package intensional-datatys``, ``-fplugin Intensional``, ``-g``,  ``-fno-ignore-interface-pragmas``, and ``-fno-omit-interface-pragmas`` when invoking GHC as usual, e.g:
 ````
-  $ ghc -package intensional-datatys -fplugin Intensional Main.hs
+  $ ghc -g -fno-ignore-interface-pragmas -fno-omit-interface-pragmas -package intensional-datatys -fplugin Intensional Main.hs
 ````
+The latter three ensure that the compiler can properly detect when a branch will immediately throw an error.
 Optionally, add the flags detailed [here](#optional-ghc-flags) to the command line invocation to help the analysis efficiency or to view inferred types interactively.
 
 
@@ -86,7 +87,8 @@ To add this analysis as another stage to compilation for a Haskell project with 
 and access to Hackage:
   
   1. Add ``intensional-datatys`` to the ``build-depends`` field of the target that you want to analyse.
-  2. Add ``-fplugin Intensional`` to the ``ghc-options`` field
+  2. Add ``-fplugin Intensional`` to the ``ghc-options`` field.
+  3. Add ``-g``, ``-fno-ignore-interface-pragmas``, and ``-fno-omit-interface-pragmas`` to the ``ghc-options`` field.
   3. Optionally, add flags detailed [here](#optional-ghc-flags) to ``ghc-options`` to help the analysis efficiency or to view inferred types interactively.
 
 ### Interpreting the output 
@@ -111,12 +113,9 @@ The warning is being reported because, after analysing how the program will beha
   
   We recommend the following additional flags which turn off inlining and other GHC optimisations whilst retaining strictness analysis.
 
-      * ``-g``
       * ``-O0``
       * ``-fno-pre-inlining``
       * ``-funfolding-use-threshold=0``
-      * ``-fno-ignore-interface-pragmas``
-      * ``-fno-omit-interface-pragmas``
   
   To view the types inferred for a module ``m`` or any module that ``m`` depends on, use the following flag and see section [Viewing Inferred Types](#viewing-inferred-types).
 

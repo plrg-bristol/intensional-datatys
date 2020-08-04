@@ -112,14 +112,16 @@ The warning is being reported because, after analysing how the program will beha
 ### Optional GHC flags
   
   We recommend the following additional flags which turn off inlining and other GHC optimisations whilst retaining strictness analysis.
-
-      * ``-O0``
-      * ``-fno-pre-inlining``
-      * ``-funfolding-use-threshold=0``
+  ````
+    -O0
+    -fno-pre-inlining
+    -funfolding-use-threshold=0
+  ````
   
   To view the types inferred for a module ``m`` or any module that ``m`` depends on, use the following flag and see section [Viewing Inferred Types](#viewing-inferred-types).
-
-      * ``-fplugin-opt Intensional:m``
+  ````
+    -fplugin-opt Intensional:m
+  ````
 
 
 ## Limitations

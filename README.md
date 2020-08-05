@@ -58,7 +58,7 @@ On the other hand, the analysis also understands that the usage in the following
 
 Internally, the tool is using a kind of refinement type system in order to statically approximate which constructors are flowing to which points of the program.  The system is carefully designed so that inference is completely automatic and runs in time that is linear in the size of the program, but exponential in the underlying (Haskell) type of the program.  In particular, it is exponential in the size of the datatype definitions, so the analysis may struggle if your program has very large datatypes.  However, we have successfully analysed many large packages from Hackage (subject to the significant [limitations](#limitations) in the current implementation, discussed below).
 
-:page_with_curl: Full details of how the system works are given in the paper: [Intensional Datatype Refinement](http://http://arxiv.org/abs/2008.01452).
+:page_with_curl: Full details of how the system works are given in the paper: [Intensional Datatype Refinement](http://arxiv.org/abs/2008.01452).
 
 The same example [file](test/PaperExamples.hs) also contains a non-faulty implementation ``nnf``.  The type assigned to ``nnf`` describes a function that will never return a value built with ``Not`` or ``Implies`` (in fact the type is 'flow-sensitive' which means, in this case, that it says which constructors will be in the output given which constructors were in the input).  Take a look at [Viewing the inferred types](#viewing-inferred-types) to see the type.
 
